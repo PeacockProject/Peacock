@@ -1,3 +1,4 @@
+#define _DEFAULT_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,7 +10,12 @@
 #include <linux/kd.h>
 #include <errno.h>
 #include <ctype.h>
+#include <stdint.h>
+#include <time.h>
 #include "peacock_logo.h"
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 
 static int fb_fd = -1;
 static int tty_fd = -1;
@@ -196,6 +202,151 @@ static void clear_lk2nd_footer_strip(void) {
         unsigned int yy = start_row + row;
         memset(fb_mem + (yy * finfo.line_length), 0, finfo.line_length);
     }
+}
+
+static unsigned int next_rand_u32(unsigned int *state) {
+    unsigned int x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    return x;
+}
+
+static void sleep_us(unsigned int us) {
+    struct timespec ts;
+    ts.tv_sec = (time_t)(us / 1000000u);
+    ts.tv_nsec = (long)((us % 1000000u) * 1000u);
+    nanosleep(&ts, NULL);
+}
+
+static void shift_row_wrap(unsigned char *dst, const unsigned char *src, int line_len, int shift_bytes) {
+    if (!dst || !src || line_len <= 0) return;
+    if (shift_bytes < 0) {
+        shift_bytes = line_len - ((-shift_bytes) % line_len);
+    } else {
+        shift_bytes %= line_len;
+    }
+    if (shift_bytes == 0) {
+        memcpy(dst, src, (size_t)line_len);
+        return;
+    }
+    int tail = line_len - shift_bytes;
+    memcpy(dst, src + shift_bytes, (size_t)tail);
+    memcpy(dst + tail, src, (size_t)shift_bytes);
+}
+
+static void splash_glitch_brief(void) {
+    if (!fb_mem) return;
+
+    unsigned int seed = (unsigned int)(getpid() * 2654435761u) ^ (unsigned int)time(NULL);
+    if (!seed) seed = 0x9e3779b9u;
+
+    if (finfo.line_length <= 0 || vinfo.yres <= 0 || vinfo.xres <= 0) return;
+
+    unsigned char *frame_tmp = (unsigned char*)malloc((size_t)screensize);
+    unsigned char *line_tmp = (unsigned char*)malloc((size_t)finfo.line_length);
+    if (!frame_tmp || !line_tmp) {
+        free(frame_tmp);
+        free(line_tmp);
+        return;
+    }
+
+    unsigned int c_hot_white = pack_pixel(0xF4F7FF);
+    unsigned int c_magenta   = pack_pixel(0xF045FF);
+    unsigned int c_purple    = pack_pixel(0x8A49FF);
+    unsigned int c_cyan      = pack_pixel(0x36E7FF);
+    unsigned int c_red       = pack_pixel(0xFF4A6E);
+    unsigned int palette[] = {c_hot_white, c_magenta, c_purple, c_cyan, c_red};
+
+    for (int pass = 0; pass < 3; ++pass) {
+        memcpy(frame_tmp, fb_mem, (size_t)screensize);
+
+        int y = 0;
+        while (y < (int)vinfo.yres) {
+            int bh = 1 + (int)(next_rand_u32(&seed) % 10u);
+            int shift_px = (int)(next_rand_u32(&seed) % 53u) - 26;
+            if ((next_rand_u32(&seed) & 7u) == 0u) {
+                shift_px = (int)(next_rand_u32(&seed) % 181u) - 90;
+            }
+            int shift_bytes = shift_px * bytes_per_pixel;
+            for (int by = 0; by < bh && y + by < (int)vinfo.yres; ++by) {
+                unsigned char *dst = (unsigned char*)fb_mem + ((y + by) * finfo.line_length);
+                const unsigned char *src = frame_tmp + ((y + by) * finfo.line_length);
+                shift_row_wrap(line_tmp, src, (int)finfo.line_length, shift_bytes);
+                memcpy(dst, line_tmp, (size_t)finfo.line_length);
+            }
+            y += bh;
+        }
+
+        int streak_rows = (int)(vinfo.yres / 3u);
+        for (int i = 0; i < streak_rows; ++i) {
+            int yy = (int)(next_rand_u32(&seed) % vinfo.yres);
+            int x0 = (int)(next_rand_u32(&seed) % vinfo.xres);
+            int len = 8 + (int)(next_rand_u32(&seed) % 100u);
+            unsigned int col = palette[next_rand_u32(&seed) % (sizeof(palette) / sizeof(palette[0]))];
+            for (int x = 0; x < len; ++x) {
+                int xx = x0 + x;
+                if (xx >= (int)vinfo.xres) break;
+                draw_pixel(xx, yy, col);
+                if ((next_rand_u32(&seed) & 1u) && yy + 1 < (int)vinfo.yres) draw_pixel(xx, yy + 1, col);
+            }
+        }
+
+        int grain = (int)((vinfo.xres * vinfo.yres) / 420u);
+        for (int i = 0; i < grain; ++i) {
+            int x = (int)(next_rand_u32(&seed) % vinfo.xres);
+            int y2 = (int)(next_rand_u32(&seed) % vinfo.yres);
+            unsigned int col = palette[next_rand_u32(&seed) % (sizeof(palette) / sizeof(palette[0]))];
+            draw_pixel(x, y2, col);
+        }
+
+        splash_flush();
+        sleep_us(12000);
+    }
+
+    free(frame_tmp);
+    free(line_tmp);
+}
+
+static void draw_rgba_image_centered(const unsigned char *rgba, int img_w, int img_h) {
+    if (!fb_mem || !rgba || img_w <= 0 || img_h <= 0) return;
+
+    unsigned int draw_w = (unsigned int)vinfo.xres;
+    unsigned int draw_h = (unsigned int)(((uint64_t)img_h * draw_w) / (uint64_t)img_w);
+    if (draw_h > (unsigned int)vinfo.yres) {
+        draw_h = (unsigned int)vinfo.yres;
+        draw_w = (unsigned int)(((uint64_t)img_w * draw_h) / (uint64_t)img_h);
+    }
+    if (!draw_w || !draw_h) return;
+
+    unsigned int ox = ((unsigned int)vinfo.xres - draw_w) / 2u;
+    unsigned int oy = ((unsigned int)vinfo.yres - draw_h) / 2u;
+
+    for (unsigned int y = 0; y < draw_h; ++y) {
+        unsigned int src_y = (unsigned int)(((uint64_t)y * (uint64_t)img_h) / (uint64_t)draw_h);
+        for (unsigned int x = 0; x < draw_w; ++x) {
+            unsigned int src_x = (unsigned int)(((uint64_t)x * (uint64_t)img_w) / (uint64_t)draw_w);
+            const unsigned char *p = rgba + (((size_t)src_y * (size_t)img_w + (size_t)src_x) * 4u);
+            if (p[3] < 8) continue;
+            unsigned int rgb = ((unsigned int)p[0] << 16) | ((unsigned int)p[1] << 8) | (unsigned int)p[2];
+            draw_pixel((int)(ox + x), (int)(oy + y), pack_pixel(rgb));
+        }
+    }
+}
+
+static int draw_png_centered(const char *path) {
+    if (!path || !*path) return -1;
+    int w = 0, h = 0, ch = 0;
+    unsigned char *rgba = stbi_load(path, &w, &h, &ch, 4);
+    if (!rgba) {
+        fprintf(stderr, "peacock-splash: failed to load image %s\n", path);
+        return -1;
+    }
+    draw_rgba_image_centered(rgba, w, h);
+    stbi_image_free(rgba);
+    splash_flush();
+    return 0;
 }
 
 // 3x5 font for A-Z, 0-9, space, colon, dot, slash, dash
@@ -414,14 +565,16 @@ void splash_close(void) {
 int main(int argc, char *argv[]) {
     if (argc < 2) {
         fprintf(stderr, "Usage: %s <message> [y] [fbdev] [clear_hex] [options...]\n", argv[0]);
-        fprintf(stderr, "Options: noclear textmode logo text=<RRGGBB>\n");
+        fprintf(stderr, "Options: noclear textmode logo glitch text=<RRGGBB> image=<path>\n");
         return 1;
     }
     
     const char *fbdev = NULL;
+    const char *image_path = NULL;
     int noclear = 0;
     int textmode = 0;
     int logo = 0;
+    int glitch = 0;
     unsigned int text_rgb = 0xFFFF00;
     const char *env_text = getenv("PEACOCK_SPLASH_TEXT_COLOR");
     const char *env_logo = getenv("PEACOCK_SPLASH_LOGO");
@@ -447,8 +600,16 @@ int main(int argc, char *argv[]) {
             logo = 1;
             continue;
         }
+        if (strcmp(argv[i], "glitch") == 0) {
+            glitch = 1;
+            continue;
+        }
         if (strncmp(argv[i], "text=", 5) == 0) {
             text_rgb = parse_rgb_hex(argv[i] + 5, text_rgb);
+            continue;
+        }
+        if (strncmp(argv[i], "image=", 6) == 0) {
+            image_path = argv[i] + 6;
             continue;
         }
     }
@@ -465,6 +626,14 @@ int main(int argc, char *argv[]) {
     }
     if (!noclear) {
         splash_clear(clear);
+    }
+
+    if (glitch) {
+        splash_glitch_brief();
+    }
+
+    if (image_path && image_path[0] != '\0') {
+        draw_png_centered(image_path);
     }
 
     if (logo) {

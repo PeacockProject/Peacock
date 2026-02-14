@@ -1,6 +1,6 @@
 [package]
 name = "peacock-splash"
-version = "1.0.0"
+version = "1.1.1"
 description = "Simple framebuffer splash screen utility for initramfs"
 
 [build]

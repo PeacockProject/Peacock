@@ -292,17 +292,6 @@ log "Holding splash for 3 seconds for visibility..."
 splash "Mounting root by label {{.RootLabel}}..." 2
 mkdir -p /new_root
 ROOT_DEV=""
-ROOT_STAGE_Y=3
-ROOT_STAGE_MAX=9
-root_stage() {
-    local msg="$1"
-    if [ "$ROOT_STAGE_Y" -le "$ROOT_STAGE_MAX" ]; then
-        splash "$msg" "$ROOT_STAGE_Y"
-    else
-        log "SPLASH-SKIP(y=$ROOT_STAGE_Y): $msg"
-    fi
-    ROOT_STAGE_Y=$((ROOT_STAGE_Y + 1))
-}
 find_root_by_label() {
     # On some downstream kernels, plain findfs can block on bad block nodes.
     # Bound runtime and continue with dynamic probing if lookup stalls.
@@ -318,7 +307,7 @@ find_root_by_label() {
 }
 
 # Try direct label lookup first, but never block boot if findfs stalls.
-root_stage "Root detect: label lookup..."
+splash "Root detect: label lookup..." 3
 find_root_by_label
 
 # Helpers for dynamic device discovery (no hardcoded partition numbers).
@@ -373,10 +362,9 @@ add_probe_candidates_from_container() {
     local cand=""
     base_dev="$(resolve_block_dev "$base_dev")"
     node="${base_dev##*/}"
-    # Probe root-like subpartitions first.
     for cand in \
-        "/dev/${node}p2" "/dev/${node}s1" "/dev/${node}p1" "/dev/${node}s0" \
-        "/dev/block/${node}p2" "/dev/block/${node}s1" "/dev/block/${node}p1" "/dev/block/${node}s0"; do
+        "/dev/${node}p1" "/dev/${node}p2" "/dev/${node}s0" "/dev/${node}s1" \
+        "/dev/block/${node}p1" "/dev/block/${node}p2" "/dev/block/${node}s0" "/dev/block/${node}s1"; do
         append_unique PROBE_DEVS "$cand"
     done
 }
@@ -799,7 +787,7 @@ setup_prp_like_subparts() {
 
 # If label lookup fails, dynamically discover userdata-like containers and ask kernel to expose subparts.
 if [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ]; then
-    root_stage "Root detect: container scan..."
+    splash "Root detect: container scan..." 3
     add_container_candidates
     if [ -n "$CONTAINERS" ]; then
         log "findfs failed, probing GPT container devices:${CONTAINERS}"
@@ -822,7 +810,7 @@ fi
 
 # Retry label lookup after dynamic rescans.
 if [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ]; then
-    root_stage "Root detect: label retry..."
+    splash "Root detect: label retry..." 3
     for i in 1 2 3 4 5 6; do
         find_root_by_label
         [ -n "$ROOT_DEV" ] && [ -b "$ROOT_DEV" ] && break
@@ -830,61 +818,11 @@ if [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ]; then
     done
 fi
 
-# Heuristic fallback: from discovered userdata-derived candidates, prefer root-like nodes.
-# This avoids expensive probe loops on kernels where some block ops can stall.
-if [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ]; then
-    root_stage "Root detect: candidate select..."
-    for dev in $PROBE_DEVS; do
-        [ -b "$dev" ] || continue
-        case "$dev" in
-            */mapper/*root*|*/mapper/*p2*|*loop*p2|*mmcblk*p2|*mmcblk*s1|*p2|*s1)
-                ROOT_DEV="$dev"
-                log "Using heuristic root candidate: $ROOT_DEV"
-                break
-                ;;
-        esac
-    done
-fi
 
-# Broader non-blocking fallback:
-# 1) strongly prefer nested userdata subpart roots (e.g. mmcblk0p29s1),
-# 2) then allow generic p2 fallback for non-nested images, but only if
-#    the partition is large enough to plausibly be a rootfs.
-if [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ]; then
-    root_stage "Root detect: proc scan..."
-    ROOT_DEV="$(
-        /bin/busybox awk '
-            function consider(name, sz, prio) {
-                if (prio > best_prio || (prio == best_prio && sz > best_sz)) {
-                    best_prio = prio
-                    best_sz = sz
-                    best = name
-                }
-            }
-            # Nested subpartitions from Android userdata containers:
-            # mmcblk0p29s1 (root), mmcblk0p29s0 (boot)
-            $4 ~ /^mmcblk[0-9]+p[0-9]+s[0-9]+$/ {
-                if ($4 ~ /s1$/) {
-                    consider($4, $3, 300)
-                }
-            }
-            # Generic Linux-style root partition fallback.
-            # /proc/partitions block count is KiB units. Require >= 256MiB.
-            $4 ~ /^mmcblk[0-9]+p[0-9]+$/ {
-                if ($4 ~ /p2$/ && $3 >= 262144) {
-                    consider($4, $3, 100)
-                }
-            }
-            END { if (best != "") print "/dev/" best }
-        ' /proc/partitions 2>/dev/null || true
-    )"
-    [ -n "$ROOT_DEV" ] && [ ! -b "$ROOT_DEV" ] && ROOT_DEV=""
-    [ -n "$ROOT_DEV" ] && log "Using /proc fallback root candidate: $ROOT_DEV"
-fi
 
 # If still unresolved, perform PRP-style userdata subpartition setup.
 if [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ]; then
-    root_stage "Root detect: PRP subparts..."
+    splash "Root detect: PRP subparts..." 3
     log "Entering PRP-subparts fallback"
     if setup_prp_like_subparts ""; then
         log "Using PRP-subparts root candidate: $ROOT_DEV"
@@ -896,7 +834,7 @@ fi
 # Deep ext4 probe intentionally disabled to avoid device-specific I/O hangs.
 # If no candidate was found above, we fail fast to shell below for interactive debugging.
 if [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ]; then
-    root_stage "Root detect: no candidate"
+    splash "Root detect: no candidate" 3
     log "No root candidate selected; skipping deep ext4 probe to avoid hangs"
 fi
 
@@ -911,7 +849,7 @@ if [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ]; then
     exec /bin/busybox sh
 fi
 
-root_stage "Found root device: $ROOT_DEV"
+splash "Found root device: $ROOT_DEV" 3
 bootlog_try_from_root "$ROOT_DEV" || true
 
 # Resize root filesystem to fill partition (if device is larger than image)
@@ -966,6 +904,21 @@ if [ -x /bin/peacock-splash ] && [ -n "$FBDEV" ]; then
 fi
 /bin/busybox mkdir -p /new_root/var/log 2>/dev/null || true
 echo "attempt $(date +%s) init={{.InitSystem}}" >> /new_root/var/log/peacock-switch-root.status 2>/dev/null || true
+
+handoff_flare() {
+    [ -x /bin/peacock-splash ] || return 0
+    [ -n "$FBDEV" ] || return 0
+    local img=""
+    for cand in /etc/peacock/conspiracy.png /conspiracy.png; do
+        [ -f "$cand" ] || continue
+        img="$cand"
+        break
+    done
+    [ -n "$img" ] || return 0
+    /bin/peacock-splash "" 0 "$FBDEV" 000000 noclear glitch "image=$img" textmode 2>&1 | while read line; do log "peacock-splash: $line"; done || true
+}
+
+handoff_flare
 
 # Flash 5x = about to switch_root
 flash_led 5 200
@@ -1493,6 +1446,27 @@ func Build(output string, cfg InitConfig) error {
 		}
 		if err := os.WriteFile(splashDest, splashInput, 0755); err != nil {
 			return fmt.Errorf("failed to write peacock-splash binary: %w", err)
+		}
+	}
+
+	// Optional handoff flare image used by initramfs right before root handover.
+	conspiracySrc := findFirstExisting([]string{
+		filepath.Join("conspiracy.png"),
+		filepath.Join("assets", "conspiracy.png"),
+		filepath.Join("prp", "assets", "conspiracy.png"),
+	})
+	if conspiracySrc != "" {
+		conspiracyDir := filepath.Join(tmpDir, "etc", "peacock")
+		if err := os.MkdirAll(conspiracyDir, 0755); err != nil {
+			return fmt.Errorf("failed to create conspiracy image dir: %w", err)
+		}
+		conspiracyInput, err := os.ReadFile(conspiracySrc)
+		if err != nil {
+			return fmt.Errorf("failed to read conspiracy image: %w", err)
+		}
+		conspiracyDst := filepath.Join(conspiracyDir, "conspiracy.png")
+		if err := os.WriteFile(conspiracyDst, conspiracyInput, 0644); err != nil {
+			return fmt.Errorf("failed to write conspiracy image: %w", err)
 		}
 	}
 
