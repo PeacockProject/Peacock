@@ -29,6 +29,11 @@ func (b *Builder) EnsureImageBuildChroot() (string, error) {
 		if err := chroot.MountWithSudo(root); err != nil {
 			fmt.Printf("Warning: failed to mount chroot filesystems: %v\n", err)
 		}
+		// Ensure required tooling is present even after partial/failed previous runs.
+		if err := b.installImageTools(root); err != nil {
+			chroot.UnmountWithSudo(root)
+			return "", fmt.Errorf("failed to install image tools: %w", err)
+		}
 		return root, nil
 	}
 
@@ -111,6 +116,18 @@ func (b *Builder) bootstrapImageChroot(root string) error {
 // installImageTools installs QEMU and image-building utilities
 func (b *Builder) installImageTools(root string) error {
 	fmt.Println("Installing image-building tools...")
+
+	// In this chroot setup, /proc/self/mounts does not always expose a usable "/"
+	// entry, so pacman's CheckSpace can fail with a false ENOSPC. Disable it here.
+	pacmanConf := filepath.Join(root, "etc", "pacman.conf")
+	disableCheckSpaceCmd := exec.Command(
+		"sudo", "sed", "-i", "-E", "s/^[[:space:]]*CheckSpace[[:space:]]*$/#CheckSpace/", pacmanConf,
+	)
+	disableCheckSpaceCmd.Stdout = runner.LogWriter()
+	disableCheckSpaceCmd.Stderr = runner.LogWriter()
+	if err := runner.RunCmd(disableCheckSpaceCmd); err != nil {
+		return fmt.Errorf("failed to update pacman.conf for image chroot: %w", err)
+	}
 
 	packages := []string{
 		"qemu-user-static",
