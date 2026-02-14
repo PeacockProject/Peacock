@@ -1,0 +1,3 @@
+[submodule "lk2nd_src"]
+	path = lk2nd_src
+	url = git@github.com:gAtrium/lk2nd-e53g.git

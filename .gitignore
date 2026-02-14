@@ -14,9 +14,8 @@ prp/out/
 # ----- Go -----
 vendor/
 
-# ----- Large upstream source trees (submodules or external) -----
+# ----- Large upstream source trees -----
 kernel-src/
-lk2nd_src/
 
 # ----- Cloned reference repos (each has their own .git) -----
 sddm/
