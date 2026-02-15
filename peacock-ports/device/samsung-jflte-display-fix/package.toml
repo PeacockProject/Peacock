@@ -227,21 +227,38 @@ CFG
 set -eu
 
 uid="$(id -u)"
+logf="${HOME:-/tmp}/.local/share/sddm/peacock-startxfce.log"
+mkdir -p "$(dirname "$logf")" 2>/dev/null || true
+{
+    echo "=== peacock-startxfce ==="
+    echo "uid=$uid user=${USER:-unknown}"
+    echo "date=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown)"
+} >> "$logf" 2>&1
 if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
     for cand in "/run/user/$uid" "/var/run/user/$uid" "/tmp/runtime-$uid"; do
         if mkdir -p "$cand" 2>/dev/null; then
             chmod 0700 "$cand" 2>/dev/null || true
             export XDG_RUNTIME_DIR="$cand"
+            echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR (created)" >> "$logf" 2>&1
             break
         fi
     done
+else
+    echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR (pre-set)" >> "$logf" 2>&1
+fi
+
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then
+    echo "launch=dbus-run-session startxfce4" >> "$logf" 2>&1
+    exec dbus-run-session -- /usr/bin/startxfce4 >> "$logf" 2>&1
 fi
 
 if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-launch >/dev/null 2>&1; then
-    exec dbus-launch --exit-with-session /usr/bin/startxfce4
+    echo "launch=dbus-launch --exit-with-session startxfce4" >> "$logf" 2>&1
+    exec dbus-launch --exit-with-session /usr/bin/startxfce4 >> "$logf" 2>&1
 fi
 
-exec /usr/bin/startxfce4
+echo "launch=startxfce4" >> "$logf" 2>&1
+exec /usr/bin/startxfce4 >> "$logf" 2>&1
 CFG
     chmod 0755 /usr/local/bin/peacock-startxfce
 
