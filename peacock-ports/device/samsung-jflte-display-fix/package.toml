@@ -1,6 +1,6 @@
 [package]
 name = "samsung-jflte-display-fix"
-version = "1.0.31"
+version = "1.0.32"
 description = "Samsung jflte OpenRC display preflight fix"
 depends = ["peacock-sddm-theme-peacock-phone"]
 
@@ -371,6 +371,20 @@ CFG
 </channel>
 CFG
 
+    # Phone-friendly XFCE scaling defaults.
+    cat > /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml <<'CFG'
+<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xsettings" version="1.0">
+  <property name="Xft" type="empty">
+    <property name="DPI" type="int" value="196608"/>
+  </property>
+  <property name="Gtk" type="empty">
+    <property name="CursorThemeSize" type="int" value="48"/>
+    <property name="WindowScalingFactor" type="int" value="2"/>
+  </property>
+</channel>
+CFG
+
     # Force existing users to compositing=off too; defaults alone won't override
     # already-created ~/.config/xfce4 profiles.
     for home in /home/*; do
@@ -395,6 +409,20 @@ CFG
 </channel>
 CFG_HOME
         fi
+        xset_cfg="$home/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml"
+        mkdir -p "$(dirname "$xset_cfg")"
+        cat > "$xset_cfg" <<'XSET_HOME'
+<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xsettings" version="1.0">
+  <property name="Xft" type="empty">
+    <property name="DPI" type="int" value="196608"/>
+  </property>
+  <property name="Gtk" type="empty">
+    <property name="CursorThemeSize" type="int" value="48"/>
+    <property name="WindowScalingFactor" type="int" value="2"/>
+  </property>
+</channel>
+XSET_HOME
         user_name="$(basename "$home")"
         chown -R "$user_name:$user_name" "$home/.config" 2>/dev/null || true
     done
