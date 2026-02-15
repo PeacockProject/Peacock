@@ -1,0 +1,300 @@
+[package]
+name = "samsung-jflte-debug-netssh"
+version = "1.0.0"
+description = "Debug helper: auto USB RNDIS + DHCP + SSH daemon (OpenRC)"
+
+[build]
+dependencies_openrc = [
+    "openrc",
+    "coreutils",
+    "iproute2",
+    "inetutils",
+    "busybox",
+    "openssh",
+    "shadow"
+]
+script = """
+set -e
+
+mkdir -p \
+    stage/usr/local/sbin \
+    stage/etc/init.d \
+    stage/etc/runlevels/boot \
+    stage/etc/runlevels/default \
+    stage/etc/peacock \
+    stage/etc/ssh
+
+cat > stage/etc/peacock/debug-rndis.conf <<'CFG'
+# Debug USB gadget network defaults (PRP-like)
+USB_MODE="rndis"
+RNDIS_ADDR="172.16.42.1/24"
+RNDIS_DHCP_START="172.16.42.20"
+RNDIS_DHCP_END="172.16.42.120"
+USB_ID_VENDOR="04E8"
+USB_ID_PRODUCT_RNDIS="6863"
+CFG
+
+cat > stage/etc/peacock/debug-ssh.conf <<'CFG'
+# Insecure on purpose for local debug images.
+SSHD_PORT="22"
+SSHD_LISTEN_ADDR="0.0.0.0"
+PERMIT_ROOT_LOGIN="yes"
+PASSWORD_AUTH="yes"
+PERMIT_EMPTY_PASSWORDS="yes"
+ALLOW_EMPTY_ROOT_PASSWORD="1"
+CFG
+
+cat > stage/usr/local/sbin/peacock-debug-rndis-up <<'EOF_RNDIS_UP'
+#!/bin/sh
+set -eu
+
+[ -f /etc/peacock/debug-rndis.conf ] && . /etc/peacock/debug-rndis.conf || true
+
+USB_MODE="${USB_MODE:-rndis}"
+RNDIS_ADDR="${RNDIS_ADDR:-172.16.42.1/24}"
+RNDIS_DHCP_START="${RNDIS_DHCP_START:-172.16.42.20}"
+RNDIS_DHCP_END="${RNDIS_DHCP_END:-172.16.42.120}"
+USB_ID_VENDOR="${USB_ID_VENDOR:-04E8}"
+USB_ID_PRODUCT_RNDIS="${USB_ID_PRODUCT_RNDIS:-6863}"
+
+logf="/var/log/peacock-debug-rndis.log"
+mkdir -p /var/log /run /tmp
+
+find_usb_base() {
+    for p in /sys/class/android_usb/android0 /sys/devices/virtual/android_usb/android0 /sys/devices/virtual/usb_composite/*; do
+        if [ -d "$p" ] && [ -e "$p/enable" ] && [ -e "$p/functions" ]; then
+            echo "$p"
+            return 0
+        fi
+    done
+    return 1
+}
+
+sys_write() {
+    local p="$1" v="$2"
+    [ -e "$p" ] || return 1
+    echo "$v" > "$p" 2>/dev/null || return 1
+    return 0
+}
+
+usb_base="$(find_usb_base || true)"
+if [ -z "$usb_base" ]; then
+    echo "rndis: android_usb path missing" >> "$logf"
+    exit 0
+fi
+
+sys_write "$usb_base/enable" 0 || true
+sys_write "$usb_base/idVendor" "$USB_ID_VENDOR" || true
+sys_write "$usb_base/idProduct" "$USB_ID_PRODUCT_RNDIS" || true
+sys_write "$usb_base/iManufacturer" "Peacock" || true
+sys_write "$usb_base/iProduct" "Peacock Debug" || true
+sys_write "$usb_base/iSerial" "PEACOCK-JFLTE-DEBUG" || true
+
+case "$USB_MODE" in
+    rndis)
+        sys_write "$usb_base/f_rndis/wceis" "1" || true
+        sys_write "$usb_base/functions" "rndis" || true
+        ;;
+    *)
+        sys_write "$usb_base/functions" "$USB_MODE" || true
+        ;;
+esac
+
+/sbin/mdev -s >/dev/null 2>&1 || true
+sys_write "$usb_base/enable" 1 || true
+sleep 1
+
+net_if=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    for p in usb0 USB0 rndis0 RNDIS0 eth0 ETH0; do
+        if [ -d "/sys/class/net/$p" ] || [ -L "/sys/class/net/$p" ]; then
+            net_if="$p"
+            break
+        fi
+    done
+    [ -n "$net_if" ] && break
+    sleep 1
+done
+
+if [ -z "$net_if" ]; then
+    echo "rndis: no net iface" >> "$logf"
+    exit 0
+fi
+
+echo "$net_if" > /run/peacock-debug-rndis.if
+
+ipbin="$(command -v ip || true)"
+if [ -n "$ipbin" ]; then
+    "$ipbin" link set "$net_if" up >/dev/null 2>&1 || true
+    "$ipbin" addr flush dev "$net_if" >/dev/null 2>&1 || true
+    "$ipbin" addr add "$RNDIS_ADDR" dev "$net_if" >/dev/null 2>&1 || true
+else
+    ifconfig "$net_if" "${RNDIS_ADDR%/*}" netmask 255.255.255.0 up >/dev/null 2>&1 || true
+fi
+
+echo "rndis: if=$net_if ip=$RNDIS_ADDR" >> "$logf"
+
+udhcpd_bin=""
+if command -v udhcpd >/dev/null 2>&1; then
+    udhcpd_bin="$(command -v udhcpd)"
+elif command -v busybox >/dev/null 2>&1 && busybox --list 2>/dev/null | grep -qx udhcpd; then
+    udhcpd_bin="$(command -v busybox) udhcpd"
+fi
+
+if [ -n "$udhcpd_bin" ]; then
+    cat > /run/peacock-debug-udhcpd.conf <<CFG
+start $RNDIS_DHCP_START
+end $RNDIS_DHCP_END
+interface $net_if
+option subnet 255.255.255.0
+option router ${RNDIS_ADDR%/*}
+option dns ${RNDIS_ADDR%/*}
+option lease 3600
+pidfile /run/peacock-debug-udhcpd.pid
+lease_file /run/peacock-debug-udhcpd.leases
+CFG
+
+    if [ -f /run/peacock-debug-udhcpd.pid ]; then
+        kill "$(cat /run/peacock-debug-udhcpd.pid 2>/dev/null || true)" >/dev/null 2>&1 || true
+        rm -f /run/peacock-debug-udhcpd.pid
+    fi
+
+    # shellcheck disable=SC2086
+    sh -c "$udhcpd_bin -f /run/peacock-debug-udhcpd.conf" >> "$logf" 2>&1 &
+    sleep 1
+    if [ -f /run/peacock-debug-udhcpd.pid ]; then
+        echo "rndis: dhcp up" >> "$logf"
+    else
+        echo "rndis: dhcp failed" >> "$logf"
+    fi
+fi
+
+exit 0
+EOF_RNDIS_UP
+
+cat > stage/usr/local/sbin/peacock-debug-rndis-down <<'EOF_RNDIS_DOWN'
+#!/bin/sh
+set -eu
+
+if [ -f /run/peacock-debug-udhcpd.pid ]; then
+    kill "$(cat /run/peacock-debug-udhcpd.pid 2>/dev/null || true)" >/dev/null 2>&1 || true
+    rm -f /run/peacock-debug-udhcpd.pid
+fi
+
+if [ -f /run/peacock-debug-rndis.if ]; then
+    net_if="$(cat /run/peacock-debug-rndis.if 2>/dev/null || true)"
+    if [ -n "$net_if" ] && command -v ip >/dev/null 2>&1; then
+        ip addr flush dev "$net_if" >/dev/null 2>&1 || true
+    fi
+fi
+
+exit 0
+EOF_RNDIS_DOWN
+
+chmod 0755 stage/usr/local/sbin/peacock-debug-rndis-up stage/usr/local/sbin/peacock-debug-rndis-down
+
+cat > stage/etc/init.d/peacock-debug-rndis <<'EOF_RNDIS_SVC'
+#!/sbin/openrc-run
+description="Peacock debug USB RNDIS network (PRP-style)"
+
+command="/usr/local/sbin/peacock-debug-rndis-up"
+
+start() {
+    ebegin "Configuring debug USB RNDIS"
+    ${command} >/dev/null 2>&1
+    eend $?
+}
+
+stop() {
+    ebegin "Stopping debug USB RNDIS"
+    /usr/local/sbin/peacock-debug-rndis-down >/dev/null 2>&1
+    eend 0
+}
+
+depend() {
+    need localmount devfs
+    after modules
+    before net
+}
+EOF_RNDIS_SVC
+
+cat > stage/usr/local/sbin/peacock-debug-sshd-prepare <<'EOF_SSH_PREP'
+#!/bin/sh
+set -eu
+
+[ -f /etc/peacock/debug-ssh.conf ] && . /etc/peacock/debug-ssh.conf || true
+
+SSHD_PORT="${SSHD_PORT:-22}"
+SSHD_LISTEN_ADDR="${SSHD_LISTEN_ADDR:-0.0.0.0}"
+PERMIT_ROOT_LOGIN="${PERMIT_ROOT_LOGIN:-yes}"
+PASSWORD_AUTH="${PASSWORD_AUTH:-yes}"
+PERMIT_EMPTY_PASSWORDS="${PERMIT_EMPTY_PASSWORDS:-yes}"
+ALLOW_EMPTY_ROOT_PASSWORD="${ALLOW_EMPTY_ROOT_PASSWORD:-1}"
+
+mkdir -p /run/sshd /var/log /etc/ssh
+chmod 0755 /run/sshd
+
+# PTY support for interactive shells.
+mkdir -p /dev/pts 2>/dev/null || true
+if mountpoint -q /dev/pts; then
+    mount -o remount,gid=5,mode=0620,ptmxmode=0666 /dev/pts >/dev/null 2>&1 || true
+else
+    mount -t devpts devpts /dev/pts -o gid=5,mode=0620,ptmxmode=0666 >/dev/null 2>&1 || true
+fi
+[ -e /dev/ptmx ] || ln -sf pts/ptmx /dev/ptmx
+chmod 0666 /dev/ptmx >/dev/null 2>&1 || true
+
+if [ "$ALLOW_EMPTY_ROOT_PASSWORD" = "1" ]; then
+    passwd -d root >/dev/null 2>&1 || true
+fi
+
+if ! ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then
+    ssh-keygen -A >/dev/null 2>&1 || true
+fi
+
+cat > /etc/ssh/sshd_config_peacock_debug <<CFG
+Port $SSHD_PORT
+ListenAddress $SSHD_LISTEN_ADDR
+Protocol 2
+PidFile /run/peacock-debug-sshd.pid
+PermitRootLogin $PERMIT_ROOT_LOGIN
+PasswordAuthentication $PASSWORD_AUTH
+PermitEmptyPasswords $PERMIT_EMPTY_PASSWORDS
+ChallengeResponseAuthentication no
+UsePAM no
+PermitTTY yes
+X11Forwarding no
+AllowTcpForwarding yes
+UseDNS no
+Subsystem sftp internal-sftp
+CFG
+
+exit 0
+EOF_SSH_PREP
+
+chmod 0755 stage/usr/local/sbin/peacock-debug-sshd-prepare
+
+cat > stage/etc/init.d/peacock-debug-sshd <<'EOF_SSHD_SVC'
+#!/sbin/openrc-run
+description="Peacock debug SSH daemon"
+
+command="/usr/sbin/sshd"
+command_args="-D -f /etc/ssh/sshd_config_peacock_debug -E /var/log/peacock-debug-sshd.log"
+command_background="yes"
+pidfile="/run/peacock-debug-sshd.pid"
+
+start_pre() {
+    /usr/local/sbin/peacock-debug-sshd-prepare
+}
+
+depend() {
+    need localmount
+    after peacock-debug-rndis net
+}
+EOF_SSHD_SVC
+
+chmod 0755 stage/etc/init.d/peacock-debug-rndis stage/etc/init.d/peacock-debug-sshd
+ln -sf /etc/init.d/peacock-debug-rndis stage/etc/runlevels/boot/peacock-debug-rndis
+ln -sf /etc/init.d/peacock-debug-rndis stage/etc/runlevels/default/peacock-debug-rndis
+ln -sf /etc/init.d/peacock-debug-sshd stage/etc/runlevels/default/peacock-debug-sshd
+"""
