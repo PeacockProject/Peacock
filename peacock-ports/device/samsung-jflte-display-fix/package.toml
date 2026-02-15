@@ -1,6 +1,6 @@
 [package]
 name = "samsung-jflte-display-fix"
-version = "1.0.19"
+version = "1.0.20"
 description = "Samsung jflte OpenRC display preflight fix"
 
 [build]
@@ -217,6 +217,41 @@ Current=peacock-phone
 ServerArguments=-nolisten tcp -noreset -keeptty -verbose 4 -logfile /var/log/Xorg.0.log -extension GLX -extension COMPOSITE -extension DAMAGE -extension MIT-SHM
 EnableHiDPI=false
 CFG
+
+    # OpenRC userspace fallback for XFCE sessions under SDDM:
+    # ensure runtime dir + DBus session are present even when PAM/logind
+    # propagation is incomplete on this device.
+    checkpath -d -m 0755 /usr/local/bin
+    cat > /usr/local/bin/peacock-startxfce <<'CFG'
+#!/bin/sh
+set -eu
+
+uid="$(id -u)"
+if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+    for cand in "/run/user/$uid" "/var/run/user/$uid" "/tmp/runtime-$uid"; do
+        if mkdir -p "$cand" 2>/dev/null; then
+            chmod 0700 "$cand" 2>/dev/null || true
+            export XDG_RUNTIME_DIR="$cand"
+            break
+        fi
+    done
+fi
+
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-launch >/dev/null 2>&1; then
+    exec dbus-launch --exit-with-session /usr/bin/startxfce4
+fi
+
+exec /usr/bin/startxfce4
+CFG
+    chmod 0755 /usr/local/bin/peacock-startxfce
+
+    if [ -f /usr/share/xsessions/xfce.desktop ]; then
+        sed -i 's|^Exec=.*|Exec=/usr/local/bin/peacock-startxfce|' /usr/share/xsessions/xfce.desktop
+    fi
+
+    if [ -f /etc/X11/xinit/xinitrc.d/80-dbus.sh ]; then
+        chmod 0755 /etc/X11/xinit/xinitrc.d/80-dbus.sh || true
+    fi
 
     # Avoid VT races between OpenRC getty services and display managers.
     rm -f /etc/runlevels/default/agetty.tty1 \
