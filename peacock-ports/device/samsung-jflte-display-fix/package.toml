@@ -1,6 +1,6 @@
 [package]
 name = "samsung-jflte-display-fix"
-version = "1.0.33"
+version = "1.0.34"
 description = "Samsung jflte OpenRC display preflight fix"
 depends = ["peacock-sddm-theme-peacock-phone"]
 
@@ -376,11 +376,11 @@ CFG
 <?xml version="1.0" encoding="UTF-8"?>
 <channel name="xsettings" version="1.0">
   <property name="Xft" type="empty">
-    <property name="DPI" type="int" value="196608"/>
+    <property name="DPI" type="int" value="122880"/>
   </property>
   <property name="Gtk" type="empty">
-    <property name="CursorThemeSize" type="int" value="48"/>
-    <property name="WindowScalingFactor" type="int" value="2"/>
+    <property name="CursorThemeSize" type="int" value="32"/>
+    <property name="WindowScalingFactor" type="int" value="1"/>
   </property>
 </channel>
 CFG
@@ -415,11 +415,11 @@ CFG_HOME
 <?xml version="1.0" encoding="UTF-8"?>
 <channel name="xsettings" version="1.0">
   <property name="Xft" type="empty">
-    <property name="DPI" type="int" value="196608"/>
+    <property name="DPI" type="int" value="122880"/>
   </property>
   <property name="Gtk" type="empty">
-    <property name="CursorThemeSize" type="int" value="48"/>
-    <property name="WindowScalingFactor" type="int" value="2"/>
+    <property name="CursorThemeSize" type="int" value="32"/>
+    <property name="WindowScalingFactor" type="int" value="1"/>
   </property>
 </channel>
 XSET_HOME
@@ -553,6 +553,27 @@ NoDisplay=true
 CFG
 
     # Provide a dedicated launcher target for panel/app menu.
+    cat > /usr/local/bin/peacock-fastfetch-terminal <<'CFG'
+#!/bin/sh
+logf="${HOME:-/tmp}/.local/share/sddm/peacock-fastfetch-launch.log"
+mkdir -p "$(dirname "$logf")" 2>/dev/null || true
+{
+    echo "=== fastfetch launch $(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown) ==="
+    echo "DISPLAY=${DISPLAY:-unset} XAUTHORITY=${XAUTHORITY:-unset}"
+} >> "$logf" 2>&1
+
+if command -v xfce4-terminal >/dev/null 2>&1; then
+    exec xfce4-terminal --title=Fastfetch --hold --command=fastfetch >> "$logf" 2>&1
+fi
+
+if command -v xterm >/dev/null 2>&1; then
+    exec xterm -hold -e fastfetch >> "$logf" 2>&1
+fi
+
+exit 127
+CFG
+    chmod 0755 /usr/local/bin/peacock-fastfetch-terminal
+
     checkpath -d -m 0755 /usr/share/applications
     cat > /usr/share/applications/peacock-fastfetch.desktop <<'CFG'
 [Desktop Entry]
@@ -560,7 +581,7 @@ Version=1.0
 Type=Application
 Name=Fastfetch
 Comment=Show system information
-Exec=xfce4-terminal --title=Fastfetch --hold --command=fastfetch
+Exec=/usr/local/bin/peacock-fastfetch-terminal
 Icon=utilities-terminal
 Terminal=false
 Categories=System;Utility;X-XFCE;
@@ -627,7 +648,7 @@ Version=1.0
 Type=Application
 Name=Fastfetch
 Comment=Show system information
-Exec=xfce4-terminal --title=Fastfetch --hold --command=fastfetch
+Exec=/usr/local/bin/peacock-fastfetch-terminal
 Icon=utilities-terminal
 Terminal=false
 Categories=System;Utility;X-XFCE;
