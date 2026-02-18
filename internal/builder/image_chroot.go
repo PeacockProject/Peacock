@@ -484,7 +484,7 @@ func isMountPoint(path string) bool {
 
 // CreateDiskImage creates a bootable disk image from a populated rootfs
 // This creates partitions, filesystems, and copies the rootfs contents
-func (b *Builder) CreateDiskImage(imageChrootRoot, rootfsPath, outputPath string, sizeM int, deviceName string) error {
+func (b *Builder) CreateDiskImage(imageChrootRoot, rootfsPath, outputPath string, sizeM int, legacyRootfsExt4 bool) error {
 	fmt.Printf("Creating disk image: %s (%dMB)\n", outputPath, sizeM)
 
 	// Create empty image file
@@ -510,7 +510,7 @@ func (b *Builder) CreateDiskImage(imageChrootRoot, rootfsPath, outputPath string
 	// Format partitions
 	bootPart := loopDevice + "p1"
 	rootPart := loopDevice + "p2"
-	if err := b.formatPartitions(bootPart, rootPart, deviceName); err != nil {
+	if err := b.formatPartitions(bootPart, rootPart, legacyRootfsExt4); err != nil {
 		return fmt.Errorf("failed to format partitions: %w", err)
 	}
 
@@ -605,7 +605,7 @@ func (b *Builder) partitionDisk(device string) error {
 }
 
 // formatPartitions creates FAT32 boot and ext4 root filesystems
-func (b *Builder) formatPartitions(bootPart, rootPart, deviceName string) error {
+func (b *Builder) formatPartitions(bootPart, rootPart string, legacyRootfsExt4 bool) error {
 	fmt.Println("Formatting partitions...")
 
 	// Format boot partition as ext2 so lk2nd can mount/read extlinux directly.
@@ -620,10 +620,9 @@ func (b *Builder) formatPartitions(bootPart, rootPart, deviceName string) error 
 		"mkfs.ext4",
 		"-L", "ROOT",
 	}
-	// jflte uses a 3.4-era kernel that can't mount modern ext4 defaults
-	// (metadata_csum, 64bit, orphan_file). Keep that compatibility quirk
-	// scoped to jflte only.
-	if isJflteDevice(deviceName) {
+	// Some downstream kernels cannot mount modern ext4 defaults.
+	// When requested by a device quirk, keep legacy-compatible features.
+	if legacyRootfsExt4 {
 		rootArgs = append(rootArgs, "-O", "^metadata_csum,^metadata_csum_seed,^64bit,^orphan_file")
 	}
 	rootArgs = append(rootArgs, "-E", "lazy_itable_init=0,lazy_journal_init=0", rootPart)
@@ -635,15 +634,6 @@ func (b *Builder) formatPartitions(bootPart, rootPart, deviceName string) error 
 	}
 
 	return nil
-}
-
-func isJflteDevice(deviceName string) bool {
-	switch strings.ToLower(strings.TrimSpace(deviceName)) {
-	case "jflte", "samsung-jflte":
-		return true
-	default:
-		return false
-	}
 }
 
 // copyRootfsToImage mounts partitions and copies rootfs contents

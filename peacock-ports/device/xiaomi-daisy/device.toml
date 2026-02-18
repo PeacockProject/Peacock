@@ -18,3 +18,5 @@ tags_offset = "0x00000100"
 [quirks]
 keep_fb_refresher_with_dm = false
 xorg_force_vt1 = true
+use_fb_refresher = false
+legacy_rootfs_ext4 = false

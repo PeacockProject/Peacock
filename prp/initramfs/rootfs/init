@@ -1447,6 +1447,7 @@ mount_subparts() {
   local fdisk_root_start=""
   local fdisk_root_sectors=""
   local fdisk_line=""
+  local alias_bases=""
 
   mkdir -p /tmp "$PEACOCK_BOOT_MNT" "$PEACOCK_ROOT_MNT"
   {
@@ -1548,8 +1549,16 @@ mount_subparts() {
 
   $BB umount "$PEACOCK_BOOT_MNT" 2>/dev/null || true
   $BB umount "$PEACOCK_ROOT_MNT" 2>/dev/null || true
-  rm -f "${userdata_dev}s0" "${userdata_dev}s1" /dev/mmcblk0p29s0 /dev/mmcblk0p29s1 \
-    /dev/block/mmcblk0p29s0 /dev/block/mmcblk0p29s1 2>/dev/null || true
+  alias_bases="$userdata_dev"
+  for cand in $USERDATA_DEV_HINT; do
+    case " $alias_bases " in
+      *" $cand "*) ;;
+      *) alias_bases="$alias_bases $cand" ;;
+    esac
+  done
+  for base in $alias_bases; do
+    rm -f "${base}s0" "${base}s1" 2>/dev/null || true
+  done
 
   # Try kernel-native nested-partition exposure first (no loop-on-block required).
   if $BB --list 2>/dev/null | $BB grep -qx partprobe; then
@@ -1588,7 +1597,7 @@ mount_subparts() {
   [ -n "$root_src" ] && echo "kernel_subpart root=$root_src" >> "$logf"
 
   # Preferred fallback on this kernel: device-mapper linear mappings.
-  # This avoids loop-on-block I/O errors seen on jflte recovery kernels.
+  # This avoids loop-on-block I/O errors seen on some recovery kernels.
   for cand in /sbin/dmsetup /usr/sbin/dmsetup /usr/bin/dmsetup /bin/dmsetup; do
     [ -x "$cand" ] || continue
     dmsetup_cmd="$cand"
@@ -1712,7 +1721,7 @@ mount_subparts() {
   fi
 
   # Create aliases from discovered partition mappings.
-  for base in "$userdata_dev" "/dev/mmcblk0p29" "/dev/block/mmcblk0p29"; do
+  for base in $alias_bases; do
     [ -n "$base" ] || continue
     [ -e "$base" ] || continue
     [ -n "$boot_src" ] && [ -b "$boot_src" ] && ln -snf "$boot_src" "${base}s0" 2>/dev/null || true

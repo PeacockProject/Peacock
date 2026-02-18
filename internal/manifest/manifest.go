@@ -19,6 +19,8 @@ type Device struct {
 	Quirks struct {
 		KeepFbRefresherWithDM bool `toml:"keep_fb_refresher_with_dm"`
 		XorgForceVT1          bool `toml:"xorg_force_vt1"`
+		UseFbRefresher        bool `toml:"use_fb_refresher"`
+		LegacyRootfsExt4      bool `toml:"legacy_rootfs_ext4"`
 	} `toml:"quirks"`
 
 	Boot struct {

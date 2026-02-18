@@ -245,11 +245,8 @@ This process involves:
 					pkgs = append(pkgs, dep)
 				}
 				depPackagePaths[depPkg.Package.Name] = artifactPath
-				if depPkg.Package.Name == "linux-samsung-jflte" {
-					zImagePath := filepath.Join(buildDirHint, "zImage")
-					if fileExists(buildDirHint) && fileExistsFile(zImagePath) {
-						depBuildDirs[depPkg.Package.Name] = buildDirHint
-					}
+				if strings.HasPrefix(depPkg.Package.Name, "linux-") && fileExists(buildDirHint) && kernelArtifactExists(buildDirHint) {
+					depBuildDirs[depPkg.Package.Name] = buildDirHint
 				}
 				return nil
 			}
@@ -509,7 +506,7 @@ This process involves:
 		}
 
 		refresherPath := ""
-		useFBRefresher := deviceName == "jflte" || deviceName == "samsung-jflte"
+		useFBRefresher := dev.Quirks.UseFbRefresher
 		if useFBRefresher {
 			if cachedDir, ok := depBuildDirs["msm-fb-refresher"]; ok {
 				candidate := filepath.Join(cachedDir, "usr", "bin", "msm-fb-refresher")
@@ -1015,7 +1012,7 @@ fi
 		}
 
 		if kernelImagePath != "" && fileExistsFile(initramfsPath) {
-			dtbPath := discoverKernelDTB(kernelBuildDir)
+			dtbPath := discoverKernelDTB(kernelBuildDir, deviceName)
 			fmt.Println("Staging extlinux boot assets into rootfs /boot...")
 			if err := stageExtlinuxBootAssets(rootfsPath, kernelImagePath, initramfsPath, dev.Boot.Cmdline, dtbPath); err != nil {
 				fmt.Printf("Error staging extlinux boot assets: %v\n", err)
@@ -1032,7 +1029,7 @@ fi
 			imageSizeMB = estimateImageSizeMB(rootfsPath)
 			fmt.Printf("Auto image size: %dMB\n", imageSizeMB)
 		}
-		if err := b.CreateDiskImage(imageChrootRoot, rootfsPath, imagePath, imageSizeMB, deviceName); err != nil {
+		if err := b.CreateDiskImage(imageChrootRoot, rootfsPath, imagePath, imageSizeMB, dev.Quirks.LegacyRootfsExt4); err != nil {
 			fmt.Printf("Error creating disk image: %v\n", err)
 			fatal()
 		}
@@ -1145,7 +1142,50 @@ func decodeMountInfoPath(path string) string {
 	return b.String()
 }
 
-func discoverKernelDTB(kernelBuildDir string) string {
+func kernelArtifactExists(buildDir string) bool {
+	if buildDir == "" {
+		return false
+	}
+	candidates := []string{
+		filepath.Join(buildDir, "zImage"),
+		filepath.Join(buildDir, "Image.gz"),
+		filepath.Join(buildDir, "Image"),
+		filepath.Join(buildDir, "arch", "arm", "boot", "zImage"),
+		filepath.Join(buildDir, "arch", "arm64", "boot", "Image.gz"),
+		filepath.Join(buildDir, "arch", "arm64", "boot", "Image"),
+	}
+	for _, p := range candidates {
+		if fileExistsFile(p) {
+			return true
+		}
+	}
+	return false
+}
+
+func dtbPreferenceTokens(deviceName string) []string {
+	deviceName = strings.ToLower(strings.TrimSpace(deviceName))
+	if deviceName == "" {
+		return nil
+	}
+	raw := strings.FieldsFunc(deviceName, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	})
+	seen := map[string]bool{}
+	out := make([]string, 0, len(raw)+1)
+	for _, t := range raw {
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	if !seen[deviceName] {
+		out = append(out, deviceName)
+	}
+	return out
+}
+
+func discoverKernelDTB(kernelBuildDir, deviceName string) string {
 	if kernelBuildDir == "" {
 		return ""
 	}
@@ -1157,7 +1197,9 @@ func discoverKernelDTB(kernelBuildDir string) string {
 	}
 
 	first := ""
-	preferred := ""
+	best := ""
+	bestScore := 0
+	tokens := dtbPreferenceTokens(deviceName)
 	for _, root := range roots {
 		if !fileExists(root) {
 			continue
@@ -1172,15 +1214,25 @@ func discoverKernelDTB(kernelBuildDir string) string {
 			if first == "" {
 				first = path
 			}
+			if len(tokens) == 0 {
+				return nil
+			}
 			lowerName := strings.ToLower(info.Name())
-			if strings.Contains(lowerName, "jflte") || strings.Contains(lowerName, "msm8960") {
-				preferred = path
+			score := 0
+			for _, token := range tokens {
+				if strings.Contains(lowerName, token) {
+					score++
+				}
+			}
+			if score > bestScore {
+				bestScore = score
+				best = path
 			}
 			return nil
 		})
-		if preferred != "" {
-			return preferred
-		}
+	}
+	if best != "" {
+		return best
 	}
 	return first
 }
