@@ -13,6 +13,7 @@ require_cmd curl
 require_cmd tar
 require_cmd zig
 require_cmd find
+require_cmd python3
 
 load_config "$CFG"
 mkdir -p "$OUT_DIR"
@@ -24,8 +25,8 @@ LVD_URL="https://codeload.github.com/lvgl/lv_drivers/tar.gz/refs/heads/${LVD_REF
 
 TOOLS_DIR="$OUT_DIR/tools"
 SRC_DIR="$TOOLS_DIR/gui-src"
-BUILD_DIR="$TOOLS_DIR/gui-build/armv7"
-OUT_BIN_DIR="$TOOLS_DIR/gui-out/armv7"
+BUILD_DIR="$TOOLS_DIR/gui-build/${TARGET_ARCH}"
+OUT_BIN_DIR="$TOOLS_DIR/gui-out/${TARGET_ARCH}"
 
 mkdir -p "$SRC_DIR" "$BUILD_DIR" "$OUT_BIN_DIR"
 
@@ -59,8 +60,26 @@ if [[ ! -d "$LVD_DIR" ]]; then
   fi
 fi
 
+# lv_drivers v8.3 evdev has an ABS_MT_TRACKING_ID handling bug:
+# it only marks press when tracking_id == 0. Real devices often use non-zero IDs.
+# Patch it to treat any non-negative tracking_id as pressed.
+EVDEV_SRC="$LVD_DIR/indev/evdev.c"
+if [[ -f "$EVDEV_SRC" ]]; then
+  python3 - "$EVDEV_SRC" <<'PY'
+import re, sys
+p = sys.argv[1]
+s = open(p, "r", encoding="utf-8").read()
+s2 = re.sub(r"else if\(in\.value == 0\)\s*evdev_button = LV_INDEV_STATE_PR;",
+            "else if(in.value != -1)\n                                    evdev_button = LV_INDEV_STATE_PR;",
+            s, count=1)
+if s2 != s:
+    open(p, "w", encoding="utf-8").write(s2)
+PY
+fi
+
 OUT_BIN="$OUT_BIN_DIR/prp-gui"
 if [[ -f "$OUT_BIN" \
+  && "$OUT_BIN" -nt "$SCRIPT_DIR/build-gui.sh" \
   && "$OUT_BIN" -nt "$PRP_ROOT/gui/prp_gui.c" \
   && "$OUT_BIN" -nt "$PRP_ROOT/gui/prp_fbdev.c" \
   && "$OUT_BIN" -nt "$PRP_ROOT/gui/prp_fbdev.h" \
@@ -74,7 +93,7 @@ if [[ -f "$OUT_BIN" \
   exit 0
 fi
 
-echo "gui: building prp-gui (static ARMv7 musl)"
+echo "gui: building prp-gui (static ${TARGET_ARCH} ${ZIG_TARGET})"
 
 # Canonicalize for symlinks (so the include tree doesn't end up with broken relative links).
 LVGL_ABS="$(cd "$LVGL_DIR" && pwd)"
@@ -111,7 +130,7 @@ INCS=(
   "-I$INC_ROOT/lv_drivers/indev"
 )
 
-zig cc -target arm-linux-musleabihf -static -Os -ffunction-sections -fdata-sections \
+zig cc -target "$ZIG_TARGET" -static -Os -ffunction-sections -fdata-sections \
   -Wl,--gc-sections -std=c99 -D_GNU_SOURCE \
   -DLV_CONF_INCLUDE_SIMPLE=1 \
   "${INCS[@]}" \

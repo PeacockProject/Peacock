@@ -19,10 +19,18 @@ mkdir -p "$OUT_DIR"
 
 OVERLAY_SIZE_MB="${OVERLAY_SIZE_MB:-60}"
 OVERLAY_LABEL="${OVERLAY_LABEL:-PRP_ROOTFS}"
-# Legacy kernels (like 3.4 on jflte) can't mount modern ext4 features.
-# Keep the overlay image maximally compatible.
-# Note: e2fsprogs 1.47+ enables `orphan_file` by default, which old kernels can't mount.
-OVERLAY_EXT4_OPTS="${OVERLAY_EXT4_OPTS:--O ^metadata_csum,^metadata_csum_seed,^64bit,^orphan_file -E lazy_itable_init=0,lazy_journal_init=0}"
+# jflte's 3.4 kernel can't mount modern ext4 features (metadata_csum/64bit/orphan_file).
+# Keep those feature masks device-specific so modern devices get normal ext4 defaults.
+if [[ -z "${OVERLAY_EXT4_OPTS+x}" ]]; then
+  case "$TARGET_NAME" in
+    jflte|samsung-jflte)
+      OVERLAY_EXT4_OPTS="-O ^metadata_csum,^metadata_csum_seed,^64bit,^orphan_file -E lazy_itable_init=0,lazy_journal_init=0"
+      ;;
+    *)
+      OVERLAY_EXT4_OPTS="-E lazy_itable_init=0,lazy_journal_init=0"
+      ;;
+  esac
+fi
 
 STAGE_DIR="$OUT_DIR/overlay-stage"
 IMG="$OUT_DIR/prp-rootfs.img"
@@ -65,6 +73,17 @@ if [[ ! -f "$STAGE_DIR/etc/prp-gui.conf" ]]; then
 
 SCALE=100
 EOF
+fi
+
+# Device-profile GUI input overrides.
+if [[ -n "${GUI_POWER_INPUT:-}" ]]; then
+  printf '\nPOWER_INPUT=%s\n' "$GUI_POWER_INPUT" >> "$STAGE_DIR/etc/prp-gui.conf"
+fi
+if [[ -n "${GUI_POWER_HINT:-}" ]]; then
+  printf 'POWER_HINT=%s\n' "$GUI_POWER_HINT" >> "$STAGE_DIR/etc/prp-gui.conf"
+fi
+if [[ -n "${GUI_POWER_CODE:-}" ]]; then
+  printf 'POWER_CODE=%s\n' "$GUI_POWER_CODE" >> "$STAGE_DIR/etc/prp-gui.conf"
 fi
 
 # Optional AppBar logo. Put header_logo.png in repo root or prp/overlay assets.
@@ -155,8 +174,8 @@ for u in /sys/class/block/mmcblk0* /sys/class/block/loop* /sys/class/block/sd*; 
   printf '%-14s %-12s %-8s %s\n' "$n" "$t" "$mib" "${lbl:-"-"}"
 done
 
-# Nested-partition aliases (exported by init as /dev/mmcblk0p29s* -> /dev/loopXpN).
-for a in /dev/mmcblk0p29s* /dev/block/mmcblk0p29s*; do
+# Nested-partition aliases (exported by init as /dev/mmcblk*p*s* -> /dev/loopXpN).
+for a in /dev/mmcblk*p*s* /dev/block/mmcblk*p*s*; do
   [ -L "$a" ] || continue
   n="${a##*/}"
   r="$("/sbin/busybox" readlink -f "$a" 2>/dev/null || true)"
@@ -184,15 +203,26 @@ exec /usr/bin/prp-partlist
 EOF
 chmod +x "$STAGE_DIR/usr/bin/fdisk"
 
-# SSH server + scp (static ARMv7).
-"$SCRIPT_DIR/build-dropbear.sh" "$CFG" "$OUT_DIR"
-cp -a "$OUT_DIR/tools/dropbear-out/armv7/dropbear" "$STAGE_DIR/usr/sbin/dropbear"
-cp -a "$OUT_DIR/tools/dropbear-out/armv7/dropbearkey" "$STAGE_DIR/usr/sbin/dropbearkey"
-cp -a "$OUT_DIR/tools/dropbear-out/armv7/scp" "$STAGE_DIR/usr/bin/scp"
-chmod +x "$STAGE_DIR/usr/sbin/dropbear" "$STAGE_DIR/usr/sbin/dropbearkey" "$STAGE_DIR/usr/bin/scp"
+VENDOR_RUNTIME="$PRP_ROOT/vendor/$TARGET_NAME/rootfs-runtime"
+# SSH server + ssh/scp client bits.
+# Prefer distro/runtime binaries synced from the target rootfs; fall back to
+# local static cross-build when unavailable.
+if [[ -x "$VENDOR_RUNTIME/usr/sbin/dropbear" && -x "$VENDOR_RUNTIME/usr/sbin/dropbearkey" ]]; then
+  cp -a "$VENDOR_RUNTIME/usr/sbin/dropbear" "$STAGE_DIR/usr/sbin/dropbear"
+  cp -a "$VENDOR_RUNTIME/usr/sbin/dropbearkey" "$STAGE_DIR/usr/sbin/dropbearkey"
+  [[ -x "$VENDOR_RUNTIME/usr/bin/dbclient" ]] && cp -a "$VENDOR_RUNTIME/usr/bin/dbclient" "$STAGE_DIR/usr/bin/dbclient"
+  [[ -x "$VENDOR_RUNTIME/usr/bin/scp" ]] && cp -a "$VENDOR_RUNTIME/usr/bin/scp" "$STAGE_DIR/usr/bin/scp"
+else
+  "$SCRIPT_DIR/build-dropbear.sh" "$CFG" "$OUT_DIR"
+  cp -a "$OUT_DIR/tools/dropbear-out/${TARGET_ARCH}/dropbear" "$STAGE_DIR/usr/sbin/dropbear"
+  cp -a "$OUT_DIR/tools/dropbear-out/${TARGET_ARCH}/dropbearkey" "$STAGE_DIR/usr/sbin/dropbearkey"
+  cp -a "$OUT_DIR/tools/dropbear-out/${TARGET_ARCH}/dbclient" "$STAGE_DIR/usr/bin/dbclient"
+  cp -a "$OUT_DIR/tools/dropbear-out/${TARGET_ARCH}/scp" "$STAGE_DIR/usr/bin/scp"
+fi
+ln -snf /usr/bin/dbclient "$STAGE_DIR/usr/bin/ssh"
+chmod +x "$STAGE_DIR/usr/sbin/dropbear" "$STAGE_DIR/usr/sbin/dropbearkey" "$STAGE_DIR/usr/bin/dbclient" "$STAGE_DIR/usr/bin/scp" 2>/dev/null || true
 
 # Keep PRP's framebuffer helpers available even when /usr is bind-mounted from overlay.
-VENDOR_RUNTIME="$PRP_ROOT/vendor/$TARGET_NAME/rootfs-runtime"
 for f in peacock-splash msm-fb-refresher; do
   if [[ -x "$VENDOR_RUNTIME/usr/bin/$f" ]]; then
     cp -a "$VENDOR_RUNTIME/usr/bin/$f" "$STAGE_DIR/usr/bin/$f"
@@ -207,6 +237,7 @@ if [[ -x "$VENDOR_RUNTIME/sbin/fdisk" ]]; then
   shopt -s nullglob
   for pat in \
     'ld-linux-armhf.so*' \
+    'ld-linux-aarch64.so*' \
     'libc.so*' \
     'libgcc_s.so*' \
     'libm.so*' \
@@ -226,10 +257,10 @@ if [[ -x "$VENDOR_RUNTIME/sbin/fdisk" ]]; then
   shopt -u nullglob
 fi
 
-# GUI binary (static ARMv7). Optional: if build fails, we still create an overlay image.
+# GUI binary. Optional: if build fails, we still create an overlay image.
 if "$SCRIPT_DIR/build-gui.sh" "$CFG" "$OUT_DIR"; then
-  if [[ -f "$OUT_DIR/tools/gui-out/armv7/prp-gui" ]]; then
-    cp -a "$OUT_DIR/tools/gui-out/armv7/prp-gui" "$STAGE_DIR/usr/bin/prp-gui"
+  if [[ -f "$OUT_DIR/tools/gui-out/${TARGET_ARCH}/prp-gui" ]]; then
+    cp -a "$OUT_DIR/tools/gui-out/${TARGET_ARCH}/prp-gui" "$STAGE_DIR/usr/bin/prp-gui"
     chmod +x "$STAGE_DIR/usr/bin/prp-gui"
   fi
 else

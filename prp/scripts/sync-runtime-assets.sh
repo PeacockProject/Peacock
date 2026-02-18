@@ -107,6 +107,10 @@ copy_from_rootfs() {
 rootfs_bins=(
   /usr/bin/peacock-splash
   /usr/bin/msm-fb-refresher
+  /usr/sbin/dropbear
+  /usr/sbin/dropbearkey
+  /usr/bin/dbclient
+  /usr/bin/scp
   /sbin/dmsetup
   /sbin/partx
   /sbin/fdisk

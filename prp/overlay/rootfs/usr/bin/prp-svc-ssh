@@ -32,7 +32,7 @@ fi
   echo /bin/sh
   echo /bin/ash
   echo "$shell_path"
-} | awk '!seen[$0]++' > /etc/shells
+} > /etc/shells
 
 # Ensure an interactive shell is executable for SSH sessions.
 if [ ! -x /bin/sh ] && [ -x /sbin/busybox ]; then
@@ -65,6 +65,9 @@ if [ "$ALLOW_BLANK" = "1" ]; then
 else
   # Key-only.
   args="$args -s"
+fi
+if [ "${PRP_SSH_FOREGROUND:-0}" = "1" ]; then
+  args="$args -F"
 fi
 echo "prp-svc-ssh: port=$PORT blank=$ALLOW_BLANK shell=$shell_path" >&2
 exec /usr/sbin/dropbear $args

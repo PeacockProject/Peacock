@@ -81,7 +81,7 @@ echo "Resolved remote userdata device: $USERDATA_DEV"
 echo "Preparing target (unmounting nested root/boot if mounted)..."
 ssh "${SSH_OPTS[@]}" "$TARGET" '
 set -e
-for m in /mnt/prp_root /mnt/prp_boot; do
+for m in /mnt/peacock_root /mnt/peacock_boot; do
   if grep -q " $m " /proc/mounts 2>/dev/null; then
     umount "$m" || true
   fi

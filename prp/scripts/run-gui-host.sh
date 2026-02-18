@@ -21,6 +21,6 @@ fi
 
 echo "run: $BIN"
 echo "  tip: PRP_GUI_SCALE=140 $BIN"
-echo "  tip: PRP_GUI_SDL_HOR_RES=1080 PRP_GUI_SDL_VER_RES=1920 make -C prp gui-host TARGET=jflte"
+echo "  tip: PRP_GUI_SDL_HOR_RES=1080 PRP_GUI_SDL_VER_RES=1920 make -C prp gui-host TARGET=$TARGET_NAME"
 
 exec "$BIN"

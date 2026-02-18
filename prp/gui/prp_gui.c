@@ -44,14 +44,19 @@ static lv_obj_t *g_pwr_overlay = NULL;
 
 static int g_pwr_fd = -1;
 static char g_pwr_input[128] = {0};
+static char g_pwr_hint[256] = {0};
+static int g_pwr_code = KEY_POWER;
 static bool g_pwr_down = false;
 static bool g_pwr_menu_shown = false;
 static uint64_t g_pwr_down_ms = 0;
+static bool g_touch_attached = false;
+static uint64_t g_touch_retry_due_ms = 0;
 
 static const char *const k_cmd_reboot =
     "echo rebooting...; /sbin/busybox sync; /sbin/busybox reboot -f || /sbin/busybox reboot || echo reboot_failed";
 static const char *const k_cmd_poweroff =
     "echo powering off...; /sbin/busybox sync; /sbin/busybox poweroff -f || /sbin/busybox poweroff || echo poweroff_failed";
+static const char *const k_cmd_mount_subparts = "/usr/bin/prp-mount-peacock-subparts";
 
 typedef struct {
     int fd;
@@ -232,30 +237,129 @@ static int strcasestr_like(const char *hay, const char *needle) {
     return 0;
 }
 
-static bool pick_touch_event(char *out_path, size_t out_sz) {
-    // Prefer a device whose name includes "touch".
-    for(int i = 0; i < 32; i++) {
-        char name_path[128];
-        char name[256];
-        snprintf(name_path, sizeof(name_path), "/sys/class/input/event%d/device/name", i);
-        if(!read_file_trim(name_path, name, sizeof(name))) continue;
-        if(strcasestr_like(name, "touch") || strcasestr_like(name, "ts") || strcasestr_like(name, "synaptics") ||
-           strcasestr_like(name, "sec_touch") || strcasestr_like(name, "atmel") || strcasestr_like(name, "mxt")) {
-            snprintf(out_path, out_sz, "/dev/input/event%d", i);
-            return true;
-        }
+static int bit_is_set(const unsigned long *bits, int bit) {
+    return (bits[bit / (int)(8 * sizeof(unsigned long))] >> (bit % (int)(8 * sizeof(unsigned long)))) & 1UL;
+}
+
+static int score_touch_name(const char *name) {
+    int score = 0;
+    if(!name || !*name) return score;
+
+    if(strcasestr_like(name, "touch") || strcasestr_like(name, "goodix") || strcasestr_like(name, "synaptics") ||
+       strcasestr_like(name, "atmel") || strcasestr_like(name, "mxt") || strcasestr_like(name, "fts") ||
+       strcasestr_like(name, "ft5") || strcasestr_like(name, "ft6")) {
+        score += 6;
     }
-    // Fallback: first existing event node.
+    if(strcasestr_like(name, "gpio-keys") || strcasestr_like(name, "key") || strcasestr_like(name, "power")) {
+        score -= 8;
+    }
+    return score;
+}
+
+static bool pick_touch_event(char *out_path, size_t out_sz) {
+    char best_path[64] = {0};
+    int best_score = -9999;
+
     for(int i = 0; i < 32; i++) {
         char dev_path[64];
         struct stat st;
         snprintf(dev_path, sizeof(dev_path), "/dev/input/event%d", i);
-        if(stat(dev_path, &st) == 0) {
-            snprintf(out_path, out_sz, "%s", dev_path);
-            return true;
+        if(stat(dev_path, &st) != 0) continue;
+
+        int fd = open(dev_path, O_RDONLY | O_NONBLOCK);
+        if(fd < 0) continue;
+
+        unsigned long ev_bits[(EV_MAX + 8 * sizeof(unsigned long)) / (8 * sizeof(unsigned long))];
+        unsigned long abs_bits[(ABS_MAX + 8 * sizeof(unsigned long)) / (8 * sizeof(unsigned long))];
+        unsigned long key_bits[(KEY_MAX + 8 * sizeof(unsigned long)) / (8 * sizeof(unsigned long))];
+#ifdef INPUT_PROP_MAX
+        unsigned long prop_bits[(INPUT_PROP_MAX + 8 * sizeof(unsigned long)) / (8 * sizeof(unsigned long))];
+#endif
+        memset(ev_bits, 0, sizeof(ev_bits));
+        memset(abs_bits, 0, sizeof(abs_bits));
+        memset(key_bits, 0, sizeof(key_bits));
+#ifdef INPUT_PROP_MAX
+        memset(prop_bits, 0, sizeof(prop_bits));
+#endif
+
+        if(ioctl(fd, EVIOCGBIT(0, sizeof(ev_bits)), ev_bits) < 0 || !bit_is_set(ev_bits, EV_ABS)) {
+            close(fd);
+            continue;
+        }
+        if(ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(abs_bits)), abs_bits) < 0) {
+            close(fd);
+            continue;
+        }
+
+        bool has_abs_xy = bit_is_set(abs_bits, ABS_X) && bit_is_set(abs_bits, ABS_Y);
+        bool has_mt_xy = bit_is_set(abs_bits, ABS_MT_POSITION_X) && bit_is_set(abs_bits, ABS_MT_POSITION_Y);
+        if(!has_abs_xy && !has_mt_xy) {
+            close(fd);
+            continue;
+        }
+
+        bool has_btn_touch = false;
+        if(bit_is_set(ev_bits, EV_KEY) && ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(key_bits)), key_bits) >= 0) {
+            has_btn_touch = bit_is_set(key_bits, BTN_TOUCH);
+        }
+
+        bool direct = false;
+#ifdef INPUT_PROP_DIRECT
+        if(ioctl(fd, EVIOCGPROP(sizeof(prop_bits)), prop_bits) >= 0) {
+            direct = bit_is_set(prop_bits, INPUT_PROP_DIRECT);
+        }
+#endif
+
+        char name[256] = {0};
+        if(ioctl(fd, EVIOCGNAME(sizeof(name)), name) < 0) {
+            name[0] = '\0';
+        }
+        close(fd);
+
+        int name_score = score_touch_name(name);
+        if(!direct && !has_btn_touch && !has_mt_xy && name_score <= 0) {
+            continue;
+        }
+
+        int score = 0;
+        if(direct) score += 8;
+        if(has_btn_touch) score += 4;
+        if(has_mt_xy) score += 3;
+        if(has_abs_xy) score += 2;
+        score += name_score;
+
+        fprintf(stderr,
+                "prp-gui: touch cand %s name='%s' abs_xy=%d mt_xy=%d btn_touch=%d direct=%d score=%d\n",
+                dev_path, name[0] ? name : "unknown", has_abs_xy ? 1 : 0, has_mt_xy ? 1 : 0, has_btn_touch ? 1 : 0,
+                direct ? 1 : 0, score);
+
+        if(score > best_score) {
+            best_score = score;
+            snprintf(best_path, sizeof(best_path), "%s", dev_path);
         }
     }
+
+    if(best_path[0] && best_score > -9999) {
+        snprintf(out_path, out_sz, "%s", best_path);
+        fprintf(stderr, "prp-gui: touch selected %s (score=%d)\n", out_path, best_score);
+        return true;
+    }
+
     return false;
+}
+
+static void try_late_touch_attach(void) {
+    if(g_touch_attached) return;
+    uint64_t now = now_ms();
+    if(now < g_touch_retry_due_ms) return;
+    g_touch_retry_due_ms = now + 1000;
+
+    char ev_path[128] = {0};
+    if(!pick_touch_event(ev_path, sizeof(ev_path))) return;
+    if(!evdev_set_file(ev_path)) return;
+
+    g_touch_attached = true;
+    fprintf(stderr, "prp-gui: touch input attached late: %s\n", ev_path);
 }
 
 static void btn_cmd_cb(lv_event_t *e) {
@@ -393,11 +497,21 @@ static void appbar_long_press_cb(lv_event_t *e) {
     power_menu_show();
 }
 
-static int test_bit(const unsigned long *bits, int bit) {
-    return (bits[bit / (int)(8 * sizeof(unsigned long))] >> (bit % (int)(8 * sizeof(unsigned long)))) & 1UL;
+static int power_hint_score(const char *name, const char *hints) {
+    if(!name || !*name || !hints || !*hints) return 0;
+    char buf[256];
+    snprintf(buf, sizeof(buf), "%s", hints);
+    int score = 0;
+    for(char *tok = strtok(buf, ",;| "); tok; tok = strtok(NULL, ",;| ")) {
+        if(*tok && strcasestr_like(name, tok)) score += 8;
+    }
+    return score;
 }
 
 static bool pick_power_event(char *out_path, size_t out_sz, const char *exclude_path) {
+    char best_path[64] = {0};
+    int best_score = -9999;
+
     for(int i = 0; i < 32; i++) {
         char dev_path[64];
         struct stat st;
@@ -413,24 +527,44 @@ static bool pick_power_event(char *out_path, size_t out_sz, const char *exclude_
         memset(ev_bits, 0, sizeof(ev_bits));
         memset(key_bits, 0, sizeof(key_bits));
 
-        if(ioctl(fd, EVIOCGBIT(0, sizeof(ev_bits)), ev_bits) < 0) {
+        if(ioctl(fd, EVIOCGBIT(0, sizeof(ev_bits)), ev_bits) < 0 || !bit_is_set(ev_bits, EV_KEY) ||
+           ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(key_bits)), key_bits) < 0) {
             close(fd);
             continue;
         }
-        if(!test_bit(ev_bits, EV_KEY)) {
-            close(fd);
-            continue;
+
+        char name[256] = {0};
+        if(ioctl(fd, EVIOCGNAME(sizeof(name)), name) < 0) {
+            name[0] = '\0';
         }
-        if(ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(key_bits)), key_bits) < 0) {
-            close(fd);
-            continue;
-        }
-        bool ok = test_bit(key_bits, KEY_POWER);
+
+        bool has_power = bit_is_set(key_bits, KEY_POWER);
+        bool has_wakeup = bit_is_set(key_bits, KEY_WAKEUP);
+        bool has_sleep = bit_is_set(key_bits, KEY_SLEEP);
         close(fd);
-        if(ok) {
-            snprintf(out_path, out_sz, "%s", dev_path);
-            return true;
+
+        int score = 0;
+        int hint_score = power_hint_score(name, g_pwr_hint);
+        if(has_power) score += 10;
+        if(has_wakeup) score += 2;
+        if(has_sleep) score += 1;
+        if(strcasestr_like(name, "power") || strcasestr_like(name, "pwr") || strcasestr_like(name, "pm8") ||
+           strcasestr_like(name, "qpnp") || strcasestr_like(name, "gpio-keys")) {
+            score += 4;
         }
+        score += hint_score;
+
+        fprintf(stderr, "prp-gui: power cand %s name='%s' hint=%d score=%d\n", dev_path, name[0] ? name : "unknown",
+                hint_score, score);
+        if(score > best_score) {
+            best_score = score;
+            snprintf(best_path, sizeof(best_path), "%s", dev_path);
+        }
+    }
+    if(best_path[0] && best_score > 0) {
+        snprintf(out_path, out_sz, "%s", best_path);
+        fprintf(stderr, "prp-gui: power selected %s (score=%d)\n", out_path, best_score);
+        return true;
     }
     return false;
 }
@@ -442,7 +576,7 @@ static void power_key_poll(void) {
     for(;;) {
         ssize_t n = read(g_pwr_fd, &ev, sizeof(ev));
         if(n == (ssize_t)sizeof(ev)) {
-            if(ev.type == EV_KEY && ev.code == KEY_POWER) {
+            if(ev.type == EV_KEY && ev.code == g_pwr_code) {
                 if(ev.value == 1) {
                     g_pwr_down = true;
                     g_pwr_menu_shown = false;
@@ -451,6 +585,8 @@ static void power_key_poll(void) {
                     g_pwr_down = false;
                     g_pwr_menu_shown = false;
                 }
+            } else if(ev.type == EV_KEY && ev.value == 1) {
+                fprintf(stderr, "prp-gui: power input key press code=%u (expect=%d)\n", ev.code, g_pwr_code);
             }
             continue;
         }
@@ -573,6 +709,18 @@ static void build_ui(void) {
     lv_obj_set_style_text_color(motto, lv_color_make(0xE0, 0xE0, 0xE0), 0);
     lv_obj_align(motto, LV_ALIGN_TOP_MID, 0, appbar_h + appbar_pad);
 
+    struct {
+        const char *label;
+        const char *cmd;
+    } buttons[] = {
+        {"Shell (tty1)", "setsid cttyhack /bin/sh </dev/tty1 >/dev/tty1 2>&1 &"},
+        {"Start SSH", "PRP_SSH_ALLOW_BLANK_PASSWORD=1 PRP_SSH_PORT=22 /usr/bin/prp-svc-ssh >/tmp/prp-ssh.log 2>&1; /sbin/busybox sleep 1; if /sbin/busybox pidof dropbear >/dev/null 2>&1; then echo ssh_up port=22; else echo ssh_down; /sbin/busybox head -n 20 /tmp/prp-ssh.log; fi"},
+        {"Mount Peacock", k_cmd_mount_subparts},
+    };
+    const int btn_cols = 2;
+    const int btn_count = (int)(sizeof(buttons) / sizeof(buttons[0]));
+    const int btn_rows = (btn_count + btn_cols - 1) / btn_cols;
+
     // Layout: buttons in the upper area, "stdout" log fixed at the bottom.
     const int top_y = appbar_h + sep_h + margin;
 
@@ -581,8 +729,6 @@ static void build_ui(void) {
 
     // Prefer a large, tappable button height on phones.
     int btn_h_want = clampi((h / 8) * scale / 100, 96, 320);
-    const int btn_rows = 1;
-    const int btn_cols = 2;
     const int btn_area_h_want = btn_h_want * btn_rows + gap * (btn_rows - 1);
 
     // Compute how much log height we can afford if we keep buttons large.
@@ -597,7 +743,7 @@ static void build_ui(void) {
         // Not enough space: keep a minimum log height and shrink buttons to fit.
         log_h = 120;
         int available = (h - margin - log_h) - top_y - gap;
-        int btn_h_max = (available - gap) / 2;
+        int btn_h_max = (available - gap * (btn_rows - 1)) / btn_rows;
         btn_h_want = clampi(btn_h_want, 64, btn_h_max > 0 ? btn_h_max : 64);
     }
 
@@ -633,15 +779,6 @@ static void build_ui(void) {
     lv_obj_set_flex_flow(btn_area, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_gap(btn_area, gap, 0);
 
-    struct {
-        const char *label;
-        const char *cmd;
-    } buttons[] = {
-        {"Shell (tty1)", "setsid cttyhack /bin/sh </dev/tty1 >/dev/tty1 2>&1 &"},
-        {"Start SSH", "PRP_SSH_ALLOW_BLANK_PASSWORD=1 PRP_SSH_PORT=22 /usr/bin/prp-svc-ssh >/tmp/prp-ssh.log 2>&1; /sbin/busybox sleep 1; if /sbin/busybox pidof dropbear >/dev/null 2>&1; then echo ssh_up port=22; else echo ssh_down; /sbin/busybox head -n 20 /tmp/prp-ssh.log; fi"},
-    };
-    const size_t btn_count = sizeof(buttons) / sizeof(buttons[0]);
-
     const int btn_h = btn_h_want;
     const int btn_w = (inner_w - gap) / 2;
 
@@ -656,7 +793,7 @@ static void build_ui(void) {
         lv_obj_set_style_pad_gap(rowc, gap, 0);
 
         for(int col = 0; col < btn_cols; col++) {
-            size_t idx = (size_t)row * (size_t)btn_cols + (size_t)col;
+            int idx = row * btn_cols + col;
             if(idx >= btn_count) continue;
             lv_obj_t *btn = lv_btn_create(rowc);
             lv_obj_set_size(btn, btn_w, btn_h);
@@ -679,6 +816,8 @@ typedef struct {
     char fbdev[128];
     char input[128];
     char power_input[128];
+    char power_hint[256];
+    int power_code;
     char config_path[256];
     char logo[256];
     int scale_pct;
@@ -688,6 +827,7 @@ static void cfg_init(prp_gui_cfg_t *cfg) {
     memset(cfg, 0, sizeof(*cfg));
     snprintf(cfg->fbdev, sizeof(cfg->fbdev), "%s", "/dev/fb0");
     cfg->scale_pct = 100;
+    cfg->power_code = KEY_POWER;
 }
 
 static void strtrim_inplace(char *s) {
@@ -714,6 +854,15 @@ static void cfg_apply_kv(prp_gui_cfg_t *cfg, const char *k, const char *v) {
     }
     if(strcasecmp(k, "POWER_INPUT") == 0 || strcasecmp(k, "POWERKEY") == 0) {
         snprintf(cfg->power_input, sizeof(cfg->power_input), "%s", v);
+        return;
+    }
+    if(strcasecmp(k, "POWER_HINT") == 0 || strcasecmp(k, "POWER_NAME_HINT") == 0 ||
+       strcasecmp(k, "POWER_HINTS") == 0) {
+        snprintf(cfg->power_hint, sizeof(cfg->power_hint), "%s", v);
+        return;
+    }
+    if(strcasecmp(k, "POWER_CODE") == 0 || strcasecmp(k, "POWER_KEY_CODE") == 0) {
+        cfg->power_code = atoi(v);
         return;
     }
     if(strcasecmp(k, "SCALE") == 0 || strcasecmp(k, "SCALE_PCT") == 0) {
@@ -754,6 +903,10 @@ static void cfg_apply_env(prp_gui_cfg_t *cfg) {
     if(v && *v) snprintf(cfg->input, sizeof(cfg->input), "%s", v);
     v = getenv("PRP_GUI_POWER_INPUT");
     if(v && *v) snprintf(cfg->power_input, sizeof(cfg->power_input), "%s", v);
+    v = getenv("PRP_GUI_POWER_HINT");
+    if(v && *v) snprintf(cfg->power_hint, sizeof(cfg->power_hint), "%s", v);
+    v = getenv("PRP_GUI_POWER_CODE");
+    if(v && *v) cfg->power_code = atoi(v);
     v = getenv("PRP_GUI_SCALE");
     if(v && *v) cfg->scale_pct = atoi(v);
     v = getenv("PRP_GUI_LOGO");
@@ -798,6 +951,8 @@ int main(int argc, char **argv) {
     g_scale_pct = cfg.scale_pct;
     if(cfg.logo[0]) snprintf(g_logo_path, sizeof(g_logo_path), "%s", cfg.logo);
     if(cfg.power_input[0]) snprintf(g_pwr_input, sizeof(g_pwr_input), "%s", cfg.power_input);
+    if(cfg.power_hint[0]) snprintf(g_pwr_hint, sizeof(g_pwr_hint), "%s", cfg.power_hint);
+    g_pwr_code = cfg.power_code;
 
     lv_init();
     prp_fbdev_t fb;
@@ -837,12 +992,31 @@ int main(int argc, char **argv) {
     // Input (touch)
     evdev_init();
     char ev_path[128] = {0};
+    bool ev_ok = false;
     if(cfg.input[0]) {
         snprintf(ev_path, sizeof(ev_path), "%s", cfg.input);
-        (void)evdev_set_file(ev_path);
-    } else if(pick_touch_event(ev_path, sizeof(ev_path))) {
-        (void)evdev_set_file(ev_path);
+        ev_ok = evdev_set_file(ev_path);
+        if(!ev_ok) {
+            fprintf(stderr, "prp-gui: configured touch input failed: %s\n", ev_path);
+            ev_path[0] = '\0';
+        }
     }
+    if(!ev_ok) {
+        // Input nodes can appear slightly after fbdev/UI startup on some boots.
+        for(int i = 0; i < 30 && !ev_ok; i++) {
+            if(pick_touch_event(ev_path, sizeof(ev_path))) {
+                ev_ok = evdev_set_file(ev_path);
+            }
+            if(!ev_ok) usleep(200000);
+        }
+    }
+    if(ev_ok) {
+        fprintf(stderr, "prp-gui: touch input active: %s\n", ev_path);
+    } else {
+        fprintf(stderr, "prp-gui: touch input unavailable\n");
+    }
+    g_touch_attached = ev_ok;
+    g_touch_retry_due_ms = now_ms() + 1000;
     lv_indev_drv_t indev_drv;
     lv_indev_drv_init(&indev_drv);
     indev_drv.type = LV_INDEV_TYPE_POINTER;
@@ -858,6 +1032,9 @@ int main(int argc, char **argv) {
     }
     if(pwr_path[0]) {
         g_pwr_fd = open(pwr_path, O_RDONLY | O_NONBLOCK);
+        if(g_pwr_fd >= 0) {
+            fprintf(stderr, "prp-gui: power input active: %s code=%d\n", pwr_path, g_pwr_code);
+        }
     }
 
     build_ui();
@@ -866,6 +1043,7 @@ int main(int argc, char **argv) {
     lv_refr_now(disp);
 
     while(!g_stop) {
+        try_late_touch_attach();
         power_key_poll();
         if(g_job.running && g_job.fd >= 0) {
             char buf[512];

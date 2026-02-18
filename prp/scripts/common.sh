@@ -20,7 +20,25 @@ load_config() {
   source "$cfg"
 
   TARGET_NAME="${TARGET_NAME:-unknown}"
-  BOARD_NAME="${BOARD_NAME:-$TARGET_NAME}"
+  KERNEL_PACKAGE="${KERNEL_PACKAGE:-linux-${TARGET_NAME}}"
+  BOARD_NAME="${BOARD_NAME-$TARGET_NAME}"
+  TARGET_ARCH="${TARGET_ARCH:-armv7}"
+  case "$TARGET_ARCH" in
+    arm64) TARGET_ARCH="aarch64" ;;
+  esac
+  case "$TARGET_ARCH" in
+    armv7|armv7h|armhf)
+      ZIG_TARGET_DEFAULT="arm-linux-musleabihf"
+      ;;
+    aarch64)
+      ZIG_TARGET_DEFAULT="aarch64-linux-musl"
+      ;;
+    *)
+      ZIG_TARGET_DEFAULT="${TARGET_ARCH}-linux-musl"
+      ;;
+  esac
+  ZIG_TARGET="${ZIG_TARGET:-$ZIG_TARGET_DEFAULT}"
+  DROPBEAR_HOST="${DROPBEAR_HOST:-$ZIG_TARGET}"
   CMDLINE="${CMDLINE:-}"
   BASE="${BASE:-0x80200000}"
   KERNEL_OFFSET="${KERNEL_OFFSET:-0x00008000}"
@@ -29,39 +47,126 @@ load_config() {
   TAGS_OFFSET="${TAGS_OFFSET:-0x00000100}"
   PAGESIZE="${PAGESIZE:-2048}"
   HEADER_VERSION="${HEADER_VERSION:-0}"
+  OS_VERSION="${OS_VERSION:-}"
+  OS_PATCH_LEVEL="${OS_PATCH_LEVEL:-}"
+  APPEND_SEANDROIDENFORCE="${APPEND_SEANDROIDENFORCE:-1}"
   KERNEL_IMAGE="${KERNEL_IMAGE:-}"
   DTB_IMAGE="${DTB_IMAGE:-}"
   RAMDISK_PREBUILT="${RAMDISK_PREBUILT:-}"
+  RAMDISK_FORMAT="${RAMDISK_FORMAT:-auto}"
   INITRAMFS_ROOTFS="${INITRAMFS_ROOTFS:-initramfs/rootfs}"
   ROOTFS_IMAGE="${ROOTFS_IMAGE:-$HOME/.local/var/peacock/samsung-jflte.img}"
   ROOTFS_OFFSET_SECTORS="${ROOTFS_OFFSET_SECTORS:-1050624}"
   ROOTFS_SIZE_SECTORS="${ROOTFS_SIZE_SECTORS:-6811648}"
   BUSYBOX_STATIC="${BUSYBOX_STATIC:-$HOME/.local/var/peacock/busybox-cache/busybox-1.36.1-1-armv7h.pkg.tar.gz/busybox}"
   KERNEL_CONFIG="${KERNEL_CONFIG:-$HOME/.local/var/peacock/build-chroot/x86_64/build/linux-samsung-jflte-3.4.113.8-armv7/.config}"
+  REQUIRE_TWRP_SBIN="${REQUIRE_TWRP_SBIN:-1}"
   ADB_PREFIX="${ADB_PREFIX:-adb}"
+  FLASH_METHOD="${FLASH_METHOD:-adb-dd}"
+  FASTBOOT_PREFIX="${FASTBOOT_PREFIX:-fastboot}"
+  FASTBOOT_PARTITIONS="${FASTBOOT_PARTITIONS:-boot}"
+  FASTBOOT_SET_ACTIVE="${FASTBOOT_SET_ACTIVE:-}"
+  # Generic A/B + lk2nd split-boot layout:
+  # - lk2nd lives in the first slice of "boot"
+  # - actual boot image is flashed via lk2nd fastboot to "boot" (offset payload)
+  FASTBOOT_AB_LK2ND_SPLIT_BOOT="${FASTBOOT_AB_LK2ND_SPLIT_BOOT:-0}"
+  FASTBOOT_LK2ND_PARTITION="${FASTBOOT_LK2ND_PARTITION:-lk2nd}"
+  FASTBOOT_BOOT_PARTITION="${FASTBOOT_BOOT_PARTITION:-boot}"
+  FASTBOOT_LK2ND_IMAGE="${FASTBOOT_LK2ND_IMAGE:-}"
   RECOVERY_BLOCK="${RECOVERY_BLOCK:-/dev/block/mmcblk0p21}"
+  USB_SERIAL="${USB_SERIAL:-PRP-$TARGET_NAME}"
+  USB_GADGET_PATH="${USB_GADGET_PATH:-}"
+  USB_UDC_NAME="${USB_UDC_NAME:-}"
+  GUI_POWER_INPUT="${GUI_POWER_INPUT:-}"
+  GUI_POWER_HINT="${GUI_POWER_HINT:-}"
+  GUI_POWER_CODE="${GUI_POWER_CODE:-}"
+  DO_MOUNT_SUBPARTS="${DO_MOUNT_SUBPARTS:-1}"
+  MOUNT_PRP_ROOTFS="${MOUNT_PRP_ROOTFS:-1}"
+  ROOTFS_DEV_HINT="${ROOTFS_DEV_HINT:-}"
+  ENABLE_FB_IO="${ENABLE_FB_IO:-1}"
+  case "$TARGET_NAME" in
+    jflte|samsung-jflte) USE_FB_REFRESHER_DEFAULT=1 ;;
+    *) USE_FB_REFRESHER_DEFAULT=0 ;;
+  esac
+  USE_FB_REFRESHER="${USE_FB_REFRESHER:-$USE_FB_REFRESHER_DEFAULT}"
+  DEBUG_BOOT="${DEBUG_BOOT:-0}"
+  START_TTY_SHELLS="${START_TTY_SHELLS:-1}"
+  TEXT_CONSOLE_LOG="${TEXT_CONSOLE_LOG:-1}"
+  SMOKE_ONLY="${SMOKE_ONLY:-0}"
 }
 
 resolve_kernel_image() {
+  local kernel_pkg="${KERNEL_PACKAGE:-linux-${TARGET_NAME}}"
+  local default_kernel_pkg="linux-${TARGET_NAME}"
+
+  _candidate_matches_kernel_pkg() {
+    local path="$1"
+    local pkg="$2"
+    local -a _parts=()
+    local component=""
+    local rest=""
+
+    IFS='/' read -r -a _parts <<<"$path"
+    for component in "${_parts[@]}"; do
+      [[ "$component" == "${pkg}-"* ]] || continue
+      rest="${component#${pkg}-}"
+      [[ "$rest" =~ ^[0-9] ]] && return 0
+    done
+    return 1
+  }
+
   if [[ -n "${KERNEL_IMAGE:-}" && -f "$KERNEL_IMAGE" ]]; then
     echo "$KERNEL_IMAGE"
     return 0
   fi
 
   local candidates=(
-    "$HOME/.local/var/peacock/build-chroot/x86_64/build/linux-samsung-jflte-3.4.113.8-armv7/arch/arm/boot/zImage"
-    "$HOME/.local/var/peacock/build-chroot/x86_64/build/linux-samsung-jflte-3.4.113.8-armv7/zImage"
-    "$HOME/.local/var/peacock/boot-p1.img"
+    "$HOME/.local/var/peacock/build-chroot/*/build/${kernel_pkg}-[0-9]*/zImage"
+    "$HOME/.local/var/peacock/build-chroot/*/build/${kernel_pkg}-[0-9]*/Image.gz"
+    "$HOME/.local/var/peacock/build-chroot/*/build/${kernel_pkg}-[0-9]*/arch/*/boot/zImage"
+    "$HOME/.local/var/peacock/build-chroot/*/build/${kernel_pkg}-[0-9]*/arch/*/boot/Image.gz"
+    "$HOME/.local/var/peacock/kernel-cache/${kernel_pkg}-[0-9]*.pkg.tar.gz/zImage"
+    "$HOME/.local/var/peacock/kernel-cache/${kernel_pkg}-[0-9]*.pkg.tar.gz/Image.gz"
+    "$HOME/.local/var/peacock/peacock-cache/${kernel_pkg}-[0-9]*.pkg.tar.gz/zImage"
+    "$HOME/.local/var/peacock/peacock-cache/${kernel_pkg}-[0-9]*.pkg.tar.gz/Image.gz"
   )
+  if [[ "$kernel_pkg" == "$default_kernel_pkg" ]]; then
+    candidates+=("$HOME/.local/var/peacock/boot-p1.img")
+  fi
+  local best=""
+  local pat=""
   local c
-  for c in "${candidates[@]}"; do
-    if [[ -f "$c" ]]; then
-      echo "$c"
+  shopt -s nullglob
+  for pat in "${candidates[@]}"; do
+    for c in $pat; do
+      [[ -f "$c" ]] || continue
+      _candidate_matches_kernel_pkg "$c" "$kernel_pkg" || continue
+      if [[ -z "$best" || "$c" -nt "$best" ]]; then
+        best="$c"
+      fi
+    done
+  done
+  shopt -u nullglob
+
+  if [[ -n "$best" ]]; then
+    echo "$best"
+    return 0
+  fi
+
+  if [[ -d "$HOME/.local/var/peacock/build-chroot" ]]; then
+    while IFS= read -r c; do
+      [[ -f "$c" ]] || continue
+      _candidate_matches_kernel_pkg "$c" "$kernel_pkg" || continue
+      best="$c"
+      break
+    done < <(find "$HOME/.local/var/peacock/build-chroot" -maxdepth 6 -type f \( -name zImage -o -name Image.gz \) -path "*/${kernel_pkg}-*/*" 2>/dev/null)
+    if [[ -n "$best" ]]; then
+      echo "$best"
       return 0
     fi
-  done
+  fi
 
-  die "could not resolve kernel image; set KERNEL_IMAGE in config"
+  die "could not resolve kernel image for package ${kernel_pkg}; set KERNEL_IMAGE in config or build ${kernel_pkg}"
 }
 
 resolve_ramdisk_image() {
@@ -73,15 +178,20 @@ resolve_ramdisk_image() {
 
   local generated="$out_dir/initramfs.cpio.gz"
   local generated_lzma="$out_dir/initramfs.cpio.lzma"
-  if [[ -f "$generated_lzma" ]]; then
-    echo "$generated_lzma"
-    return 0
-  fi
-
-  if [[ -f "$generated" ]]; then
-    echo "$generated"
-    return 0
-  fi
+  case "$RAMDISK_FORMAT" in
+    lzma)
+      [[ -f "$generated_lzma" ]] && { echo "$generated_lzma"; return 0; }
+      [[ -f "$generated" ]] && { echo "$generated"; return 0; }
+      ;;
+    gzip|gz)
+      [[ -f "$generated" ]] && { echo "$generated"; return 0; }
+      [[ -f "$generated_lzma" ]] && { echo "$generated_lzma"; return 0; }
+      ;;
+    auto|*)
+      [[ -f "$generated_lzma" ]] && { echo "$generated_lzma"; return 0; }
+      [[ -f "$generated" ]] && { echo "$generated"; return 0; }
+      ;;
+  esac
 
   die "could not resolve ramdisk image; run 'make initramfs' or set RAMDISK_PREBUILT"
 }

@@ -16,7 +16,17 @@ mkdir -p "$OUT_DIR"
 
 OUT_BACKUP="$OUT_DIR/recovery-backup-$(date +%Y%m%d-%H%M%S).img"
 
-$ADB_PREFIX exec-out "dd if=$RECOVERY_BLOCK bs=1M 2>/dev/null" > "$OUT_BACKUP"
+case "$FLASH_METHOD" in
+  adb-dd)
+    $ADB_PREFIX exec-out "dd if=$RECOVERY_BLOCK bs=1M 2>/dev/null" > "$OUT_BACKUP"
+    ;;
+  fastboot-bootimg)
+    die "backup-recovery is not implemented for fastboot-bootimg targets"
+    ;;
+  *)
+    die "unknown FLASH_METHOD: $FLASH_METHOD"
+    ;;
+esac
 
 echo "backup: $OUT_BACKUP"
 ls -lh "$OUT_BACKUP"
