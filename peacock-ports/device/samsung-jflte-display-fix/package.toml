@@ -1,6 +1,6 @@
 [package]
 name = "samsung-jflte-display-fix"
-version = "1.0.35"
+version = "1.0.41"
 description = "Samsung jflte OpenRC display preflight fix"
 depends = ["peacock-sddm-theme-peacock-phone"]
 
@@ -9,19 +9,12 @@ dependencies_openrc = ["openrc", "coreutils", "psmisc", "libinput", "xf86-input-
 script = """
 set -e
 
-mkdir -p stage/etc/init.d stage/etc/runlevels/boot stage/usr/local/sbin stage/etc/conf.d stage/etc/udev/rules.d
+mkdir -p stage/etc/init.d stage/etc/runlevels/boot stage/usr/local/sbin stage/etc/conf.d
 
 cat > stage/etc/conf.d/cgroups <<'EOF'
 # jflte kernel is cgroup v1-only; OpenRC defaults to unified (v2),
 # which leaves /sys/fs/cgroup unmounted and makes elogind crash.
 rc_cgroup_mode="legacy"
-EOF
-
-cat > stage/etc/udev/rules.d/71-jflte-seat-master.rules <<'EOF'
-# elogind reports seat0 CanGraphical=false on fbdev-only jflte unless the
-# framebuffer device is tagged as a seat master. When CanGraphical=false,
-# SDDM can stall after "Logind interface found" and never start Xorg.
-SUBSYSTEM=="graphics", KERNEL=="fb0", TAG+="master-of-seat"
 EOF
 
 cat > stage/usr/local/sbin/peacock-sddm-powerctl <<'EOF'
@@ -273,11 +266,6 @@ CFG
             rc-service "$svc" status >> "$LOG_FILE" 2>&1 || true
         fi
     done
-    if command -v busctl >/dev/null 2>&1; then
-        busctl --system get-property org.freedesktop.login1 \
-            /org/freedesktop/login1/seat/seat0 org.freedesktop.login1.Seat CanGraphical \
-            >> "$LOG_FILE" 2>&1 || true
-    fi
 
     # OpenRC userspace fallback for XFCE sessions under SDDM:
     # ensure runtime dir + DBus session are present even when PAM/logind
@@ -371,19 +359,8 @@ CFG
 </channel>
 CFG
 
-    # Phone-friendly XFCE scaling defaults.
-    cat > /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml <<'CFG'
-<?xml version="1.0" encoding="UTF-8"?>
-<channel name="xsettings" version="1.0">
-  <property name="Xft" type="empty">
-    <property name="DPI" type="int" value="98304"/>
-  </property>
-  <property name="Gtk" type="empty">
-    <property name="CursorThemeSize" type="int" value="24"/>
-    <property name="WindowScalingFactor" type="int" value="1"/>
-  </property>
-</channel>
-CFG
+    # Do not force global XFCE scaling on device; keep distro defaults.
+    rm -f /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml
 
     # Force existing users to compositing=off too; defaults alone won't override
     # already-created ~/.config/xfce4 profiles.
@@ -409,20 +386,8 @@ CFG
 </channel>
 CFG_HOME
         fi
-        xset_cfg="$home/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml"
-        mkdir -p "$(dirname "$xset_cfg")"
-        cat > "$xset_cfg" <<'XSET_HOME'
-<?xml version="1.0" encoding="UTF-8"?>
-<channel name="xsettings" version="1.0">
-  <property name="Xft" type="empty">
-    <property name="DPI" type="int" value="98304"/>
-  </property>
-  <property name="Gtk" type="empty">
-    <property name="CursorThemeSize" type="int" value="24"/>
-    <property name="WindowScalingFactor" type="int" value="1"/>
-  </property>
-</channel>
-XSET_HOME
+        # Remove per-user overrides so xfsettingsd uses default scale values.
+        rm -f "$home/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml"
         user_name="$(basename "$home")"
         chown -R "$user_name:$user_name" "$home/.config" 2>/dev/null || true
     done
@@ -515,6 +480,12 @@ while [ "$n" -lt 6 ]; do
     n=$((n + 1))
     sleep 1
 done
+
+if [ -x /usr/bin/openbox ]; then
+    echo "xfwm4_wrapper fallback=openbox" >> "$logf" 2>&1
+    exec /usr/bin/openbox "$@" >> "$logf" 2>&1
+fi
+
 exit 0
 CFG
     chmod 0755 /usr/local/bin/peacock-xfwm4
@@ -529,9 +500,9 @@ CFG
     chmod 0755 /usr/local/bin/peacock-xfdesktop
 
     if [ -f /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-session.xml ]; then
-        sed -i 's/value="xfwm4"/value="peacock-openbox"/g' \
+        sed -i 's/value="xfwm4"/value="peacock-xfwm4"/g' \
             /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-session.xml || true
-        sed -i 's/value="peacock-xfwm4"/value="peacock-openbox"/g' \
+        sed -i 's/value="peacock-openbox"/value="peacock-xfwm4"/g' \
             /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-session.xml || true
         sed -i 's/value="xfce4-panel"/value="peacock-xfce4-panel"/g' \
             /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-session.xml || true
@@ -563,7 +534,8 @@ mkdir -p "$(dirname "$logf")" 2>/dev/null || true
 } >> "$logf" 2>&1
 
 if command -v xfce4-terminal >/dev/null 2>&1; then
-    exec xfce4-terminal --title=Fastfetch --hold --command=fastfetch >> "$logf" 2>&1
+    # Avoid terminal-server reuse issues where launches become invisible/no-op.
+    exec xfce4-terminal --disable-server --title=Fastfetch --hold --command=fastfetch >> "$logf" 2>&1
 fi
 
 if command -v xterm >/dev/null 2>&1; then

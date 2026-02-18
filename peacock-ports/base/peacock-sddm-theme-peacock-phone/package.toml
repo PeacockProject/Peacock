@@ -35,12 +35,13 @@ EOF
 
 cat > "$THEME_DIR/Main.qml" <<'EOF'
 import QtQuick 2.0
+import QtQuick.Window 2.2
 import SddmComponents 2.0
 
 Rectangle {
     id: root
-    width: 720
-    height: 1280
+    width: Screen.width
+    height: Screen.height
     color: "#000000"
 
     property real density: Math.max(0.85, Math.min(1.55, Math.min(width / 720.0, height / 1280.0)))

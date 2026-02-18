@@ -1,0 +1,242 @@
+[package]
+name = "linux-xiaomi-daisy-prp"
+version = "6.16.3.r0"
+description = "PRP-focused kernel for Xiaomi Mi A2 Lite (daisy / msm8953)"
+
+[build]
+source = "https://github.com/msm8953-mainline/linux/archive/v6.16.3-r0.tar.gz"
+checksum = "f84c20e6dd6acf205fe1b64632a00d66307cc4676f5dc9b1d5ff7fe7867e2b1e"
+build_deps = ["base-devel", "bc", "dtc", "python", "perl", "openssl", "aarch64-linux-gnu-binutils", "aarch64-linux-gnu-gcc"]
+use_qemu = false
+cross_compile = "aarch64-linux-gnu-"
+
+script = """
+echo "Copying PRP config..."
+cp config-prp .config
+
+echo "Sanitizing compiler capability symbols from imported config..."
+sed -i \
+  -e '/^CONFIG_CC_VERSION_TEXT=/d' \
+  -e '/^CONFIG_CC_IS_/d' \
+  -e '/^CONFIG_GCC_VERSION=/d' \
+  -e '/^CONFIG_CLANG_VERSION=/d' \
+  -e '/^CONFIG_AS_IS_/d' \
+  -e '/^CONFIG_AS_VERSION=/d' \
+  -e '/^CONFIG_LD_IS_/d' \
+  -e '/^CONFIG_LD_VERSION=/d' \
+  -e '/^CONFIG_LLD_VERSION=/d' \
+  -e '/^CONFIG_CC_HAS_/d' \
+  -e '/^CONFIG_CC_CAN_/d' \
+  -e '/^CONFIG_TOOLS_SUPPORT_RELR=/d' \
+  .config
+
+echo "Refreshing config..."
+yes "" | make ARCH=${ARCH:-arm64} olddefconfig
+
+echo "Applying PRP kernel trim (recovery-focused built-ins only)..."
+if [ -x ./scripts/config ]; then
+  # Eliminate module builds entirely for PRP speed + deterministic bring-up.
+  ./scripts/config --disable MODULES || true
+
+  # Convert all symbols that were modular in the base config to disabled.
+  # When CONFIG_MODULES=n, many tristate options flip to =y by default unless
+  # we force them back off explicitly.
+  awk -F= '/^CONFIG_[A-Z0-9_]+=m$/{sub(/^CONFIG_/, "", $1); print $1}' config-prp >/tmp/prp-modules.list
+  while IFS= read -r sym; do
+    [ -n "$sym" ] || continue
+    ./scripts/config --disable "$sym" || true
+  done </tmp/prp-modules.list
+
+  # Trim heavy non-recovery stacks that materially increase build time.
+  cat >/tmp/prp-trim-force-n.list <<'EOF'
+MEDIA_SUPPORT
+SOUND
+XFS_FS
+BTRFS_FS
+NFS_FS
+NFSD
+NFS_V4
+NFS_V3
+NFS_V2
+CIFS
+SMB_SERVER
+9P_FS
+AF_RXRPC
+RDS
+TIPC
+CAIF
+NFC
+BT
+IP_DCCP
+IP_SCTP
+WIRELESS
+WLAN
+CFG80211
+MAC80211
+RFKILL
+USB_STORAGE
+USB_UAS
+USB_HID
+USB_NET_DRIVERS
+HID_PICOLCD
+HID_STEAM
+HID_NINTENDO
+HID_PLAYSTATION
+HID_XBOX
+HID_XIAOMI
+EOF
+  while IFS= read -r sym; do
+    [ -n "$sym" ] || continue
+    ./scripts/config --disable "$sym" || true
+  done < /tmp/prp-trim-force-n.list
+
+  # Force minimal symbols required by PRP on daisy.
+  cat >/tmp/prp-trim-force-y.list <<'EOF'
+DEVTMPFS
+DEVTMPFS_MOUNT
+EXT4_FS
+MMC
+MMC_BLOCK
+INPUT
+INPUT_EVDEV
+TOUCHSCREEN_GOODIX
+TOUCHSCREEN_EDT_FT5X06
+TOUCHSCREEN_FT6236
+EOF
+  while IFS= read -r sym; do
+    [ -n "$sym" ] || continue
+    ./scripts/config --enable "$sym" || true
+  done < /tmp/prp-trim-force-y.list
+fi
+
+echo "Applying PRP display policy (single daisy panel)..."
+# PRP should not rely on initramfs module loading. Keep only the daisy panel
+# reported by lk2nd/fastboot OEM data as built-in.
+cat >/tmp/prp-display-force-y.list <<'EOF'
+CONFIG_DRM
+CONFIG_DRM_MSM
+CONFIG_DRM_MSM_MDSS
+CONFIG_DRM_MSM_MDP5
+CONFIG_DRM_MSM_DSI
+CONFIG_DRM_MSM_DSI_14NM_PHY
+CONFIG_DRM_PANEL
+CONFIG_DRM_PANEL_MSM8953_GENERATED
+CONFIG_DRM_PANEL_MDSS_ILI7807_FHDPLUS
+CONFIG_BACKLIGHT_CLASS_DEVICE
+CONFIG_LCD_CLASS_DEVICE
+CONFIG_EXTCON
+EOF
+
+while IFS= read -r key; do
+  [ -n "$key" ] || continue
+  sed -i \
+    -e "/^${key}=.*/d" \
+    -e "/^# ${key} is not set$/d" \
+    .config
+  printf '%s=y\n' "$key" >> .config
+done < /tmp/prp-display-force-y.list
+
+cat >/tmp/prp-display-force-n.list <<'EOF'
+CONFIG_DRM_PANEL_MDSS_ILI7807_FHD
+CONFIG_DRM_PANEL_MDSS_OTM1911_FHD
+CONFIG_DRM_PANEL_MDSS_OTM1911_FHDPLUS
+CONFIG_DRM_PANEL_MDSS_OTM1911
+CONFIG_DRM_PANEL_XIAOMI_OTM1911
+CONFIG_DRM_PANEL_HIMAX_HX8399C_FHDPLUS
+CONFIG_DRM_PANEL_TENOR_HX8399C_AUO
+CONFIG_DRM_PANEL_XIAOMI_YSL_HX8394F
+EOF
+
+while IFS= read -r key; do
+  [ -n "$key" ] || continue
+  sed -i \
+    -e "/^${key}=.*/d" \
+    -e "/^# ${key} is not set$/d" \
+    .config
+  printf '# %s is not set\n' "$key" >> .config
+done < /tmp/prp-display-force-n.list
+
+# Daisy mainline DTS uses a generic panel compatible ("xiaomi,daisy-panel")
+# while generated panel drivers match concrete compatibles.
+# Lock PRP to the detected panel variant from debug logs.
+for dts in \
+  arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy.dts \
+  arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy-r5.dts; do
+  [ -f "$dts" ] || continue
+  if grep -q 'compatible = "xiaomi,daisy-panel";' "$dts" 2>/dev/null; then
+    sed -i \
+      's/compatible = "xiaomi,daisy-panel";/compatible = "mdss,ili7807-fhdplus", "xiaomi,daisy-panel";/' \
+      "$dts"
+  fi
+done
+
+# Touch: daisy DTS ships both ft5406 and gt917d nodes disabled.
+# Different hardware lots can use either panel. Keep both enabled so recovery
+# touch works across units without per-device hardcoding.
+for dts in \
+  arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy.dts \
+  arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy-r5.dts; do
+  [ -f "$dts" ] || continue
+  sed -i '/&gt917d_ts {/,/};/ s/status = "disabled";/status = "okay";/' "$dts"
+  sed -i '/&ft5406_ts {/,/};/ s/status = "disabled";/status = "okay";/' "$dts"
+done
+
+yes "" | make ARCH=${ARCH:-arm64} olddefconfig
+
+# Re-assert touchscreen drivers as built-ins after all defconfig passes.
+if [ -x ./scripts/config ]; then
+  ./scripts/config --enable TOUCHSCREEN_GOODIX || true
+  ./scripts/config --enable TOUCHSCREEN_EDT_FT5X06 || true
+  ./scripts/config --enable TOUCHSCREEN_FT6236 || true
+  yes "" | make ARCH=${ARCH:-arm64} olddefconfig
+fi
+
+if grep -q '^CONFIG_MODULES=y' .config 2>/dev/null; then
+  echo "Error: CONFIG_MODULES is still enabled after PRP trim"
+  exit 1
+fi
+
+if grep -E '^CONFIG_DRM_PANEL_.*OTM1911.*=y$' .config >/tmp/prp-display-otm1911-clash.list 2>/dev/null; then
+  echo "Error: conflicting OTM1911 panel symbols still enabled:"
+  cat /tmp/prp-display-otm1911-clash.list
+  exit 1
+fi
+
+MAKE_ARGS="ARCH=${ARCH:-arm64}"
+if [ -n "${CROSS_COMPILE:-}" ]; then
+  MAKE_ARGS="$MAKE_ARGS CROSS_COMPILE=${CROSS_COMPILE}"
+fi
+
+JOBS="${PEACOCK_JOBS:-4}"
+if [ -z "$JOBS" ] || [ "$JOBS" -lt 1 ]; then
+  JOBS=1
+fi
+
+DTB_TARGET=""
+DTB_MAKE_TARGET=""
+if [ -f "arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy.dts" ]; then
+  DTB_TARGET="arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy.dtb"
+  DTB_MAKE_TARGET="qcom/msm8953-xiaomi-daisy.dtb"
+elif [ -f "arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy-r5.dts" ]; then
+  DTB_TARGET="arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy-r5.dtb"
+  DTB_MAKE_TARGET="qcom/msm8953-xiaomi-daisy-r5.dtb"
+else
+  echo "Error: daisy DTB source not found"
+  exit 1
+fi
+
+echo "Compiling PRP kernel Image.gz + daisy DTB only..."
+make $MAKE_ARGS -j"$JOBS" Image.gz "$DTB_MAKE_TARGET"
+
+mkdir -p stage/boot/dtbs/qcom
+if [ -f "arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy.dtb" ]; then
+  cp arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy.dtb stage/boot/dtbs/qcom/
+else
+  cp arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy-r5.dtb stage/boot/dtbs/qcom/msm8953-xiaomi-daisy.dtb
+fi
+
+cat arch/arm64/boot/Image.gz stage/boot/dtbs/qcom/msm8953-xiaomi-daisy.dtb > zImage
+
+# Export kernel artifact in package root so PRP can extract it from cache.
+cp zImage stage/zImage
+"""

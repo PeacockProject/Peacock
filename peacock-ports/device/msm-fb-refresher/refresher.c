@@ -20,10 +20,10 @@
 #include <fcntl.h>
 #include <sys/resource.h>
 #include <linux/fb.h>
-#include <assert.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include <errno.h>
 
 // TODO: We should be able to specify which framebuffer must be used and at which frequency the loop should be executed
 
@@ -31,20 +31,39 @@ int main(int argc, char *argv[])
 {
     int ret = 0;
     struct fb_var_screeninfo var;
-    int fd = open("/dev/fb0", O_RDWR);
+    int fd = -1;
+    int tries = 0;
   
     setpriority(PRIO_PROCESS, 0, -20);
-    assert(fd >= 0);
-	assert(ioctl(fd, FBIOGET_VSCREENINFO, &var) >= 0);
+
+    while (tries++ < 60) {
+        fd = open("/dev/fb0", O_RDWR);
+        if (fd < 0)
+            fd = open("/dev/graphics/fb0", O_RDWR);
+        if (fd >= 0)
+            break;
+        usleep(50000);
+    }
+    if (fd < 0) {
+        perror("Failed to open framebuffer");
+        return 1;
+    }
+    if (ioctl(fd, FBIOGET_VSCREENINFO, &var) < 0) {
+        perror("Failed FBIOGET_VSCREENINFO");
+        close(fd);
+        return 1;
+    }
 
     if(argc > 1 && !strcmp(argv[1], "--loop"))
     {
         while(1) {
-            ioctl(fd, FBIOPAN_DISPLAY, &var);
+            if (ioctl(fd, FBIOPAN_DISPLAY, &var) < 0 && errno != EBUSY) {
+                perror("Failed FBIOPAN_DISPLAY");
+                ret = 1;
+                break;
+            }
             usleep(16666);
         }
-        perror("Failed FBIOPAN_DISPLAY");
-        ret = 1;
     }
     else if(ioctl(fd, FBIOPAN_DISPLAY, &var) < 0)
     {

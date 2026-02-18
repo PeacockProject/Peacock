@@ -1,4 +1,3 @@
-diff --git a/hw/xfree86/fbdevhw/fbdevhw.c b/hw/xfree86/fbdevhw/fbdevhw.c
 --- a/hw/xfree86/fbdevhw/fbdevhw.c
 +++ b/hw/xfree86/fbdevhw/fbdevhw.c
 @@ -335,8 +335,12 @@
@@ -16,11 +15,10 @@ diff --git a/hw/xfree86/fbdevhw/fbdevhw.c b/hw/xfree86/fbdevhw/fbdevhw.c
              strstr(buf, "bus/pci")) {
              free(sysfs_path);
              close(fd);
-@@ -492,6 +496,24 @@
- 
+@@ -482,6 +486,25 @@
      xfree2fbdev_fblayout(pScrn, &req_var);
      xfree2fbdev_timing(mode, &req_var);
-+
+ 
 +    /*
 +     * Samsung jflte quirk:
 +     * The msm fbdev stack reports RGBA8888-style channel offsets
@@ -39,6 +37,7 @@ diff --git a/hw/xfree86/fbdevhw/fbdevhw.c b/hw/xfree86/fbdevhw/fbdevhw.c
 +        req_var.blue.offset = 0;
 +        req_var.transp.offset = 24;
 +    }
- 
++
  #ifdef DEBUG
      print_xfree_mode("init", mode);
+     print_fbdev_mode("init", &req_var);

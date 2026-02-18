@@ -1,0 +1,29 @@
+[package]
+name = "libxrender-jflte"
+version = "0.9.12.2"
+description = "jflte-patched libXrender with crash guards for fbdev userspace"
+provides = ["libxrender"]
+
+[build]
+source = "https://www.x.org/releases/individual/lib/libXrender-0.9.12.tar.xz"
+checksum = ""
+build_deps = ["gcc", "make", "pkgconf", "patch", "libx11", "xorgproto", "xorg-util-macros"]
+script = """
+set -e
+
+tarball="$(ls -1 libXrender-*.tar.xz 2>/dev/null | head -n1)"
+if [ -n "$tarball" ]; then
+  tar -xf "$tarball" --strip-components=1
+fi
+
+patch -p1 < "$PWD/jflte-xrender-guard.patch"
+
+# Keep codegen conservative for this legacy userspace/kernel combo.
+export CFLAGS="${CFLAGS:-} -O2 -fno-strict-aliasing -fno-tree-vectorize"
+
+./configure --prefix=/usr --disable-static
+make -j$(nproc)
+make DESTDIR="$PWD/stage" install
+
+cp -a stage/usr ./
+"""

@@ -1,7 +1,16 @@
 [package]
 name = "samsung-jflte-debug-netssh"
-version = "1.0.0"
+version = "1.0.1"
 description = "Debug helper: auto USB RNDIS + DHCP + SSH daemon (OpenRC)"
+depends = [
+    "openrc",
+    "coreutils",
+    "iproute2",
+    "inetutils",
+    "busybox",
+    "openssh",
+    "shadow",
+]
 
 [build]
 dependencies_openrc = [
@@ -274,11 +283,26 @@ EOF_SSH_PREP
 
 chmod 0755 stage/usr/local/sbin/peacock-debug-sshd-prepare
 
+cat > stage/usr/local/sbin/peacock-debug-sshd <<'EOF_SSHD_WRAPPER'
+#!/bin/sh
+set -eu
+
+if [ -x /usr/bin/sshd ]; then
+    exec /usr/bin/sshd "$@"
+fi
+if [ -x /usr/sbin/sshd ]; then
+    exec /usr/sbin/sshd "$@"
+fi
+
+echo "peacock-debug-sshd: sshd binary not found" >&2
+exit 127
+EOF_SSHD_WRAPPER
+
 cat > stage/etc/init.d/peacock-debug-sshd <<'EOF_SSHD_SVC'
 #!/sbin/openrc-run
 description="Peacock debug SSH daemon"
 
-command="/usr/sbin/sshd"
+command="/usr/local/sbin/peacock-debug-sshd"
 command_args="-D -f /etc/ssh/sshd_config_peacock_debug -E /var/log/peacock-debug-sshd.log"
 command_background="yes"
 pidfile="/run/peacock-debug-sshd.pid"
@@ -293,6 +317,7 @@ depend() {
 }
 EOF_SSHD_SVC
 
+chmod 0755 stage/usr/local/sbin/peacock-debug-sshd
 chmod 0755 stage/etc/init.d/peacock-debug-rndis stage/etc/init.d/peacock-debug-sshd
 ln -sf /etc/init.d/peacock-debug-rndis stage/etc/runlevels/boot/peacock-debug-rndis
 ln -sf /etc/init.d/peacock-debug-rndis stage/etc/runlevels/default/peacock-debug-rndis

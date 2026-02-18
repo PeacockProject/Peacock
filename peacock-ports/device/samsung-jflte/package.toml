@@ -30,8 +30,11 @@ dependencies_openrc = [
     "dhcpcd",
     "udev-openrc",
     "xf86-input-evdev",
+    "libxrender-jflte",
     "peacock-splash",
-    "peacock-fb-logger",
-    "samsung-jflte-display-fix"
+    "samsung-jflte-fb-logger",
+    "peacock-sddm-theme-peacock-phone",
+    "samsung-jflte-display-fix",
+    "samsung-jflte-sddm-quirk"
 ]
 script = "echo 'Metapackage installed'"

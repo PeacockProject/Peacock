@@ -1,0 +1,16 @@
+[package]
+name = "firmware-qcom-adreno-a530"
+version = "20241110"
+description = "Qualcomm Adreno A530 GPU firmware (from postmarketOS source)"
+
+[build]
+source = "https://gitlab.com/kernel-firmware/linux-firmware/-/archive/20241110/linux-firmware-20241110.tar.gz"
+checksum = ""
+build_deps = ["coreutils", "tar"]
+script = """
+set -e
+
+mkdir -p stage/lib/firmware/qcom
+install -m 0644 qcom/a530_pm4.fw stage/lib/firmware/qcom/
+install -m 0644 qcom/a530_pfp.fw stage/lib/firmware/qcom/
+"""

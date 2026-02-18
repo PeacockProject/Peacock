@@ -1,0 +1,71 @@
+--- a/src/Picture.c
++++ b/src/Picture.c
+@@ -27,6 +27,7 @@
+ #endif
+ #include "Xrenderint.h"
+ #include <X11/Xregion.h>
++#include <stdint.h>
+ 
+ static void
+ _XRenderProcessPictureAttributes (Display		    *dpy,
+@@ -82,6 +83,51 @@
+     Picture		    pid;
+     xRenderCreatePictureReq *req;
+ 
++    const XRenderPictFormat *safe_format = format;
++
++    /*
++     * jflte/fbdev hardening:
++     * some client stacks can pass invalid format pointers (observed as 0xffffffff),
++     * which crashes on format->id dereference. Recover with a best-effort fallback
++     * format so callers do not end up with Picture=0 and later RenderBadPicture.
++     */
++    if (!safe_format || (uintptr_t) safe_format == UINTPTR_MAX || (uintptr_t) safe_format < 4096u) {
++	XWindowAttributes attr;
++
++	if (XGetWindowAttributes(dpy, drawable, &attr) && attr.visual)
++	    safe_format = XRenderFindVisualFormat(dpy, attr.visual);
++
++	if (!safe_format) {
++	    Window root;
++	    int x, y;
++	    unsigned int w, h, border, depth;
++
++	    if (XGetGeometry(dpy, drawable, &root, &x, &y, &w, &h, &border, &depth)) {
++		switch (depth) {
++		case 32:
++		    safe_format = XRenderFindStandardFormat(dpy, PictStandardARGB32);
++		    break;
++		case 1:
++		    safe_format = XRenderFindStandardFormat(dpy, PictStandardA1);
++		    break;
++		case 8:
++		    safe_format = XRenderFindStandardFormat(dpy, PictStandardA8);
++		    break;
++		default:
++		    safe_format = XRenderFindStandardFormat(dpy, PictStandardRGB24);
++		    break;
++		}
++	    }
++	}
++    }
++
++    if (!safe_format)
++	return 0;
++
++    /* Avoid dereferencing a null attributes pointer in _XRenderProcessPictureAttributes(). */
++    if (valuemask && !attributes)
++	valuemask = 0;
++
+     RenderCheckExtension (dpy, info, 0);
+     LockDisplay(dpy);
+     GetReq(RenderCreatePicture, req);
+@@ -89,7 +135,7 @@
+     req->renderReqType = X_RenderCreatePicture;
+     req->pid = (CARD32) (pid = XAllocID(dpy));
+     req->drawable = (CARD32) drawable;
+-    req->format = (CARD32) format->id;
++    req->format = (CARD32) safe_format->id;
+     if ((req->mask = (CARD32) valuemask))
+ 	_XRenderProcessPictureAttributes (dpy,
+ 					  (xRenderChangePictureReq *) req,

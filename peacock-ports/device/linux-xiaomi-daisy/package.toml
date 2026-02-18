@@ -1,0 +1,170 @@
+[package]
+name = "linux-xiaomi-daisy"
+version = "6.16.3.r0"
+description = "Mainline kernel for Xiaomi Mi A2 Lite (daisy / msm8953)"
+
+[build]
+source = "https://github.com/msm8953-mainline/linux/archive/v6.16.3-r0.tar.gz"
+checksum = "f84c20e6dd6acf205fe1b64632a00d66307cc4676f5dc9b1d5ff7fe7867e2b1e"
+build_deps = ["base-devel", "bc", "dtc", "kmod", "cpio", "python", "perl", "openssl", "aarch64-linux-gnu-binutils", "aarch64-linux-gnu-gcc"]
+use_qemu = false
+cross_compile = "aarch64-linux-gnu-"
+
+script = """
+echo "Copying config..."
+cp config .config
+
+echo "Sanitizing compiler capability symbols from imported config..."
+sed -i \
+  -e '/^CONFIG_CC_VERSION_TEXT=/d' \
+  -e '/^CONFIG_CC_IS_/d' \
+  -e '/^CONFIG_GCC_VERSION=/d' \
+  -e '/^CONFIG_CLANG_VERSION=/d' \
+  -e '/^CONFIG_AS_IS_/d' \
+  -e '/^CONFIG_AS_VERSION=/d' \
+  -e '/^CONFIG_LD_IS_/d' \
+  -e '/^CONFIG_LD_VERSION=/d' \
+  -e '/^CONFIG_LLD_VERSION=/d' \
+  -e '/^CONFIG_CC_HAS_/d' \
+  -e '/^CONFIG_CC_CAN_/d' \
+  -e '/^CONFIG_TOOLS_SUPPORT_RELR=/d' \
+  .config
+
+echo "Refreshing config..."
+yes "" | make ARCH=${ARCH:-arm64} olddefconfig
+
+echo "Disabling pointer-auth flags that break with current GCC..."
+if [ -x ./scripts/config ]; then
+  ./scripts/config --disable ARM64_PTR_AUTH || true
+  ./scripts/config --disable ARM64_PTR_AUTH_KERNEL || true
+  ./scripts/config --disable BUILTIN_RETURN_ADDRESS_STRIPS_PAC || true
+  ./scripts/config --disable CC_HAS_BRANCH_PROT_PAC_RET || true
+  ./scripts/config --disable CC_HAS_BRANCH_PROT_PAC_RET_BTI || true
+fi
+yes "" | make ARCH=${ARCH:-arm64} olddefconfig
+
+echo "Applying daisy critical built-ins for early panel/touch bring-up..."
+if [ -x ./scripts/config ]; then
+  for sym in \
+    INPUT_EVDEV \
+    INPUT_PM8941_PWRKEY \
+    POWER_RESET_QCOM_PON \
+    DRM \
+    DRM_MSM \
+    DRM_MSM_MDSS \
+    DRM_MSM_MDP5 \
+    DRM_MSM_DSI \
+    DRM_MSM_DSI_14NM_PHY \
+    DRM_PANEL \
+    DRM_PANEL_MSM8953_GENERATED \
+    DRM_PANEL_MDSS_ILI7807_FHDPLUS \
+    TOUCHSCREEN_GOODIX \
+    TOUCHSCREEN_EDT_FT5X06 \
+    TOUCHSCREEN_FT6236
+  do
+    ./scripts/config --enable "$sym" || true
+  done
+
+  for sym in \
+    DRM_PANEL_MDSS_OTM1911_FHD \
+    DRM_PANEL_MDSS_OTM1911_FHDPLUS \
+    DRM_PANEL_XIAOMI_OTM1911
+  do
+    ./scripts/config --disable "$sym" || true
+  done
+fi
+
+# Match daisy panel node to the concrete panel driver and enable both known
+# touch controllers used across device lots.
+for dts in \
+  arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy.dts \
+  arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy-r5.dts; do
+  [ -f "$dts" ] || continue
+  if grep -q 'compatible = "xiaomi,daisy-panel";' "$dts" 2>/dev/null; then
+    sed -i \
+      's/compatible = "xiaomi,daisy-panel";/compatible = "mdss,ili7807-fhdplus", "xiaomi,daisy-panel";/' \
+      "$dts"
+  fi
+  sed -i '/&gt917d_ts {/,/};/ s/status = "disabled";/status = "okay";/' "$dts"
+  sed -i '/&ft5406_ts {/,/};/ s/status = "disabled";/status = "okay";/' "$dts"
+done
+yes "" | make ARCH=${ARCH:-arm64} olddefconfig
+
+MAKE_ARGS="ARCH=${ARCH:-arm64}"
+if [ -n "${CROSS_COMPILE:-}" ]; then
+  MAKE_ARGS="$MAKE_ARGS CROSS_COMPILE=${CROSS_COMPILE}"
+fi
+
+JOBS="${PEACOCK_JOBS:-4}"
+if [ -z "$JOBS" ] || [ "$JOBS" -lt 1 ]; then
+  JOBS=1
+fi
+
+KERNEL_PROFILE="${PEACOCK_KERNEL_PROFILE:-full}"
+if [ "$KERNEL_PROFILE" = "prp" ]; then
+  echo "Applying PRP kernel profile (faster build, no modules)..."
+  if [ -x ./scripts/config ]; then
+    ./scripts/config --disable MODULES || true
+    ./scripts/config --enable DRM_MSM || true
+  fi
+  yes "" | make ARCH=${ARCH:-arm64} olddefconfig
+fi
+
+DTB_TARGET=""
+DTB_MAKE_TARGET=""
+if [ -f "arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy.dts" ]; then
+  DTB_TARGET="arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy.dtb"
+  DTB_MAKE_TARGET="qcom/msm8953-xiaomi-daisy.dtb"
+elif [ -f "arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy-r5.dts" ]; then
+  DTB_TARGET="arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy-r5.dtb"
+  DTB_MAKE_TARGET="qcom/msm8953-xiaomi-daisy-r5.dtb"
+fi
+
+echo "Compiling kernel Image.gz + target DTB..."
+if [ -n "$DTB_MAKE_TARGET" ]; then
+  make $MAKE_ARGS -j"$JOBS" Image.gz "$DTB_MAKE_TARGET"
+else
+  # Fallback keeps build functional if upstream renames dtb targets.
+  make $MAKE_ARGS -j"$JOBS" Image.gz dtbs
+fi
+
+echo "Compiling modules..."
+if grep -q "^CONFIG_MODULES=y" .config 2>/dev/null; then
+  make $MAKE_ARGS -j"$JOBS" modules
+  rm -rf stage
+  mkdir -p stage
+  make $MAKE_ARGS modules_install INSTALL_MOD_PATH="$(pwd)/stage"
+else
+  rm -rf stage
+  mkdir -p stage
+fi
+
+mkdir -p stage/boot/dtbs/qcom
+if [ -f "arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy.dtb" ]; then
+  cp arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy.dtb stage/boot/dtbs/qcom/
+elif [ -f "arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy-r5.dtb" ]; then
+  cp arch/arm64/boot/dts/qcom/msm8953-xiaomi-daisy-r5.dtb stage/boot/dtbs/qcom/msm8953-xiaomi-daisy.dtb
+else
+  echo "Error: daisy DTB not found after build"
+  exit 1
+fi
+
+if [ -f "arch/arm64/boot/Image.gz" ]; then
+  cat arch/arm64/boot/Image.gz stage/boot/dtbs/qcom/msm8953-xiaomi-daisy.dtb > zImage
+elif [ -f "arch/arm64/boot/Image" ]; then
+  cat arch/arm64/boot/Image stage/boot/dtbs/qcom/msm8953-xiaomi-daisy.dtb > zImage
+else
+  echo "Error: kernel image not found"
+  exit 1
+fi
+
+if [ -d "stage/lib/modules" ]; then
+  tar -czf modules.tar.gz -C stage lib/modules
+fi
+
+# Export kernel artifacts in package root so peacock can extract them from cache.
+cp zImage stage/zImage
+if [ -f modules.tar.gz ]; then
+  cp modules.tar.gz stage/modules.tar.gz
+fi
+"""

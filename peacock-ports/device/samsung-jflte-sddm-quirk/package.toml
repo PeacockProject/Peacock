@@ -1,0 +1,82 @@
+[package]
+name = "samsung-jflte-sddm-quirk"
+version = "1.0.0"
+description = "jflte-specific SDDM/logind startup quirk handling"
+depends = ["sddm-openrc", "elogind", "dbus", "udev-openrc", "openrc"]
+
+[build]
+dependencies_openrc = ["sddm-openrc", "elogind", "dbus", "udev-openrc", "openrc", "coreutils"]
+script = """
+set -e
+
+mkdir -p stage/etc/init.d stage/etc/udev/rules.d
+
+cat > stage/etc/udev/rules.d/71-jflte-seat-master.rules <<'EOF'
+# elogind can report seat0 CanGraphical=false on jflte/fbdev unless fb0 is
+# tagged as the seat master.
+SUBSYSTEM=="graphics", KERNEL=="fb0", TAG+="master-of-seat"
+EOF
+
+cat > stage/etc/init.d/sddm <<'EOF'
+#!/usr/bin/openrc-run
+
+supervisor=supervise-daemon
+command="/usr/bin/sddm"
+command_args="--log-file /var/log/sddm.log --debug"
+supervise_daemon_args="--stdout /var/log/sddm.log --stderr /var/log/sddm.log"
+
+wait_for_graphical_seat() {
+    command -v busctl >/dev/null 2>&1 || return 0
+    checkpath -f -m 0644 /var/log/sddm-preflight.log
+
+    tries=0
+    v="false"
+    while [ "$tries" -lt 15 ]; do
+        v="$(busctl --system get-property org.freedesktop.login1 /org/freedesktop/login1/seat/seat0 org.freedesktop.login1.Seat CanGraphical 2>/dev/null | cut -d" " -f2)"
+        [ "$v" = "true" ] && break
+        sleep 1
+        tries=$((tries + 1))
+    done
+    echo "preflight can_graphical=$v wait_s=$tries" >> /var/log/sddm-preflight.log
+
+    if [ "$v" != "true" ] && [ -x /etc/init.d/elogind ]; then
+        rc-service elogind restart >/dev/null 2>&1 || true
+        tries=0
+        while [ "$tries" -lt 10 ]; do
+            v="$(busctl --system get-property org.freedesktop.login1 /org/freedesktop/login1/seat/seat0 org.freedesktop.login1.Seat CanGraphical 2>/dev/null | cut -d" " -f2)"
+            [ "$v" = "true" ] && break
+            sleep 1
+            tries=$((tries + 1))
+        done
+        echo "preflight after_elogind can_graphical=$v wait_s=$tries" >> /var/log/sddm-preflight.log
+    fi
+    return 0
+}
+
+start_pre() {
+    checkpath -d -m 0755 -o sddm:sddm /var/lib/sddm
+    checkpath -d -m 0755 -o sddm:sddm /var/lib/sddm/.local
+    checkpath -d -m 0755 -o sddm:sddm /var/lib/sddm/.local/share
+    checkpath -d -m 0755 -o sddm:sddm /var/lib/sddm/.local/share/sddm
+    checkpath -d -m 0755 -o sddm:sddm /var/run/sddm
+    checkpath -f -m 0666 -o sddm:sddm /var/log/sddm.log
+    wait_for_graphical_seat
+}
+
+depend() {
+    need localmount
+
+    after bootmisc consolefont modules netmount
+    after ypbind autofs openvpn gpm lircmd
+    after quota keymaps
+    before alsasound
+    need elogind dbus
+    use xfs
+
+    provide xdm display-manager
+}
+EOF
+
+chmod 0755 stage/etc/init.d/sddm
+"""
+
