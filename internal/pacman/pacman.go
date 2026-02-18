@@ -104,36 +104,52 @@ func Install(target string, configFile string, packages []string, cacheDir strin
 		}
 	}
 
-	args := []string{
+	baseArgs := []string{
 		"-r", target,
 		"--noconfirm",
 		"--config", configFile,
 		"--overwrite", "*",
-		"-Sy",
 	}
 	if skipScripts {
-		args = append(args, "--noscriptlet")
+		baseArgs = append(baseArgs, "--noscriptlet")
 	}
 	if cacheDir != "" {
-		args = append(args, "--cachedir", cacheDir)
-	}
-	args = append(args, packages...)
-
-	var cmd *exec.Cmd
-	if execRoot != "" {
-		// Run inside chroot
-		// sudo chroot execRoot pacman ...
-		chrootArgs := append([]string{"chroot", execRoot, "pacman"}, args...)
-		cmd = exec.Command("sudo", chrootArgs...)
-	} else {
-		cmd = exec.Command("sudo", append([]string{"pacman"}, args...)...)
+		baseArgs = append(baseArgs, "--cachedir", cacheDir)
 	}
 
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = runner.LogWriter()
-	cmd.Stderr = runner.LogWriter()
+	run := func(extraArgs []string) error {
+		args := append(append([]string{}, baseArgs...), extraArgs...)
+		var cmd *exec.Cmd
+		if execRoot != "" {
+			// Run inside chroot
+			// sudo chroot execRoot pacman ...
+			chrootArgs := append([]string{"chroot", execRoot, "pacman"}, args...)
+			cmd = exec.Command("sudo", chrootArgs...)
+		} else {
+			cmd = exec.Command("sudo", append([]string{"pacman"}, args...)...)
+		}
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = runner.LogWriter()
+		cmd.Stderr = runner.LogWriter()
+		return runner.RunCmd(cmd)
+	}
 
-	return runner.RunCmd(cmd)
+	// Keep the chroot updated before package install. This prevents mirror 404s
+	// caused by stale dependency resolution in long-lived build roots.
+	if err := run([]string{"-Syyu"}); err != nil {
+		fmt.Fprintf(runner.LogWriter(), "pacman sync-upgrade failed, retrying once...\n")
+		if err2 := run([]string{"-Syyu"}); err2 != nil {
+			return err2
+		}
+	}
+
+	installArgs := append([]string{"-Syy"}, packages...)
+	if err := run(installArgs); err != nil {
+		// Mirrors can race while metadata/package files rotate; retry once with fresh sync.
+		fmt.Fprintf(runner.LogWriter(), "pacman install failed, retrying once...\n")
+		return run(installArgs)
+	}
+	return nil
 }
 
 // InstallLocal installs local package files (pacman -U)

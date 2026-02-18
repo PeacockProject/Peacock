@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"peacock/internal/chroot"
@@ -438,30 +439,12 @@ func (b *Builder) EnsureBuildChroot(root string, chrootArch string, useQemu bool
 		return err
 	}
 	
-	// Bind mount Host Cache to Target Pacman Cache to avoid re-downloads
-	// Target path: root/var/cache/pacman/pkg
+	// Keep a per-chroot pacman cache. Do not bind the global peacock cache here:
+	// mixing packages from different repos/arches causes checksum mismatches.
 	targetCache := filepath.Join(root, "var", "cache", "pacman", "pkg")
 	if err := os.MkdirAll(targetCache, 0755); err != nil {
 		return err
 	}
-	
-	// Host cache source: b.CacheDir is passed to Builder. 
-	// Usually ~/.local/var/peacock/peacock-cache
-	// We want to mount it to /var/cache/pacman/pkg
-	if err := runner.RunCmd(exec.Command("sudo", "mount", "--bind", b.CacheDir, targetCache)); err != nil {
-		return fmt.Errorf("failed to bind mount cache: %w", err)
-	}
-	// We need to unmount this eventually... defer unmount in the Caller?
-	// Or just leave it mounted until reboot/cleanup? 
-	// EnsureBuildChroot is called once per build-session usually.
-	// But defer will run at end of function.
-	// We need it mounted during install.
-	defer runner.RunCmd(exec.Command("sudo", "umount", targetCache))
-    
-    // Actually, we can't defer unmount here because subsequent steps (BuildPackageInChroot) 
-    // might essentially need it? No, BuildPackageInChroot mounts its own deps.
-    // BUT the bootstrap install happens HERE. So we need it for THIS function scope.
-    // OK to defer unmount.
 
 	// Symlink /proc/self/mounts to /etc/mtab for pacman disk check
 	// We need /etc to exist first (it does, likely created by MkdirAll above or future step? No, MkdirAll only created root and var/lib/pacman)
@@ -471,8 +454,12 @@ func (b *Builder) EnsureBuildChroot(root string, chrootArch string, useQemu bool
 	}
 	_ = runner.RunCmd(exec.Command("sudo", "ln", "-sf", "/proc/self/mounts", filepath.Join(root, "etc", "mtab")))
 
-	// 1. Generate pacman config for ARM
-	if err := pacman.GenerateConfig(root, "armv7h"); err != nil {
+	// 1. Generate pacman config for target arch
+	targetPacmanArch := chrootArch
+	if targetPacmanArch == "armv7" {
+		targetPacmanArch = "armv7h"
+	}
+	if err := pacman.GenerateConfig(root, targetPacmanArch); err != nil {
 		return err
 	}
 	// Disable CheckSpace in target config to avoid mount point errors in nested chroot
@@ -518,7 +505,9 @@ func (b *Builder) EnsureBuildChroot(root string, chrootArch string, useQemu bool
 	// which allows the kernel to use the interpreter (qemu-arm-static) from the master/host 
 	// without needing it present inside the target chroot.
 	
-	pkgs := []string{"base"} 
+	// Install the provider explicitly to avoid interactive provider prompts
+	// (libxtables.so=12-64: iptables vs iptables-nft) during chroot bootstrap.
+	pkgs := []string{"iptables", "base"}
 	
 	if err := pacman.Install("/mnt/target", "/mnt/target/etc/pacman.conf", pkgs, "/mnt/target/var/cache/pacman/pkg", false, masterRoot); err != nil {
 		return fmt.Errorf("failed to bootstrap ARM chroot from master: %w", err)
@@ -613,14 +602,11 @@ func (b *Builder) installBuildDeps(root string, deps []string, execRoot string) 
 	}
 	defer cleanup()
 
-	// Mount cache if not using nested chroot (host execution)
 	cacheMount := filepath.Join(root, "var", "cache", "pacman", "pkg")
 	if err := os.MkdirAll(cacheMount, 0755); err != nil {return err}
-	if err := runner.RunCmd(exec.Command("sudo", "mount", "--bind", b.CacheDir, cacheMount)); err != nil {return err}
-	defer runner.RunCmd(exec.Command("sudo", "umount", cacheMount))
 
 	// Using pacman to install build deps
-	// Pass explicit cachedir (absolute path on host)
+	// Pass explicit cachedir (per-chroot cache)
 	return pacman.Install(root, startConf, deps, cacheMount, false, "")
 }
 
@@ -781,6 +767,11 @@ func (b *Builder) BuildPackageInChroot(pkg *manifest.Package, targetArch string,
 		}
 		if opts.CrossCompile != "" {
 			envLines = append(envLines, "export CROSS_COMPILE="+opts.CrossCompile)
+		}
+		if jobsStr := strings.TrimSpace(os.Getenv("PEACOCK_JOBS")); jobsStr != "" {
+			if jobs, err := strconv.Atoi(jobsStr); err == nil && jobs > 0 {
+				envLines = append(envLines, fmt.Sprintf("export PEACOCK_JOBS=%d", jobs))
+			}
 		}
 		envScriptPath := filepath.Join(buildDir, "peacock-env.sh")
 		envContent := "#!/bin/sh\n" + strings.Join(envLines, "\n") + "\n"

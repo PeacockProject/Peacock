@@ -3,7 +3,7 @@
 # ============================================================
 
 # ----- Build artifacts & binaries -----
-peacock
+/peacock
 struct
 *.o
 *.a

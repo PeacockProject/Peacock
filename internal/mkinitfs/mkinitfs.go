@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"text/template"
 
 	"peacock/internal/runner"
@@ -20,6 +21,7 @@ type InitConfig struct {
 	SplashPath        string // Path to peacock-splash binary (optional)
 	RefresherPath     string // Path to msm-fb-refresher binary (optional)
 	Architecture      string // Target arch (e.g., "armv7h", "aarch64", "x86_64")
+	DeviceName        string // Device codename (e.g., "samsung-jflte")
 	EnableS4CameraLED bool   // Enable S4-specific camera LED debug flashes in initramfs
 }
 
@@ -99,12 +101,8 @@ bootlog_try_label_or_fallback() {
                 ;;
         esac
     done
-    for dev in \
-        /dev/mmcblk0p18 /dev/block/mmcblk0p18 \
-        /dev/mmcblk0p27 /dev/block/mmcblk0p27 \
-        /dev/mmcblk0p29s0 /dev/mmcblk0p29p1 /dev/mmcblk0p1 /dev/mmcblk0p20 /dev/dm-0; do
-        bootlog_try_mount_dev "$dev" && return 0
-    done
+    # Intentionally no hardcoded device-node fallbacks here.
+    # Keep this path generic: labels, by-name aliases, and PARTNAME probes only.
     return 1
 }
 bootlog_try_from_root() {
@@ -119,15 +117,15 @@ bootlog_try_from_root() {
     return 1
 }
 bootlog_close() {
+    # Never block handoff on debug log sink teardown.
     if [ -n "$BOOTLOG_FILE" ]; then
         echo "$(date +%s) PEACOCK: closing bootlog sink" >> "$BOOTLOG_FILE" 2>/dev/null || true
-        /bin/busybox sync >/dev/null 2>&1 || true
     fi
     if [ -n "$BOOTLOG_DEV" ]; then
-        /bin/busybox umount "$BOOTLOG_MNT" >/dev/null 2>&1 || true
-        BOOTLOG_DEV=""
-        BOOTLOG_FILE=""
+        (/bin/busybox umount -l "$BOOTLOG_MNT" >/dev/null 2>&1 || true) &
     fi
+    BOOTLOG_DEV=""
+    BOOTLOG_FILE=""
 }
 
 # Logging function - writes to multiple places for debugging
@@ -159,9 +157,17 @@ splash() {
             # Prefer primary panel fb0; fallback to fb1
             if [ -c /dev/fb0 ]; then
                 fbdev="/dev/fb0"
+            elif [ -c /dev/graphics/fb0 ]; then
+                fbdev="/dev/graphics/fb0"
             elif [ -c /dev/fb1 ]; then
                 fbdev="/dev/fb1"
+            elif [ -c /dev/graphics/fb1 ]; then
+                fbdev="/dev/graphics/fb1"
             fi
+        fi
+        # Keep a resolved global FBDEV so later handoff flare can reuse it.
+        if [ -z "${FBDEV:-}" ] && [ -n "$fbdev" ]; then
+            FBDEV="$fbdev"
         fi
         if [ -n "$fbdev" ]; then
             log "Using framebuffer device: $fbdev"
@@ -201,10 +207,10 @@ flash_led() {
 flash_led() { :; }
 {{end}}
 
-# Mount special filesystems
-/bin/busybox mount -t proc proc /proc
-/bin/busybox mount -t sysfs sysfs /sys
-/bin/busybox mount -t devtmpfs dev /dev
+# Mount special filesystems (idempotent; some kernels auto-mount devtmpfs)
+/bin/busybox mountpoint -q /proc 2>/dev/null || /bin/busybox mount -t proc proc /proc
+/bin/busybox mountpoint -q /sys 2>/dev/null || /bin/busybox mount -t sysfs sysfs /sys
+/bin/busybox mountpoint -q /dev 2>/dev/null || /bin/busybox mount -t devtmpfs dev /dev
 bootlog_try_label_or_fallback || true
 
 log "=== Peacock Initramfs Starting ==="
@@ -278,6 +284,12 @@ FBDEV="$PEACOCK_FBDEV"
 if [ -z "$FBDEV" ]; then
     if [ -c /dev/fb0 ]; then
         FBDEV="/dev/fb0"
+    elif [ -c /dev/graphics/fb0 ]; then
+        FBDEV="/dev/graphics/fb0"
+    elif [ -c /dev/fb1 ]; then
+        FBDEV="/dev/fb1"
+    elif [ -c /dev/graphics/fb1 ]; then
+        FBDEV="/dev/graphics/fb1"
     fi
 fi
 
@@ -906,16 +918,35 @@ fi
 echo "attempt $(date +%s) init={{.InitSystem}}" >> /new_root/var/log/peacock-switch-root.status 2>/dev/null || true
 
 handoff_flare() {
-    [ -x /bin/peacock-splash ] || return 0
-    [ -n "$FBDEV" ] || return 0
+    [ -x /bin/peacock-splash ] || { log "handoff flare: splash binary missing"; return 0; }
+    if [ -z "$FBDEV" ]; then
+        if [ -c /dev/fb0 ]; then
+            FBDEV="/dev/fb0"
+        elif [ -c /dev/graphics/fb0 ]; then
+            FBDEV="/dev/graphics/fb0"
+        elif [ -c /dev/fb1 ]; then
+            FBDEV="/dev/fb1"
+        elif [ -c /dev/graphics/fb1 ]; then
+            FBDEV="/dev/graphics/fb1"
+        fi
+    fi
+    [ -n "$FBDEV" ] || { log "handoff flare: FBDEV missing"; return 0; }
     local img=""
     for cand in /etc/peacock/conspiracy.png /conspiracy.png; do
         [ -f "$cand" ] || continue
         img="$cand"
         break
     done
-    [ -n "$img" ] || return 0
-    /bin/peacock-splash "" 0 "$FBDEV" 000000 noclear glitch "image=$img" textmode 2>&1 | while read line; do log "peacock-splash: $line"; done || true
+    [ -n "$img" ] || { log "handoff flare: image missing"; return 0; }
+    log "handoff flare: glitch+image ($img)"
+    if /bin/busybox --list 2>/dev/null | /bin/busybox grep -qx timeout; then
+        /bin/busybox timeout 1 /bin/peacock-splash " " 0 "$FBDEV" 000000 noclear glitch "image=$img" 2>&1 | while read line; do log "peacock-splash: $line"; done || true
+    else
+        /bin/peacock-splash " " 0 "$FBDEV" 000000 noclear glitch "image=$img" 2>&1 | while read line; do log "peacock-splash: $line"; done || true
+    fi
+    /bin/busybox usleep 60000 2>/dev/null || true
+    # Avoid leaving the flare frame stuck if userspace display startup is delayed.
+    /bin/peacock-splash " " 0 "$FBDEV" 000000 2>&1 | while read line; do log "peacock-splash: $line"; done || true
 }
 
 handoff_flare
@@ -934,7 +965,9 @@ stop_fb_refresher() {
         REFRESHER_PID=""
     fi
 }
+echo "preclose $(date +%s)" >> /new_root/var/log/peacock-switch-root.status 2>/dev/null || true
 bootlog_close
+echo "postclose $(date +%s)" >> /new_root/var/log/peacock-switch-root.status 2>/dev/null || true
 
 if [ "{{.InitSystem}}" = "systemd" ]; then
     /bin/busybox switch_root /new_root /usr/lib/systemd/systemd 2>/new_root/var/log/peacock-switch-root.err
@@ -963,6 +996,13 @@ elif [ "{{.InitSystem}}" = "openrc" ]; then
 tty1::respawn:/sbin/agetty -L 115200 tty1 vt100
 EOF
     fi
+    # /dev is already provided by initramfs handoff. On kernels with
+    # CONFIG_DEVTMPFS_MOUNT, remounting in OpenRC can emit noisy EBUSY and
+    # occasionally destabilize early boot on some devices.
+    /bin/busybox mkdir -p /new_root/etc/conf.d 2>/dev/null || true
+    if ! /bin/busybox grep -q '^skip_mount_dev=' /new_root/etc/conf.d/devfs 2>/dev/null; then
+        echo 'skip_mount_dev=yes' >> /new_root/etc/conf.d/devfs
+    fi
 
     log "handoff via switch_root to openrc (/sbin/init)"
     log "handoff preflight: pid=$$ ppid=$PPID"
@@ -975,15 +1015,25 @@ EOF
         log "handoff preflight: /new_root is NOT a mountpoint"
     fi
     /bin/busybox awk '$2=="/new_root"{print "handoff preflight: mount "$0}' /proc/mounts 2>/dev/null | while read line; do log "$line"; done
+    preflight_mountpoint="no"
+    if /bin/busybox mountpoint -q /new_root 2>/dev/null; then
+        preflight_mountpoint="yes"
+    fi
+    preflight_mount_line="$(/bin/busybox awk '$2=="/new_root"{print $0; exit}' /proc/mounts 2>/dev/null || true)"
+    preflight_init="no"
+    [ -x /new_root/sbin/init ] && preflight_init="yes"
+    preflight_console="no"
+    [ -c /new_root/dev/console ] && preflight_console="yes"
+    echo "preflight $(date +%s) pid=$$ ppid=$PPID mnt=$preflight_mountpoint init=$preflight_init console=$preflight_console line=${preflight_mount_line:-none}" >> /new_root/var/log/peacock-switch-root.status 2>/dev/null || true
     echo "handoff $(date +%s) switch_root-openrc-init" >> /new_root/var/log/peacock-switch-root.status 2>/dev/null || true
     /bin/busybox mkdir -p /new_root/dev 2>/dev/null || true
     # Ensure console node exists in new root even if devtmpfs move/reopen is flaky.
     [ -c /new_root/dev/console ] || /bin/busybox mknod -m 600 /new_root/dev/console c 5 1 2>/dev/null || true
     # Keep stderr on tmpfs to avoid failures opening a file on new root before handoff.
     : > /tmp/peacock-switch-root.err
-    /bin/busybox switch_root -c /dev/console /new_root /sbin/init 2>>/tmp/peacock-switch-root.err
-    rc=$?
     stop_fb_refresher
+    # Keep fallback path alive: if switch_root fails, continue to chroot handoff.
+    rc=0
     /bin/busybox switch_root -c /dev/console /new_root /sbin/init 2>>/tmp/peacock-switch-root.err || rc=$?
     if [ -s /tmp/peacock-switch-root.err ]; then
         /bin/busybox cat /tmp/peacock-switch-root.err | while read line; do log "switch_root stderr: $line"; done
@@ -1174,6 +1224,48 @@ func findFirstExisting(paths []string) string {
 	return ""
 }
 
+func appendUniquePath(paths []string, p string) []string {
+	if p == "" {
+		return paths
+	}
+	clean := filepath.Clean(p)
+	for _, existing := range paths {
+		if existing == clean {
+			return paths
+		}
+	}
+	return append(paths, clean)
+}
+
+func runtimeVendorCandidates(deviceName string) []string {
+	var out []string
+	if deviceName != "" {
+		out = appendUniquePath(out, filepath.Join("prp", "vendor", deviceName, "rootfs-runtime"))
+	}
+	// Optional generic runtime location for shared assets.
+	out = appendUniquePath(out, filepath.Join("prp", "vendor", "rootfs-runtime"))
+
+	matches, _ := filepath.Glob(filepath.Join("prp", "vendor", "*", "rootfs-runtime"))
+	sort.Strings(matches)
+	for _, m := range matches {
+		out = appendUniquePath(out, m)
+	}
+	return out
+}
+
+func runtimeStageCandidates(deviceName string) []string {
+	var out []string
+	if deviceName != "" {
+		out = appendUniquePath(out, filepath.Join("prp", "out", deviceName, "initramfs-stage"))
+	}
+	matches, _ := filepath.Glob(filepath.Join("prp", "out", "*", "initramfs-stage"))
+	sort.Strings(matches)
+	for _, m := range matches {
+		out = appendUniquePath(out, m)
+	}
+	return out
+}
+
 func copyFileOrSymlink(src, dst string) error {
 	info, err := os.Lstat(src)
 	if err != nil {
@@ -1333,9 +1425,8 @@ func Build(output string, cfg InitConfig) error {
 
 	// Copy runtime userspace from PRP sync when available.
 	// With 512MiB BOOT, we can carry richer util-linux tooling for nested root probing.
-	runtimeRoot := findFirstExisting([]string{
-		filepath.Join("prp", "vendor", "jflte", "rootfs-runtime"),
-	})
+	runtimeRoot := findFirstExisting(runtimeVendorCandidates(cfg.DeviceName))
+	stageRoots := runtimeStageCandidates(cfg.DeviceName)
 	if runtimeRoot != "" {
 		type runtimeCopy struct {
 			srcRel string
@@ -1360,14 +1451,20 @@ func Build(output string, cfg InitConfig) error {
 	}
 
 	// Keep dmsetup fallback copy for environments without runtime sync.
-	dmsetupPath := findFirstExisting([]string{
-		filepath.Join("prp", "vendor", "jflte", "rootfs-runtime", "sbin", "dmsetup"),
-		filepath.Join("prp", "out", "jflte", "initramfs-stage", "sbin", "dmsetup"),
+	dmsetupCandidates := []string{}
+	if runtimeRoot != "" {
+		dmsetupCandidates = append(dmsetupCandidates, filepath.Join(runtimeRoot, "sbin", "dmsetup"))
+	}
+	for _, stage := range stageRoots {
+		dmsetupCandidates = append(dmsetupCandidates, filepath.Join(stage, "sbin", "dmsetup"))
+	}
+	dmsetupCandidates = append(dmsetupCandidates,
 		"/sbin/dmsetup",
 		"/usr/sbin/dmsetup",
 		"/usr/bin/dmsetup",
 		"/bin/dmsetup",
-	})
+	)
+	dmsetupPath := findFirstExisting(dmsetupCandidates)
 	if dmsetupPath != "" {
 		dmsetupDest := filepath.Join(sbinDir, "dmsetup")
 		if _, err := os.Stat(dmsetupDest); err != nil {
@@ -1385,15 +1482,19 @@ func Build(output string, cfg InitConfig) error {
 			return err
 		}
 
-		libSearchDirs := []string{
-			filepath.Join("prp", "vendor", "jflte", "rootfs-runtime", "lib"),
-			filepath.Join("prp", "vendor", "jflte", "rootfs-runtime", "usr", "lib"),
-			filepath.Join("prp", "out", "jflte", "initramfs-stage", "lib"),
-			"/lib",
-			"/usr/lib",
-			"/lib/arm-linux-gnueabihf",
-			"/usr/lib/arm-linux-gnueabihf",
+		libSearchDirs := []string{}
+		if runtimeRoot != "" {
+			libSearchDirs = appendUniquePath(libSearchDirs, filepath.Join(runtimeRoot, "lib"))
+			libSearchDirs = appendUniquePath(libSearchDirs, filepath.Join(runtimeRoot, "usr", "lib"))
 		}
+		for _, stage := range stageRoots {
+			libSearchDirs = appendUniquePath(libSearchDirs, filepath.Join(stage, "lib"))
+			libSearchDirs = appendUniquePath(libSearchDirs, filepath.Join(stage, "usr", "lib"))
+		}
+		libSearchDirs = appendUniquePath(libSearchDirs, "/lib")
+		libSearchDirs = appendUniquePath(libSearchDirs, "/usr/lib")
+		libSearchDirs = appendUniquePath(libSearchDirs, "/lib/arm-linux-gnueabihf")
+		libSearchDirs = appendUniquePath(libSearchDirs, "/usr/lib/arm-linux-gnueabihf")
 		requiredLibs := []string{
 			"ld-linux-armhf.so.3",
 			"libdevmapper.so.1.02",

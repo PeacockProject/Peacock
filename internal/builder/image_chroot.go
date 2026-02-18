@@ -419,7 +419,44 @@ func (b *Builder) InstallPackagesToRootfs(imageChrootRoot, rootfsPath string, pa
 		}
 	}
 
+	if err := ensureRootfsLoaderSymlink(rootfsPath, arch); err != nil {
+		return err
+	}
+
 	fmt.Println("Packages installed to rootfs successfully")
+	return nil
+}
+
+func ensureRootfsLoaderSymlink(rootfsPath, arch string) error {
+	loader := ""
+	switch arch {
+	case "aarch64":
+		loader = "ld-linux-aarch64.so.1"
+	case "armv7", "armv7h", "armhf":
+		loader = "ld-linux-armhf.so.3"
+	default:
+		return nil
+	}
+
+	src := filepath.Join(rootfsPath, "usr", "lib", loader)
+	if _, err := os.Stat(src); err != nil {
+		// If loader is not present in /usr/lib, nothing to link.
+		return nil
+	}
+
+	libDir := filepath.Join(rootfsPath, "lib")
+	dst := filepath.Join(libDir, loader)
+	if _, err := os.Lstat(dst); err == nil {
+		return nil
+	}
+
+	if err := runner.RunCmd(exec.Command("sudo", "mkdir", "-p", libDir)); err != nil {
+		return fmt.Errorf("failed to create rootfs lib dir for loader symlink: %w", err)
+	}
+	if err := runner.RunCmd(exec.Command("sudo", "ln", "-s", "/usr/lib/"+loader, dst)); err != nil {
+		return fmt.Errorf("failed to create loader symlink %s -> /usr/lib/%s: %w", dst, loader, err)
+	}
+	fmt.Printf("Created rootfs loader symlink: %s -> /usr/lib/%s\n", dst, loader)
 	return nil
 }
 
@@ -447,7 +484,7 @@ func isMountPoint(path string) bool {
 
 // CreateDiskImage creates a bootable disk image from a populated rootfs
 // This creates partitions, filesystems, and copies the rootfs contents
-func (b *Builder) CreateDiskImage(imageChrootRoot, rootfsPath, outputPath string, sizeM int) error {
+func (b *Builder) CreateDiskImage(imageChrootRoot, rootfsPath, outputPath string, sizeM int, deviceName string) error {
 	fmt.Printf("Creating disk image: %s (%dMB)\n", outputPath, sizeM)
 
 	// Create empty image file
@@ -473,7 +510,7 @@ func (b *Builder) CreateDiskImage(imageChrootRoot, rootfsPath, outputPath string
 	// Format partitions
 	bootPart := loopDevice + "p1"
 	rootPart := loopDevice + "p2"
-	if err := b.formatPartitions(bootPart, rootPart); err != nil {
+	if err := b.formatPartitions(bootPart, rootPart, deviceName); err != nil {
 		return fmt.Errorf("failed to format partitions: %w", err)
 	}
 
@@ -568,7 +605,7 @@ func (b *Builder) partitionDisk(device string) error {
 }
 
 // formatPartitions creates FAT32 boot and ext4 root filesystems
-func (b *Builder) formatPartitions(bootPart, rootPart string) error {
+func (b *Builder) formatPartitions(bootPart, rootPart, deviceName string) error {
 	fmt.Println("Formatting partitions...")
 
 	// Format boot partition as ext2 so lk2nd can mount/read extlinux directly.
@@ -579,14 +616,18 @@ func (b *Builder) formatPartitions(bootPart, rootPart string) error {
 		return fmt.Errorf("failed to format boot partition: %w", err)
 	}
 
-	// Format root partition (ext4) with legacy-compatible features
-	rootCmd := exec.Command(
-		"sudo", "mkfs.ext4",
+	rootArgs := []string{
+		"mkfs.ext4",
 		"-L", "ROOT",
-		"-O", "^metadata_csum,^metadata_csum_seed,^64bit,^orphan_file",
-		"-E", "lazy_itable_init=0,lazy_journal_init=0",
-		rootPart,
-	)
+	}
+	// jflte uses a 3.4-era kernel that can't mount modern ext4 defaults
+	// (metadata_csum, 64bit, orphan_file). Keep that compatibility quirk
+	// scoped to jflte only.
+	if isJflteDevice(deviceName) {
+		rootArgs = append(rootArgs, "-O", "^metadata_csum,^metadata_csum_seed,^64bit,^orphan_file")
+	}
+	rootArgs = append(rootArgs, "-E", "lazy_itable_init=0,lazy_journal_init=0", rootPart)
+	rootCmd := exec.Command("sudo", rootArgs...)
 	rootCmd.Stdout = runner.LogWriter()
 	rootCmd.Stderr = runner.LogWriter()
 	if err := runner.RunCmd(rootCmd); err != nil {
@@ -594,6 +635,15 @@ func (b *Builder) formatPartitions(bootPart, rootPart string) error {
 	}
 
 	return nil
+}
+
+func isJflteDevice(deviceName string) bool {
+	switch strings.ToLower(strings.TrimSpace(deviceName)) {
+	case "jflte", "samsung-jflte":
+		return true
+	default:
+		return false
+	}
 }
 
 // copyRootfsToImage mounts partitions and copies rootfs contents
