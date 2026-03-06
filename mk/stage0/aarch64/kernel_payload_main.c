@@ -2473,6 +2473,94 @@ static int msdc0_read_sector(uint64_t lba, uint8_t *out512)
 	return 1;
 }
 
+static int msdc0_write_sector(uint64_t lba, const uint8_t *in512)
+{
+	uint64_t base = MTK_MSDC0_BASE;
+	uint32_t rawcmd;
+	uint32_t i;
+
+	if (in512 == 0 || (lba >> 32) != 0U) {
+		return 0;
+	}
+
+	if (!wait_for_mask_clear(base + SDC_STS, SDC_STS_SDCBUSY | SDC_STS_CMDBUSY, 200000U)) {
+		msdc0_reset_host();
+		if (!wait_for_mask_clear(base + SDC_STS, SDC_STS_SDCBUSY | SDC_STS_CMDBUSY, 200000U)) {
+			return 0;
+		}
+	}
+
+	mmio_write32(base + MSDC_INT, 0xffffffffU);
+	mmio_write32(base + MSDC_FIFOCS, MSDC_FIFOCS_CLR);
+	if (!wait_for_mask_clear(base + MSDC_FIFOCS, MSDC_FIFOCS_CLR, 200000U)) {
+		msdc0_reset_host();
+		return 0;
+	}
+
+	mmio_write32(base + MSDC_CFG, mmio_read32(base + MSDC_CFG) | MSDC_CFG_PIO);
+	mmio_write32(base + SDC_CFG,
+		     (mmio_read32(base + SDC_CFG) & ~SDC_CFG_BUSWIDTH_MASK) | SDC_CFG_BUSWIDTH_8BIT);
+	mmio_write32(base + SDC_BLK_NUM, 1U);
+	mmio_write32(base + SDC_ARG, (uint32_t) lba);
+
+	rawcmd = MMC_RAWCMD_WRITE(MMC_CMD24_WRITE_BLOCK, MMC_RSP_R1, 512U);
+	mmio_write32(base + SDC_CMD, rawcmd);
+
+	if (!wait_for_mask_set(base + MSDC_INT, MSDC_INT_CMD_MASK, 400000U)) {
+		msdc0_reset_host();
+		return 0;
+	}
+	if ((mmio_read32(base + MSDC_INT) & (MSDC_INT_CMDTMO | MSDC_INT_RSPCRCERR)) != 0U) {
+		mmio_write32(base + MSDC_INT, MSDC_INT_CMD_MASK);
+		msdc0_reset_host();
+		return 0;
+	}
+	mmio_write32(base + MSDC_INT, MSDC_INT_CMD_MASK);
+
+	for (i = 0U; i < 128U; i++) {
+		uint32_t txcnt;
+		uint32_t v;
+		uint32_t spin = 0U;
+
+		do {
+			txcnt = (mmio_read32(base + MSDC_FIFOCS) & MSDC_FIFOCS_TXCNT_MASK) >> 16;
+			if (txcnt < 128U) {
+				break;
+			}
+			if ((mmio_read32(base + MSDC_INT) & (MSDC_INT_DATTMO | MSDC_INT_DATCRCERR)) != 0U) {
+				mmio_write32(base + MSDC_INT, MSDC_INT_DATA_MASK);
+				msdc0_reset_host();
+				return 0;
+			}
+			if ((spin++ & 0x3fffU) == 0U) {
+				pet_wdt();
+			}
+		} while (spin < 400000U);
+		if (txcnt >= 128U) {
+			msdc0_reset_host();
+			return 0;
+		}
+
+		v = (uint32_t) in512[i * 4U + 0U] |
+		    ((uint32_t) in512[i * 4U + 1U] << 8) |
+		    ((uint32_t) in512[i * 4U + 2U] << 16) |
+		    ((uint32_t) in512[i * 4U + 3U] << 24);
+		mmio_write32(base + MSDC_TXDATA, v);
+	}
+
+	if (!wait_for_mask_set(base + MSDC_INT, MSDC_INT_DATA_MASK, 800000U)) {
+		msdc0_reset_host();
+		return 0;
+	}
+	if ((mmio_read32(base + MSDC_INT) & (MSDC_INT_DATTMO | MSDC_INT_DATCRCERR)) != 0U) {
+		mmio_write32(base + MSDC_INT, MSDC_INT_DATA_MASK);
+		msdc0_reset_host();
+		return 0;
+	}
+	mmio_write32(base + MSDC_INT, MSDC_INT_DATA_MASK);
+	return 1;
+}
+
 static int stage0_gpt_find_relative(uint64_t base_lba,
 				    const char *label,
 				    uint64_t *out_start_lba,
@@ -2616,6 +2704,11 @@ int mk_stage0_storage_find_partition(const char *label, uint64_t *out_start_lba,
 int mk_stage0_storage_read_sector(uint64_t lba, uint8_t *out512)
 {
 	return msdc0_read_sector(lba, out512);
+}
+
+int mk_stage0_storage_write_sector(uint64_t lba, const uint8_t *in512)
+{
+	return msdc0_write_sector(lba, in512);
 }
 
 int mk_stage0_storage_capacity_bytes(uint64_t *out_bytes)

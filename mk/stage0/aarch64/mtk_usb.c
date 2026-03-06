@@ -188,6 +188,7 @@
 #define USB_PID_FASTBOOT 0x4ee0U
 #define MK_USB_STRING_ASCII_MAX 32U
 #define MK_FASTBOOT_CMD_MAX 64U
+#define MK_FASTBOOT_DOWNLOAD_MAX (32U * 1024U * 1024U)
 
 /* SGM7220 Type-C controller (i2c5 @ 0x47) */
 #define SGM7220_I2C_ADDR 0x47U
@@ -242,6 +243,11 @@ static const uint8_t g_fb_okay_product[] = "OKAYMinKernel";
 static const uint8_t g_fb_okay_empty[] = "OKAY";
 static const uint8_t g_fb_okay_raw[] = "OKAYraw";
 static uint8_t g_fastboot_sector_buf[512];
+static uint8_t g_fastboot_download_buf[MK_FASTBOOT_DOWNLOAD_MAX];
+static uint32_t g_fastboot_download_expected;
+static uint32_t g_fastboot_download_received;
+static uint32_t g_fastboot_download_staged_size;
+static uint8_t g_fastboot_download_active;
 
 #define MTK_GPIO_BASE 0x10005000ULL
 #define MTK_GPIO_DIR_BASE 0x0000U
@@ -1181,6 +1187,45 @@ static uint8_t parse_u64_ascii(const char *s, uint64_t *out)
 	return 1U;
 }
 
+static uint8_t parse_u32_hex_ascii(const char *s, uint32_t *out)
+{
+	uint64_t value = 0U;
+	uint32_t i = 0U;
+
+	if (s == 0 || out == 0) {
+		return 0U;
+	}
+	if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+		i = 2U;
+	}
+	if (s[i] == '\0') {
+		return 0U;
+	}
+
+	while (s[i] != '\0') {
+		uint8_t c = (uint8_t) s[i];
+		uint32_t digit;
+
+		if (c >= (uint8_t) '0' && c <= (uint8_t) '9') {
+			digit = (uint32_t) (c - (uint8_t) '0');
+		} else if (c >= (uint8_t) 'a' && c <= (uint8_t) 'f') {
+			digit = (uint32_t) (10U + c - (uint8_t) 'a');
+		} else if (c >= (uint8_t) 'A' && c <= (uint8_t) 'F') {
+			digit = (uint32_t) (10U + c - (uint8_t) 'A');
+		} else {
+			return 0U;
+		}
+		if (value > ((UINT32_MAX - (uint64_t) digit) >> 4U)) {
+			return 0U;
+		}
+		value = (value << 4U) | (uint64_t) digit;
+		i++;
+	}
+
+	*out = (uint32_t) value;
+	return 1U;
+}
+
 static const uint8_t g_usb_device_desc[] = {
 	18, USB_DT_DEVICE,
 	0x00, 0x02,
@@ -1786,6 +1831,101 @@ static void fastboot_handle_fetch_command(volatile uint8_t *base, const char *ar
 	fastboot_send_response(base, "OKAY", "");
 }
 
+static void fastboot_handle_download_command(volatile uint8_t *base, const char *arg)
+{
+	uint32_t bytes = 0U;
+
+	if (parse_u32_hex_ascii(arg, &bytes) == 0U) {
+		fastboot_fail_msg(base, "bad download size");
+		return;
+	}
+	if (bytes > MK_FASTBOOT_DOWNLOAD_MAX) {
+		fastboot_fail_msg(base, "data too large");
+		return;
+	}
+
+	g_fastboot_download_expected = bytes;
+	g_fastboot_download_received = 0U;
+	g_fastboot_download_active = 1U;
+	g_fastboot_download_staged_size = 0U;
+
+	uart_puts_all("[mk] fastboot download bytes=0x");
+	uart_puthex64_all(bytes);
+	uart_puts_all("\r\n");
+
+	fastboot_send_data_header(base, bytes);
+	if (bytes == 0U) {
+		g_fastboot_download_active = 0U;
+		g_fastboot_download_staged_size = 0U;
+		fastboot_send_response(base, "OKAY", "");
+	}
+}
+
+static void fastboot_handle_flash_command(volatile uint8_t *base, const char *label)
+{
+	uint64_t part_lba = 0U;
+	uint64_t part_count = 0U;
+	uint64_t part_bytes = 0U;
+	uint32_t remaining;
+	uint64_t lba;
+
+	if (label == 0 || label[0] == '\0') {
+		fastboot_fail_msg(base, "missing partition");
+		return;
+	}
+	if (g_fastboot_download_staged_size == 0U) {
+		fastboot_fail_msg(base, "no image downloaded");
+		return;
+	}
+	if (mk_stage0_storage_prepare() == 0) {
+		fastboot_fail_msg(base, "storage unavailable");
+		return;
+	}
+	if (mk_stage0_storage_find_partition(label, &part_lba, &part_count) == 0) {
+		fastboot_fail_msg(base, "partition not found");
+		return;
+	}
+	if (part_count > (UINT64_MAX / 512U)) {
+		fastboot_fail_msg(base, "partition too large");
+		return;
+	}
+	part_bytes = part_count * 512U;
+	if ((uint64_t) g_fastboot_download_staged_size > part_bytes) {
+		fastboot_fail_msg(base, "image too large");
+		return;
+	}
+
+	uart_puts_all("[mk] fastboot flash part=");
+	uart_puts_all(label);
+	uart_puts_all(" bytes=0x");
+	uart_puthex64_all(g_fastboot_download_staged_size);
+	uart_puts_all("\r\n");
+
+	remaining = g_fastboot_download_staged_size;
+	lba = part_lba;
+	while (remaining != 0U) {
+		uint32_t copy = (remaining > 512U) ? 512U : remaining;
+		uint32_t i;
+
+		for (i = 0U; i < 512U; i++) {
+			g_fastboot_sector_buf[i] = 0U;
+		}
+		for (i = 0U; i < copy; i++) {
+			g_fastboot_sector_buf[i] =
+				g_fastboot_download_buf[g_fastboot_download_staged_size - remaining + i];
+		}
+		if (mk_stage0_storage_write_sector(lba, g_fastboot_sector_buf) == 0) {
+			fastboot_fail_msg(base, "write failed");
+			return;
+		}
+		remaining -= copy;
+		lba++;
+	}
+
+	g_fastboot_download_staged_size = 0U;
+	fastboot_send_response(base, "OKAY", "");
+}
+
 static void fastboot_handle_command(volatile uint8_t *base, const char *cmd)
 {
 	const char *arg;
@@ -1816,7 +1956,7 @@ static void fastboot_handle_command(volatile uint8_t *base, const char *cmd)
 			uart_puts_all("[mk] fastboot send done serial\r\n");
 		} else if (str_eq_lit(arg, "max-download-size") != 0U) {
 			uart_puts_all("[mk] fastboot getvar max-download-size\r\n");
-			fastboot_send_okay_u32_hex(base, 0U);
+			fastboot_send_okay_u32_hex(base, MK_FASTBOOT_DOWNLOAD_MAX);
 		} else if (str_eq_lit(arg, "max-fetch-size") != 0U) {
 			uint64_t storage_bytes = 0U;
 			uint32_t max_fetch = 0xffffffffU;
@@ -1870,11 +2010,11 @@ static void fastboot_handle_command(volatile uint8_t *base, const char *cmd)
 	}
 
 	if (str_starts_with_lit(cmd, "download:") != 0U) {
-		fastboot_send_response(base, "FAIL", "download unsupported");
+		fastboot_handle_download_command(base, cmd + 9);
 		return;
 	}
 	if (str_starts_with_lit(cmd, "flash:") != 0U) {
-		fastboot_send_response(base, "FAIL", "flash unsupported");
+		fastboot_handle_flash_command(base, cmd + 6);
 		return;
 	}
 	if (str_starts_with_lit(cmd, "erase:") != 0U) {
@@ -1949,6 +2089,10 @@ int mk_stage0_mtk_usb_fastboot_init(void)
 	g_usb_state.reset_count = 0;
 	g_usb_state.debug_once = 0;
 	g_usb_state.ep1_ready = 0;
+	g_fastboot_download_expected = 0U;
+	g_fastboot_download_received = 0U;
+	g_fastboot_download_staged_size = 0U;
+	g_fastboot_download_active = 0U;
 
 	/* Preboot CC/USB policy cannot be trusted in stage0; configure it here. */
 	usb_try_force_typec_sink_sgm7220();
@@ -2063,6 +2207,10 @@ void mk_stage0_mtk_usb_fastboot_poll(void)
 		g_usb_state.address = 0;
 		g_usb_state.pending_address = 0;
 		g_usb_state.address_pending = 0;
+		g_fastboot_download_expected = 0U;
+		g_fastboot_download_received = 0U;
+		g_fastboot_download_staged_size = 0U;
+		g_fastboot_download_active = 0U;
 
 		/* Re-arm device-mode interrupt/mode state after bus reset. */
 		mmio_write16(base, MUSB_INTRRXE, 0x0000U);
@@ -2163,17 +2311,51 @@ void mk_stage0_mtk_usb_fastboot_poll(void)
 			uart_puts_all(" csr=0x");
 			uart_puthex64_all(rxcsr);
 			uart_puts_all("\r\n");
-			if (rxcount > MK_FASTBOOT_CMD_MAX) {
-				rxcount = MK_FASTBOOT_CMD_MAX;
+			if (g_fastboot_download_active != 0U) {
+				uint32_t remaining = g_fastboot_download_expected - g_fastboot_download_received;
+				uint16_t consume = rxcount;
+				uint16_t i;
+
+				if ((uint32_t) consume > remaining) {
+					consume = (uint16_t) remaining;
+				}
+				for (i = 0U; i < consume; i++) {
+					g_fastboot_download_buf[g_fastboot_download_received + i] =
+						mmio_read8(base, MUSB_FIFO_EP1);
+				}
+				for (; i < rxcount; i++) {
+					(void) mmio_read8(base, MUSB_FIFO_EP1);
+				}
+				mmio_write16(base, MUSB_RXCSR, 0U);
+
+				g_fastboot_download_received += consume;
+				if (consume != rxcount || g_fastboot_download_received > g_fastboot_download_expected) {
+					g_fastboot_download_active = 0U;
+					g_fastboot_download_expected = 0U;
+					g_fastboot_download_received = 0U;
+					g_fastboot_download_staged_size = 0U;
+					fastboot_fail_msg(base, "download overflow");
+				} else if (g_fastboot_download_received == g_fastboot_download_expected) {
+					g_fastboot_download_active = 0U;
+					g_fastboot_download_staged_size = g_fastboot_download_expected;
+					uart_puts_all("[mk] fastboot download complete bytes=0x");
+					uart_puthex64_all(g_fastboot_download_staged_size);
+					uart_puts_all("\r\n");
+					fastboot_send_response(base, "OKAY", "");
+				}
+			} else {
+				if (rxcount > MK_FASTBOOT_CMD_MAX) {
+					rxcount = MK_FASTBOOT_CMD_MAX;
+				}
+				ep1_read_fifo(base, g_fastboot_cmd_buf, rxcount);
+				g_fastboot_cmd_buf[rxcount] = 0U;
+				/*
+				 * For EP1 OUT, clear RXPKTRDY by writing a clean RXCSR value.
+				 * Avoid read-modify-write of implementation-defined status bits.
+				 */
+				mmio_write16(base, MUSB_RXCSR, 0U);
+				fastboot_handle_command(base, (const char *) g_fastboot_cmd_buf);
 			}
-			ep1_read_fifo(base, g_fastboot_cmd_buf, rxcount);
-			g_fastboot_cmd_buf[rxcount] = 0U;
-			/*
-			 * For EP1 OUT, clear RXPKTRDY by writing a clean RXCSR value.
-			 * Avoid read-modify-write of implementation-defined status bits.
-			 */
-			mmio_write16(base, MUSB_RXCSR, 0U);
-			fastboot_handle_command(base, (const char *) g_fastboot_cmd_buf);
 		}
 	}
 
