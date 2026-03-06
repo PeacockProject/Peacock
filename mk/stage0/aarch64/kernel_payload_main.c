@@ -2851,7 +2851,8 @@ static __attribute__((unused)) void enter_fastboot_fallback(const simplefb_info_
 	}
 	freq = read_cntfrq_el0();
 	start_ticks = read_cntpct_el0();
-	timeout_ticks = (freq != 0U) ? ((freq * 60ULL)) : 0ULL;
+	timeout_ticks = 0ULL;
+	uart_puts_all("[mk] fastboot fallback: auto-reboot disabled\r\n");
 	ui_interval_ticks = (freq != 0U) ? (freq / 100ULL) : 1ULL;
 	if (ui_interval_ticks == 0U) {
 		ui_interval_ticks = 1ULL;
