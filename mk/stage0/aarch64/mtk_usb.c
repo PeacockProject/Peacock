@@ -74,6 +74,17 @@
 #define MUSB_CSR0_FLUSHFIFO 0x0100U
 
 #define MUSB_FIFO_EP0 0x20U
+#define MUSB_FIFO_EP1 0x24U
+
+#define MUSB_TXCSR 0x12U
+#define MUSB_RXCSR 0x16U
+#define MUSB_RXCOUNT 0x18U
+
+#define MUSB_TXCSR_TXPKTRDY 0x0001U
+#define MUSB_TXCSR_FLUSHFIFO 0x0008U
+
+#define MUSB_RXCSR_RXPKTRDY 0x0001U
+#define MUSB_RXCSR_FLUSHFIFO 0x0010U
 
 #define MTK_CLK_CFG_5_SET 0x094U
 #define MTK_CLK_CFG_5_CLR 0x098U
@@ -175,6 +186,7 @@
 #define USB_VID_GOOGLE 0x18d1U
 #define USB_PID_FASTBOOT 0x4ee0U
 #define MK_USB_STRING_ASCII_MAX 32U
+#define MK_FASTBOOT_CMD_MAX 64U
 
 /* SGM7220 Type-C controller (i2c5 @ 0x47) */
 #define SGM7220_I2C_ADDR 0x47U
@@ -209,6 +221,7 @@ typedef struct {
 	uint32_t poll_count;
 	uint32_t reset_count;
 	uint8_t debug_once;
+	uint8_t ep1_ready;
 } usb_fastboot_state_t;
 
 extern void uart_puts_all(const char *s);
@@ -221,6 +234,12 @@ static uint8_t g_tcpc_ready;
 static uint8_t g_usb_serial_ascii[MK_USB_STRING_ASCII_MAX + 1U] = "GUCINNG6FAVW99OR";
 static uint8_t g_usb_serial_ascii_len = 16U;
 static uint8_t g_usb_string_desc_buf[2U + (MK_USB_STRING_ASCII_MAX * 2U)];
+static uint8_t g_fastboot_cmd_buf[MK_FASTBOOT_CMD_MAX + 1U];
+static uint8_t g_fastboot_resp_buf[MK_FASTBOOT_CMD_MAX];
+static const uint8_t g_fb_okay_version[] = "OKAY0.4";
+static const uint8_t g_fb_okay_product[] = "OKAYMinKernel";
+static const uint8_t g_fb_okay_maxdl[] = "OKAY00100000";
+static const uint8_t g_fb_okay_empty[] = "OKAY";
 
 #define MTK_GPIO_BASE 0x10005000ULL
 #define MTK_GPIO_DIR_BASE 0x0000U
@@ -1048,6 +1067,45 @@ static void ep0_stall(volatile uint8_t *base)
 	uart_puts_all("[mk] usb ep0 stall\r\n");
 }
 
+static uint8_t str_starts_with_lit(const char *s, const char *prefix)
+{
+	uint32_t i = 0U;
+
+	while (prefix[i] != '\0') {
+		if (s[i] != prefix[i]) {
+			return 0U;
+		}
+		i++;
+	}
+	return 1U;
+}
+
+static uint8_t str_eq_lit(const char *s, const char *lit)
+{
+	uint32_t i = 0U;
+
+	while (lit[i] != '\0' && s[i] != '\0') {
+		if (lit[i] != s[i]) {
+			return 0U;
+		}
+		i++;
+	}
+	return (lit[i] == '\0' && s[i] == '\0') ? 1U : 0U;
+}
+
+static uint8_t ascii_len_bounded_char(const char *s, uint8_t max_len)
+{
+	uint8_t n = 0U;
+
+	if (s == 0) {
+		return 0U;
+	}
+	while ((n < max_len) && (s[n] != '\0')) {
+		n++;
+	}
+	return n;
+}
+
 static const uint8_t g_usb_device_desc[] = {
 	18, USB_DT_DEVICE,
 	0x00, 0x02,
@@ -1364,6 +1422,194 @@ static void handle_setup_packet(volatile uint8_t *base, const usb_setup_packet_t
 	ep0_stall(base);
 }
 
+static void ep1_write_fifo(volatile uint8_t *base, const uint8_t *buf, uint16_t len)
+{
+	uint16_t i;
+
+	for (i = 0; i < len; i++) {
+		mmio_write8(base, MUSB_FIFO_EP1, buf[i]);
+	}
+}
+
+static void ep1_read_fifo(volatile uint8_t *base, uint8_t *buf, uint16_t len)
+{
+	uint16_t i;
+
+	for (i = 0; i < len; i++) {
+		buf[i] = mmio_read8(base, MUSB_FIFO_EP1);
+	}
+}
+
+static int ep1_wait_tx_ready(volatile uint8_t *base)
+{
+	uint32_t wait = 150000U;
+
+	ep_select(base, 1U);
+	while (((mmio_read16(base, MUSB_TXCSR) & MUSB_TXCSR_TXPKTRDY) != 0U) && (wait-- != 0U)) {
+		__asm__ volatile("");
+	}
+	if (wait == 0U) {
+		uart_puts_all("[mk] usb ep1 tx timeout csr=0x");
+		uart_puthex64_all(mmio_read16(base, MUSB_TXCSR));
+		uart_puts_all("\r\n");
+		return -1;
+	}
+	return 0;
+}
+
+static void fastboot_send_raw(volatile uint8_t *base, const uint8_t *buf, uint16_t len)
+{
+	if (buf == 0 || len == 0U) {
+		return;
+	}
+	if (ep1_wait_tx_ready(base) != 0) {
+		uart_puts_all("[mk] fastboot raw drop: ep1 not ready\r\n");
+		return;
+	}
+	ep_select(base, 1U);
+	ep1_write_fifo(base, buf, len);
+	mmio_write16(base, MUSB_TXCSR, MUSB_TXCSR_TXPKTRDY);
+}
+
+static void fastboot_send_response(volatile uint8_t *base, const char *status4, const char *msg)
+{
+	uint16_t pos = 0U;
+	uint8_t i;
+
+	if (status4 == 0) {
+		return;
+	}
+	for (i = 0U; i < 4U && status4[i] != '\0'; i++) {
+		g_fastboot_resp_buf[pos++] = (uint8_t) status4[i];
+	}
+	if (msg != 0) {
+		uint8_t n = ascii_len_bounded_char(msg, (uint8_t) (sizeof(g_fastboot_resp_buf) - pos));
+		for (i = 0U; i < n; i++) {
+			g_fastboot_resp_buf[pos++] = (uint8_t) msg[i];
+		}
+	}
+	uart_puts_all("[mk] fastboot resp len=0x");
+	uart_puthex64_all(pos);
+	uart_puts_all("\r\n");
+	if (ep1_wait_tx_ready(base) != 0) {
+		uart_puts_all("[mk] fastboot resp drop: ep1 not ready\r\n");
+		return;
+	}
+	ep_select(base, 1U);
+	ep1_write_fifo(base, g_fastboot_resp_buf, pos);
+	mmio_write16(base, MUSB_TXCSR, MUSB_TXCSR_TXPKTRDY);
+	uart_puts_all("[mk] fastboot resp queued csr=0x");
+	uart_puthex64_all(mmio_read16(base, MUSB_TXCSR));
+	uart_puts_all("\r\n");
+}
+
+static void fastboot_handle_command(volatile uint8_t *base, const char *cmd)
+{
+	const char *arg;
+	if (cmd == 0) {
+		return;
+	}
+
+	uart_puts_all("[mk] fastboot cmd=");
+	uart_puts_all(cmd);
+	uart_puts_all("\r\n");
+
+	if (str_starts_with_lit(cmd, "getvar:") != 0U) {
+		arg = cmd + 7;
+		if (str_eq_lit(arg, "version") != 0U) {
+			uart_puts_all("[mk] fastboot getvar version\r\n");
+			uart_puts_all("[mk] fastboot send begin version\r\n");
+			fastboot_send_raw(base, g_fb_okay_version, sizeof(g_fb_okay_version) - 1U);
+			uart_puts_all("[mk] fastboot send done version\r\n");
+		} else if (str_eq_lit(arg, "product") != 0U) {
+			uart_puts_all("[mk] fastboot getvar product\r\n");
+			uart_puts_all("[mk] fastboot send begin product\r\n");
+			fastboot_send_raw(base, g_fb_okay_product, sizeof(g_fb_okay_product) - 1U);
+			uart_puts_all("[mk] fastboot send done product\r\n");
+		} else if (str_eq_lit(arg, "serialno") != 0U) {
+			uart_puts_all("[mk] fastboot getvar serialno\r\n");
+			uart_puts_all("[mk] fastboot send begin serial\r\n");
+			fastboot_send_response(base, "OKAY", (const char *) g_usb_serial_ascii);
+			uart_puts_all("[mk] fastboot send done serial\r\n");
+		} else if (str_eq_lit(arg, "max-download-size") != 0U) {
+			uart_puts_all("[mk] fastboot getvar max-download-size\r\n");
+			uart_puts_all("[mk] fastboot send begin maxdl\r\n");
+			fastboot_send_raw(base, g_fb_okay_maxdl, sizeof(g_fb_okay_maxdl) - 1U);
+			uart_puts_all("[mk] fastboot send done maxdl\r\n");
+		} else {
+			uart_puts_all("[mk] fastboot getvar unknown\r\n");
+			uart_puts_all("[mk] fastboot send begin unknown\r\n");
+			fastboot_send_raw(base, g_fb_okay_empty, sizeof(g_fb_okay_empty) - 1U);
+			uart_puts_all("[mk] fastboot send done unknown\r\n");
+		}
+		return;
+	}
+
+	if (str_starts_with_lit(cmd, "download:") != 0U) {
+		fastboot_send_response(base, "FAIL", "download unsupported");
+		return;
+	}
+	if (str_starts_with_lit(cmd, "flash:") != 0U) {
+		fastboot_send_response(base, "FAIL", "flash unsupported");
+		return;
+	}
+	if (str_starts_with_lit(cmd, "erase:") != 0U) {
+		fastboot_send_response(base, "FAIL", "erase unsupported");
+		return;
+	}
+	if (str_eq_lit(cmd, "reboot") != 0U) {
+		fastboot_send_response(base, "OKAY", "");
+		return;
+	}
+	if (str_eq_lit(cmd, "reboot-bootloader") != 0U) {
+		fastboot_send_response(base, "OKAY", "");
+		return;
+	}
+	if (str_eq_lit(cmd, "continue") != 0U) {
+		fastboot_send_response(base, "OKAY", "");
+		return;
+	}
+
+	fastboot_send_response(base, "FAIL", "unknown command");
+}
+
+static void usb_fastboot_ep1_init(volatile uint8_t *base)
+{
+	uint16_t maxp = ((mmio_read8(base, MUSB_POWER) & MUSB_POWER_HSMODE) != 0U) ? 512U : 64U;
+	uint16_t txfifo_add = 8U;
+	uint16_t txfifo_sz_code = (maxp == 512U) ? 6U : 3U;
+	uint16_t tx_units = (uint16_t) (maxp / 8U);
+	uint16_t rxfifo_add = (uint16_t) (txfifo_add + tx_units);
+
+	ep_select(base, 1U);
+	mmio_write16(base, MUSB_TXMAXP, maxp);
+	mmio_write16(base, MUSB_RXMAXP, maxp);
+	mmio_write8(base, MUSB_TXFIFOSZ, (uint8_t) txfifo_sz_code);
+	mmio_write8(base, MUSB_RXFIFOSZ, (uint8_t) txfifo_sz_code);
+	mmio_write16(base, MUSB_TXFIFOADD, txfifo_add);
+	mmio_write16(base, MUSB_RXFIFOADD, rxfifo_add);
+
+	/* Flush stale data after reset/config changes. */
+	mmio_write16(base, MUSB_TXCSR, MUSB_TXCSR_FLUSHFIFO);
+	mmio_write16(base, MUSB_TXCSR, MUSB_TXCSR_FLUSHFIFO);
+	mmio_write16(base, MUSB_TXCSR, 0U);
+	mmio_write16(base, MUSB_RXCSR, MUSB_RXCSR_FLUSHFIFO);
+	mmio_write16(base, MUSB_RXCSR, MUSB_RXCSR_FLUSHFIFO);
+	mmio_write16(base, MUSB_RXCSR, 0U);
+
+	mmio_write16(base, MUSB_INTRTXE, 0x0003U); /* EP0 + EP1 IN */
+	mmio_write16(base, MUSB_INTRRXE, 0x0002U); /* EP1 OUT */
+	g_usb_state.ep1_ready = 1U;
+
+	uart_puts_all("[mk] fastboot ep1 maxp=0x");
+	uart_puthex64_all(maxp);
+	uart_puts_all(" txadd=0x");
+	uart_puthex64_all(txfifo_add);
+	uart_puts_all(" rxadd=0x");
+	uart_puthex64_all(rxfifo_add);
+	uart_puts_all("\r\n");
+}
+
 int mk_stage0_mtk_usb_fastboot_init(void)
 {
 	volatile uint8_t *base = usb_regs();
@@ -1378,6 +1624,7 @@ int mk_stage0_mtk_usb_fastboot_init(void)
 	g_usb_state.poll_count = 0;
 	g_usb_state.reset_count = 0;
 	g_usb_state.debug_once = 0;
+	g_usb_state.ep1_ready = 0;
 
 	/* Preboot CC/USB policy cannot be trusted in stage0; configure it here. */
 	usb_try_force_typec_sink_sgm7220();
@@ -1449,6 +1696,8 @@ void mk_stage0_mtk_usb_fastboot_poll(void)
 	uint8_t int_usb;
 	uint16_t intrtxe;
 	uint16_t int_tx;
+	uint16_t intrrxe;
+	uint16_t int_rx;
 	uint16_t csr0;
 
 	if (g_usb_state.started == 0U) {
@@ -1476,6 +1725,11 @@ void mk_stage0_mtk_usb_fastboot_poll(void)
 	if (int_tx != 0U) {
 		mmio_write16(base, MUSB_INTRTX, int_tx);
 	}
+	intrrxe = mmio_read16(base, MUSB_INTRRXE);
+	int_rx = (uint16_t) (mmio_read16(base, MUSB_INTRRX) & intrrxe);
+	if (int_rx != 0U) {
+		mmio_write16(base, MUSB_INTRRX, int_rx);
+	}
 
 	if ((int_usb & MUSB_INTR_RESET) != 0U) {
 		uint8_t power;
@@ -1489,6 +1743,7 @@ void mk_stage0_mtk_usb_fastboot_poll(void)
 		/* Re-arm device-mode interrupt/mode state after bus reset. */
 		mmio_write16(base, MUSB_INTRRXE, 0x0000U);
 		mmio_write16(base, MUSB_INTRTXE, 0x0001U);
+		g_usb_state.ep1_ready = 0U;
 		mmio_write8(base, MUSB_INTRUSBE,
 			    (uint8_t) (MUSB_INTR_SUSPEND |
 				       MUSB_INTR_RESUME |
@@ -1567,6 +1822,37 @@ void mk_stage0_mtk_usb_fastboot_poll(void)
 		uart_puts_all("\r\n");
 	}
 
+	if (g_usb_state.configured != 0U && g_usb_state.ep1_ready == 0U) {
+		usb_fastboot_ep1_init(base);
+	}
+
+	if (g_usb_state.ep1_ready != 0U) {
+		uint16_t rxcsr;
+		uint16_t rxcount;
+
+		ep_select(base, 1U);
+		rxcsr = mmio_read16(base, MUSB_RXCSR);
+		if ((rxcsr & MUSB_RXCSR_RXPKTRDY) != 0U) {
+			rxcount = (uint16_t) (mmio_read16(base, MUSB_RXCOUNT) & 0x1fffU);
+			uart_puts_all("[mk] fastboot ep1 rx count=0x");
+			uart_puthex64_all(rxcount);
+			uart_puts_all(" csr=0x");
+			uart_puthex64_all(rxcsr);
+			uart_puts_all("\r\n");
+			if (rxcount > MK_FASTBOOT_CMD_MAX) {
+				rxcount = MK_FASTBOOT_CMD_MAX;
+			}
+			ep1_read_fifo(base, g_fastboot_cmd_buf, rxcount);
+			g_fastboot_cmd_buf[rxcount] = 0U;
+			/*
+			 * For EP1 OUT, clear RXPKTRDY by writing a clean RXCSR value.
+			 * Avoid read-modify-write of implementation-defined status bits.
+			 */
+			mmio_write16(base, MUSB_RXCSR, 0U);
+			fastboot_handle_command(base, (const char *) g_fastboot_cmd_buf);
+		}
+	}
+
 	/*
 	 * Commit deferred SET_ADDRESS once status stage has drained.
 	 */
@@ -1579,5 +1865,9 @@ void mk_stage0_mtk_usb_fastboot_poll(void)
 		uart_puts_all("[mk] usb setaddr commit=0x");
 		uart_puthex64_all(g_usb_state.address);
 		uart_puts_all("\r\n");
+	}
+
+	if (g_usb_state.configured != 0U && g_usb_state.ep1_ready == 0U) {
+		usb_fastboot_ep1_init(base);
 	}
 }
