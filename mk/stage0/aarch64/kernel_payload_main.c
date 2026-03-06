@@ -3074,6 +3074,13 @@ static __attribute__((unused)) void enter_fastboot_fallback(const simplefb_info_
 					delay_ms_calibrated(50U);
 					trigger_recovery_wdt_reset();
 				}
+				if (mk_stage0_mtk_usb_fastboot_downloading() != 0U) {
+					for (spin = 0; spin < 64U; spin++) {
+						__asm__ volatile("");
+					}
+					pet_wdt();
+					continue;
+				}
 				if (now_ticks >= next_ui_ticks) {
 					if (handle_fastboot_menu_input(&menu_index, &menu_last_event_ticks,
 								       now_ticks, freq, &menu_dirty) != 0U) {

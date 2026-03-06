@@ -990,6 +990,11 @@ static void usb_dump_state(const char *tag)
 	uart_puts_all("\r\n");
 }
 
+uint8_t mk_stage0_mtk_usb_fastboot_downloading(void)
+{
+	return g_fastboot_download_active;
+}
+
 static void usb_clock_init(void)
 {
 	volatile uint8_t *top = (volatile uint8_t *) (uintptr_t) MTK_TOPCKGEN_BASE;
@@ -1868,6 +1873,7 @@ static void fastboot_handle_flash_command(volatile uint8_t *base, const char *la
 	uint64_t part_bytes = 0U;
 	uint32_t remaining;
 	uint64_t lba;
+	const uint8_t *src;
 
 	if (label == 0 || label[0] == '\0') {
 		fastboot_fail_msg(base, "missing partition");
@@ -1902,24 +1908,29 @@ static void fastboot_handle_flash_command(volatile uint8_t *base, const char *la
 	uart_puts_all("\r\n");
 
 	remaining = g_fastboot_download_staged_size;
+	src = g_fastboot_download_buf;
 	lba = part_lba;
-	while (remaining != 0U) {
-		uint32_t copy = (remaining > 512U) ? 512U : remaining;
+	while (remaining >= 512U) {
+		if (mk_stage0_storage_write_sector(lba, src) == 0) {
+			fastboot_fail_msg(base, "write failed");
+			return;
+		}
+		src += 512U;
+		remaining -= 512U;
+		lba++;
+	}
+	if (remaining != 0U) {
 		uint32_t i;
-
 		for (i = 0U; i < 512U; i++) {
 			g_fastboot_sector_buf[i] = 0U;
 		}
-		for (i = 0U; i < copy; i++) {
-			g_fastboot_sector_buf[i] =
-				g_fastboot_download_buf[g_fastboot_download_staged_size - remaining + i];
+		for (i = 0U; i < remaining; i++) {
+			g_fastboot_sector_buf[i] = src[i];
 		}
 		if (mk_stage0_storage_write_sector(lba, g_fastboot_sector_buf) == 0) {
 			fastboot_fail_msg(base, "write failed");
 			return;
 		}
-		remaining -= copy;
-		lba++;
 	}
 
 	g_fastboot_download_staged_size = 0U;
@@ -2306,11 +2317,6 @@ void mk_stage0_mtk_usb_fastboot_poll(void)
 		rxcsr = mmio_read16(base, MUSB_RXCSR);
 		if ((rxcsr & MUSB_RXCSR_RXPKTRDY) != 0U) {
 			rxcount = (uint16_t) (mmio_read16(base, MUSB_RXCOUNT) & 0x1fffU);
-			uart_puts_all("[mk] fastboot ep1 rx count=0x");
-			uart_puthex64_all(rxcount);
-			uart_puts_all(" csr=0x");
-			uart_puthex64_all(rxcsr);
-			uart_puts_all("\r\n");
 			if (g_fastboot_download_active != 0U) {
 				uint32_t remaining = g_fastboot_download_expected - g_fastboot_download_received;
 				uint16_t consume = rxcount;
@@ -2344,6 +2350,11 @@ void mk_stage0_mtk_usb_fastboot_poll(void)
 					fastboot_send_response(base, "OKAY", "");
 				}
 			} else {
+				uart_puts_all("[mk] fastboot ep1 rx count=0x");
+				uart_puthex64_all(rxcount);
+				uart_puts_all(" csr=0x");
+				uart_puthex64_all(rxcsr);
+				uart_puts_all("\r\n");
 				if (rxcount > MK_FASTBOOT_CMD_MAX) {
 					rxcount = MK_FASTBOOT_CMD_MAX;
 				}
