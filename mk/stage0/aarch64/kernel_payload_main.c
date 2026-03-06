@@ -985,11 +985,6 @@ static void menu_buttons_poll_edges(uint8_t *up_pressed_edge, uint8_t *down_pres
 							 &g_menu_buttons.stable_power_pressed,
 							 &g_menu_buttons.power_stable_count);
 
-	/* Volume-up also acts as select. */
-	if (*up_pressed_edge != 0U) {
-		*select_pressed_edge = 1U;
-	}
-
 	(void) home_up_raw;
 }
 
@@ -1262,7 +1257,7 @@ static __attribute__((unused)) void render_fastboot_menu_overlay(const simplefb_
 	uintptr_t flush_start;
 	char secs_buf[16];
 	char countdown[40];
-	const char *help_text = "DOWN NEXT  UP SELECT";
+	const char *help_text = "DOWN NEXT  UP PREV  PWR SELECT";
 	uint32_t secs_len;
 	uint32_t i;
 
@@ -2719,8 +2714,10 @@ static uint8_t handle_fastboot_menu_input(uint32_t *menu_index, uint64_t *last_e
 	uint8_t up_edge = 0U;
 	uint8_t down_edge = 0U;
 	uint8_t select_edge = 0U;
+	static uint8_t up_latched = 0U;
 	static uint8_t down_latched = 0U;
 	static uint8_t select_latched = 0U;
+	uint8_t up_pressed;
 	uint8_t down_pressed;
 	uint8_t select_pressed;
 	uint64_t debounce_ticks = (freq != 0U) ? (freq / 20ULL) : 0ULL;
@@ -2737,10 +2734,13 @@ static uint8_t handle_fastboot_menu_input(uint32_t *menu_index, uint64_t *last_e
 	(void) down_edge;
 	(void) select_edge;
 
+	up_pressed = g_menu_buttons.stable_up_pressed;
 	down_pressed = g_menu_buttons.stable_down_pressed;
-	select_pressed = (uint8_t) ((g_menu_buttons.stable_up_pressed != 0U) ||
-				    (g_menu_buttons.stable_power_pressed != 0U));
+	select_pressed = g_menu_buttons.stable_power_pressed;
 
+	if (up_pressed == 0U) {
+		up_latched = 0U;
+	}
 	if (down_pressed == 0U) {
 		down_latched = 0U;
 	}
@@ -2748,7 +2748,8 @@ static uint8_t handle_fastboot_menu_input(uint32_t *menu_index, uint64_t *last_e
 		select_latched = 0U;
 	}
 
-	if ((down_pressed == 0U || down_latched != 0U) &&
+	if ((up_pressed == 0U || up_latched != 0U) &&
+	    (down_pressed == 0U || down_latched != 0U) &&
 	    (select_pressed == 0U || select_latched != 0U)) {
 		return 0U;
 	}
@@ -2757,6 +2758,23 @@ static uint8_t handle_fastboot_menu_input(uint32_t *menu_index, uint64_t *last_e
 		return 0U;
 	}
 	*last_event_ticks = now_ticks;
+
+	if (up_pressed != 0U && up_latched == 0U) {
+		up_latched = 1U;
+		*menu_index = (*menu_index == 0U) ? 1U : 0U;
+		if (menu_dirty != 0) {
+			*menu_dirty = 1U;
+		}
+		if (g_menu_buttons.vol_up_gpio == MK_STAGE0_GPIO_NONE &&
+		    g_menu_buttons.vol_up_hwcode == 0xffffffffU) {
+			uart_puts_all("[mk] menu input: homekey-as-up\r\n");
+		} else {
+			uart_puts_all("[mk] menu input: volume-up\r\n");
+		}
+		uart_puts_all("[mk] menu select=");
+		uart_puts_all((*menu_index == 0U) ? "stay-fastboot" : "reboot-recovery");
+		uart_puts_all("\r\n");
+	}
 
 	if (down_pressed != 0U && down_latched == 0U) {
 		down_latched = 1U;
@@ -2774,14 +2792,7 @@ static uint8_t handle_fastboot_menu_input(uint32_t *menu_index, uint64_t *last_e
 		if (menu_dirty != 0) {
 			*menu_dirty = 1U;
 		}
-		if (g_menu_buttons.stable_power_pressed != 0U) {
-			uart_puts_all("[mk] menu input: power\r\n");
-		} else if (g_menu_buttons.vol_up_gpio == MK_STAGE0_GPIO_NONE &&
-			   g_menu_buttons.vol_up_hwcode == 0xffffffffU) {
-			uart_puts_all("[mk] menu input: homekey-as-up\r\n");
-		} else {
-			uart_puts_all("[mk] menu input: volume-up\r\n");
-		}
+		uart_puts_all("[mk] menu input: power\r\n");
 		if (*menu_index == 1U) {
 			uart_puts_all("[mk] menu action: reboot recovery\r\n");
 			return 1U;
@@ -2833,7 +2844,7 @@ static __attribute__((unused)) void enter_fastboot_fallback(const simplefb_info_
 
 	uart_puts_all("[mk] fastboot fallback: bootable labels missing, holding\r\n");
 	if (g_menu_buttons.has_any != 0U) {
-		uart_puts_all("[mk] menu controls: vol-down=next vol-up/power=select\r\n");
+		uart_puts_all("[mk] menu controls: vol-down=next vol-up=prev power=select\r\n");
 		uart_puts_all("[mk] menu select=stay-fastboot\r\n");
 		menu_dirty = 1U;
 		draw_pending = 1U;
