@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "mtk_usb.h"
 #include "mtk_i2c.h"
+#include "mtk_storage.h"
 
 #define MTK_USB0_BASE 0x11200000ULL
 /*
@@ -238,8 +239,9 @@ static uint8_t g_fastboot_cmd_buf[MK_FASTBOOT_CMD_MAX + 1U];
 static uint8_t g_fastboot_resp_buf[MK_FASTBOOT_CMD_MAX];
 static const uint8_t g_fb_okay_version[] = "OKAY0.4";
 static const uint8_t g_fb_okay_product[] = "OKAYMinKernel";
-static const uint8_t g_fb_okay_maxdl[] = "OKAY00100000";
 static const uint8_t g_fb_okay_empty[] = "OKAY";
+static const uint8_t g_fb_okay_raw[] = "OKAYraw";
+static uint8_t g_fastboot_sector_buf[512];
 
 #define MTK_GPIO_BASE 0x10005000ULL
 #define MTK_GPIO_DIR_BASE 0x0000U
@@ -1106,6 +1108,79 @@ static uint8_t ascii_len_bounded_char(const char *s, uint8_t max_len)
 	return n;
 }
 
+static uint8_t u64_to_hex_ascii(uint64_t value, char *out, uint8_t out_cap)
+{
+	char rev[16];
+	uint8_t rev_len = 0U;
+	uint8_t i;
+
+	if (out == 0 || out_cap < 2U) {
+		return 0U;
+	}
+	if (value == 0U) {
+		out[0] = '0';
+		out[1] = '\0';
+		return 1U;
+	}
+	while (value != 0U && rev_len < (uint8_t) sizeof(rev)) {
+		uint8_t nib = (uint8_t) (value & 0x0fU);
+		rev[rev_len++] = (char) ((nib < 10U) ? ('0' + nib) : ('a' + (nib - 10U)));
+		value >>= 4U;
+	}
+	if ((uint8_t) (rev_len + 1U) > out_cap) {
+		return 0U;
+	}
+	for (i = 0U; i < rev_len; i++) {
+		out[i] = rev[rev_len - 1U - i];
+	}
+	out[rev_len] = '\0';
+	return rev_len;
+}
+
+static uint8_t parse_u64_ascii(const char *s, uint64_t *out)
+{
+	uint64_t value = 0U;
+	uint32_t i = 0U;
+	uint32_t base = 10U;
+
+	if (s == 0 || out == 0) {
+		return 0U;
+	}
+	if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+		base = 16U;
+		i = 2U;
+	}
+	if (s[i] == '\0') {
+		return 0U;
+	}
+
+	while (s[i] != '\0') {
+		uint8_t c = (uint8_t) s[i];
+		uint32_t digit;
+
+		if (c >= (uint8_t) '0' && c <= (uint8_t) '9') {
+			digit = (uint32_t) (c - (uint8_t) '0');
+		} else if (base == 16U && c >= (uint8_t) 'a' && c <= (uint8_t) 'f') {
+			digit = (uint32_t) (10U + c - (uint8_t) 'a');
+		} else if (base == 16U && c >= (uint8_t) 'A' && c <= (uint8_t) 'F') {
+			digit = (uint32_t) (10U + c - (uint8_t) 'A');
+		} else {
+			return 0U;
+		}
+		if (digit >= base) {
+			return 0U;
+		}
+		if (value > ((UINT64_MAX - (uint64_t) digit) / (uint64_t) base)) {
+			return 0U;
+		}
+		value = (value * (uint64_t) base) + (uint64_t) digit;
+		i++;
+	}
+
+	*out = value;
+	return 1U;
+}
+
 static const uint8_t g_usb_device_desc[] = {
 	18, USB_DT_DEVICE,
 	0x00, 0x02,
@@ -1503,6 +1578,214 @@ static void fastboot_send_response(volatile uint8_t *base, const char *status4, 
 	uart_puts_all("\r\n");
 }
 
+static uint8_t hex_lower_nibble(uint8_t v)
+{
+	v &= 0x0fU;
+	return (uint8_t) ((v < 10U) ? ((uint8_t) '0' + v) : ((uint8_t) 'a' + (v - 10U)));
+}
+
+static void fastboot_send_okay_u32_hex(volatile uint8_t *base, uint32_t value)
+{
+	uint8_t rsp[14];
+	uint32_t shift;
+	uint32_t i = 0U;
+
+	rsp[i++] = (uint8_t) 'O';
+	rsp[i++] = (uint8_t) 'K';
+	rsp[i++] = (uint8_t) 'A';
+	rsp[i++] = (uint8_t) 'Y';
+	rsp[i++] = (uint8_t) '0';
+	rsp[i++] = (uint8_t) 'x';
+	for (shift = 28U; shift <= 28U; shift -= 4U) {
+		rsp[i++] = hex_lower_nibble((uint8_t) ((value >> shift) & 0x0fU));
+		if (shift == 0U) {
+			break;
+		}
+	}
+	fastboot_send_raw(base, rsp, (uint16_t) i);
+}
+
+static void fastboot_send_data_header(volatile uint8_t *base, uint32_t data_len)
+{
+	uint8_t hdr[12];
+	uint32_t shift;
+	uint32_t i = 0U;
+
+	hdr[i++] = (uint8_t) 'D';
+	hdr[i++] = (uint8_t) 'A';
+	hdr[i++] = (uint8_t) 'T';
+	hdr[i++] = (uint8_t) 'A';
+	for (shift = 28U; shift <= 28U; shift -= 4U) {
+		hdr[i++] = hex_lower_nibble((uint8_t) ((data_len >> shift) & 0x0fU));
+		if (shift == 0U) {
+			break;
+		}
+	}
+	fastboot_send_raw(base, hdr, 12U);
+}
+
+static void fastboot_send_bulk(volatile uint8_t *base, const uint8_t *buf, uint32_t len)
+{
+	uint32_t sent = 0U;
+
+	while (sent < len) {
+		uint16_t chunk = (uint16_t) (len - sent);
+
+		if (chunk > 512U) {
+			chunk = 512U;
+		}
+		fastboot_send_raw(base, buf + sent, chunk);
+		sent += chunk;
+	}
+}
+
+static void fastboot_fail_msg(volatile uint8_t *base, const char *msg)
+{
+	fastboot_send_response(base, "FAIL", msg);
+}
+
+static void fastboot_handle_fetch_command(volatile uint8_t *base, const char *arg)
+{
+	char label[MK_FASTBOOT_CMD_MAX + 1U];
+	char numbuf[32];
+	uint32_t label_len = 0U;
+	uint64_t part_lba = 0U;
+	uint64_t part_count = 0U;
+	uint64_t part_size_bytes;
+	uint64_t offset = 0U;
+	uint64_t size = 0U;
+	uint64_t remain;
+	uint64_t lba;
+	uint32_t in_sector;
+	const char *p = arg;
+	uint32_t i;
+
+	if (arg == 0 || arg[0] == '\0') {
+		fastboot_fail_msg(base, "missing partition");
+		return;
+	}
+
+	while (p[label_len] != '\0' && p[label_len] != ':') {
+		label_len++;
+	}
+	if (label_len == 0U || label_len > MK_FASTBOOT_CMD_MAX) {
+		fastboot_fail_msg(base, "bad partition");
+		return;
+	}
+	for (i = 0U; i < label_len; i++) {
+		label[i] = p[i];
+	}
+	label[label_len] = '\0';
+	p += label_len;
+
+	if (*p == ':') {
+		uint32_t n = 0U;
+
+		p++;
+		while (p[n] != '\0' && p[n] != ':') {
+			if (n >= sizeof(numbuf) - 1U) {
+				fastboot_fail_msg(base, "bad offset");
+				return;
+			}
+			numbuf[n] = p[n];
+			n++;
+		}
+		numbuf[n] = '\0';
+		if (parse_u64_ascii(numbuf, &offset) == 0U) {
+			fastboot_fail_msg(base, "bad offset");
+			return;
+		}
+		p += n;
+		if (*p == ':') {
+			n = 0U;
+			p++;
+			while (p[n] != '\0') {
+				if (n >= sizeof(numbuf) - 1U) {
+					fastboot_fail_msg(base, "bad size");
+					return;
+				}
+				numbuf[n] = p[n];
+				n++;
+			}
+			numbuf[n] = '\0';
+			if (parse_u64_ascii(numbuf, &size) == 0U) {
+				fastboot_fail_msg(base, "bad size");
+				return;
+			}
+			p += n;
+		}
+	}
+	if (*p != '\0') {
+		fastboot_fail_msg(base, "bad fetch args");
+		return;
+	}
+
+	if (mk_stage0_storage_prepare() == 0) {
+		fastboot_fail_msg(base, "storage unavailable");
+		return;
+	}
+	if (mk_stage0_storage_find_partition(label, &part_lba, &part_count) == 0) {
+		fastboot_fail_msg(base, "partition not found");
+		return;
+	}
+	if (part_count > (UINT64_MAX / 512U)) {
+		fastboot_fail_msg(base, "partition too large");
+		return;
+	}
+	part_size_bytes = part_count * 512U;
+	if (offset > part_size_bytes) {
+		fastboot_fail_msg(base, "offset too large");
+		return;
+	}
+	remain = part_size_bytes - offset;
+	if (size == 0U) {
+		size = remain;
+	}
+	if (size > remain) {
+		fastboot_fail_msg(base, "size too large");
+		return;
+	}
+	if (size == 0U) {
+		fastboot_fail_msg(base, "empty fetch");
+		return;
+	}
+	if (size > 0xffffffffU) {
+		fastboot_fail_msg(base, "fetch >4g unsupported");
+		return;
+	}
+
+	uart_puts_all("[mk] fastboot fetch part=");
+	uart_puts_all(label);
+	uart_puts_all(" offset=0x");
+	uart_puthex64_all(offset);
+	uart_puts_all(" size=0x");
+	uart_puthex64_all(size);
+	uart_puts_all("\r\n");
+
+	fastboot_send_data_header(base, (uint32_t) size);
+
+	lba = part_lba + (offset >> 9);
+	in_sector = (uint32_t) (offset & 0x1ffU);
+	while (size != 0U) {
+		uint32_t chunk;
+
+		if (mk_stage0_storage_read_sector(lba, g_fastboot_sector_buf) == 0) {
+			fastboot_fail_msg(base, "read failed");
+			return;
+		}
+		chunk = 512U - in_sector;
+		if ((uint64_t) chunk > size) {
+			chunk = (uint32_t) size;
+		}
+		fastboot_send_bulk(base, &g_fastboot_sector_buf[in_sector], chunk);
+		size -= (uint64_t) chunk;
+		lba++;
+		in_sector = 0U;
+	}
+
+	fastboot_send_response(base, "OKAY", "");
+}
+
 static void fastboot_handle_command(volatile uint8_t *base, const char *cmd)
 {
 	const char *arg;
@@ -1533,15 +1816,56 @@ static void fastboot_handle_command(volatile uint8_t *base, const char *cmd)
 			uart_puts_all("[mk] fastboot send done serial\r\n");
 		} else if (str_eq_lit(arg, "max-download-size") != 0U) {
 			uart_puts_all("[mk] fastboot getvar max-download-size\r\n");
-			uart_puts_all("[mk] fastboot send begin maxdl\r\n");
-			fastboot_send_raw(base, g_fb_okay_maxdl, sizeof(g_fb_okay_maxdl) - 1U);
-			uart_puts_all("[mk] fastboot send done maxdl\r\n");
+			fastboot_send_okay_u32_hex(base, 0U);
+		} else if (str_eq_lit(arg, "max-fetch-size") != 0U) {
+			uint64_t storage_bytes = 0U;
+			uint32_t max_fetch = 0xffffffffU;
+
+			uart_puts_all("[mk] fastboot getvar max-fetch-size\r\n");
+			if (mk_stage0_storage_capacity_bytes(&storage_bytes) != 0) {
+				max_fetch = (storage_bytes > 0xffffffffULL) ? 0xffffffffU : (uint32_t) storage_bytes;
+			}
+			uart_puts_all("[mk] fastboot max-fetch-size=0x");
+			uart_puthex64_all(max_fetch);
+			uart_puts_all("\r\n");
+			fastboot_send_okay_u32_hex(base, max_fetch);
+		} else if (str_starts_with_lit(arg, "partition-size:") != 0U) {
+			const char *label = arg + 15;
+			uint64_t part_lba = 0U;
+			uint64_t part_count = 0U;
+			uint64_t part_bytes = 0U;
+			char size_ascii[24];
+
+			if (label[0] == '\0') {
+				fastboot_send_response(base, "OKAY", "");
+				return;
+			}
+			if (mk_stage0_storage_prepare() != 0 &&
+			    mk_stage0_storage_find_partition(label, &part_lba, &part_count) != 0 &&
+			    part_count <= (UINT64_MAX / 512U)) {
+				part_bytes = part_count * 512U;
+			}
+			if (u64_to_hex_ascii(part_bytes, size_ascii, (uint8_t) sizeof(size_ascii)) == 0U) {
+				fastboot_send_response(base, "OKAY", "");
+			} else {
+				fastboot_send_response(base, "OKAY", size_ascii);
+			}
+		} else if (str_starts_with_lit(arg, "partition-type:") != 0U) {
+			uart_puts_all("[mk] fastboot getvar partition-type\r\n");
+			uart_puts_all("[mk] fastboot send begin parttype\r\n");
+			fastboot_send_raw(base, g_fb_okay_raw, sizeof(g_fb_okay_raw) - 1U);
+			uart_puts_all("[mk] fastboot send done parttype\r\n");
 		} else {
 			uart_puts_all("[mk] fastboot getvar unknown\r\n");
 			uart_puts_all("[mk] fastboot send begin unknown\r\n");
 			fastboot_send_raw(base, g_fb_okay_empty, sizeof(g_fb_okay_empty) - 1U);
 			uart_puts_all("[mk] fastboot send done unknown\r\n");
 		}
+		return;
+	}
+
+	if (str_starts_with_lit(cmd, "fetch:") != 0U) {
+		fastboot_handle_fetch_command(base, cmd + 6);
 		return;
 	}
 

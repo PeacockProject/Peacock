@@ -4,6 +4,7 @@
 #include "mtk_i2c.h"
 #include "mtk_gpio.h"
 #include "mtk_usb.h"
+#include "mtk_storage.h"
 #include "peacock_logo_asset.h"
 
 #define FDT_MAGIC 0xd00dfeedU
@@ -2532,6 +2533,116 @@ static int stage0_gpt_find_relative(uint64_t base_lba,
 	}
 
 	return 0;
+}
+
+static int stage0_find_partition_any(const char *label, uint64_t *out_start_lba, uint64_t *out_lba_count)
+{
+	uint8_t header[512];
+	uint8_t entry_sector[512];
+	uint32_t entry_count;
+	uint32_t entry_size;
+	uint64_t entries_lba;
+	uint32_t i;
+
+	if (label == 0 || label[0] == '\0' || out_start_lba == 0 || out_lba_count == 0) {
+		return 0;
+	}
+	if (stage0_gpt_find_relative(0U, label, out_start_lba, out_lba_count)) {
+		return 1;
+	}
+	if (!msdc0_read_sector(1U, header)) {
+		return 0;
+	}
+	if (!bytes_equal(header, (const uint8_t *) "EFI PART", 8U)) {
+		return 0;
+	}
+
+	entry_size = le32_read(header + 84U);
+	entry_count = le32_read(header + 80U);
+	entries_lba = le64_read(header + 72U);
+	if (entry_size < 128U || entry_size > 512U || entry_count == 0U || entry_count > 256U) {
+		return 0;
+	}
+
+	for (i = 0; i < entry_count; i++) {
+		uint32_t byte_off = i * entry_size;
+		uint64_t lba = entries_lba + (uint64_t) (byte_off / 512U);
+		uint32_t in_sector = byte_off % 512U;
+		const uint8_t *entry;
+		uint64_t first_lba;
+		uint64_t last_lba;
+		uint64_t child_base;
+		uint64_t child_count;
+
+		if (in_sector + entry_size > 512U) {
+			break;
+		}
+		if (!msdc0_read_sector(lba, entry_sector)) {
+			break;
+		}
+		entry = entry_sector + in_sector;
+		if (guid_zero_16(entry)) {
+			continue;
+		}
+
+		first_lba = le64_read(entry + 32U);
+		last_lba = le64_read(entry + 40U);
+		if (last_lba < first_lba) {
+			continue;
+		}
+		child_base = first_lba;
+		child_count = last_lba - first_lba + 1U;
+		if (child_count <= 34U) {
+			continue;
+		}
+		if (stage0_gpt_find_relative(child_base, label, out_start_lba, out_lba_count)) {
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+int mk_stage0_storage_prepare(void)
+{
+	return msdc0_select_user_area();
+}
+
+int mk_stage0_storage_find_partition(const char *label, uint64_t *out_start_lba, uint64_t *out_lba_count)
+{
+	return stage0_find_partition_any(label, out_start_lba, out_lba_count);
+}
+
+int mk_stage0_storage_read_sector(uint64_t lba, uint8_t *out512)
+{
+	return msdc0_read_sector(lba, out512);
+}
+
+int mk_stage0_storage_capacity_bytes(uint64_t *out_bytes)
+{
+	uint8_t extcsd[512];
+	uint32_t sec_count;
+
+	if (out_bytes == 0) {
+		return 0;
+	}
+	if (!msdc0_select_user_area()) {
+		return 0;
+	}
+	if (!msdc0_read_extcsd(extcsd)) {
+		return 0;
+	}
+
+	sec_count = (uint32_t) extcsd[212U] |
+		    ((uint32_t) extcsd[213U] << 8) |
+		    ((uint32_t) extcsd[214U] << 16) |
+		    ((uint32_t) extcsd[215U] << 24);
+	if (sec_count == 0U) {
+		return 0;
+	}
+
+	*out_bytes = (uint64_t) sec_count * 512ULL;
+	return 1;
 }
 
 static void discover_peacock_partitions(void)
