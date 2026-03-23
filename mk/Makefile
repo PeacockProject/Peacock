@@ -33,6 +33,14 @@ STAGE0_KPAYLOAD_GZ := $(STAGE0_OUT_DIR)/mk-kpayload.bin.gz
 STAGE0_KPAYLOAD_OBJS := \
 	$(STAGE0_OUT_DIR)/kernel_payload.o \
 	$(STAGE0_OUT_DIR)/kernel_payload_main.o \
+	$(STAGE0_OUT_DIR)/mk_boot.o \
+	$(STAGE0_OUT_DIR)/mk_ext2.o \
+	$(STAGE0_OUT_DIR)/mk_zlib_gzip.o \
+	$(STAGE0_OUT_DIR)/zlib_inflate.o \
+	$(STAGE0_OUT_DIR)/zlib_inffast.o \
+	$(STAGE0_OUT_DIR)/zlib_inftrees.o \
+	$(STAGE0_OUT_DIR)/zlib_zutil.o \
+	$(STAGE0_OUT_DIR)/zlib_adler32.o \
 	$(STAGE0_OUT_DIR)/mtk_panel.o \
 	$(STAGE0_OUT_DIR)/mtk_display.o \
 	$(STAGE0_OUT_DIR)/mtk_gpio.o \
@@ -127,6 +135,33 @@ $(STAGE0_OUT_DIR)/kernel_payload.o: $(STAGE0_DIR)/kernel_payload.S | $(STAGE0_OU
 
 $(STAGE0_OUT_DIR)/kernel_payload_main.o: $(STAGE0_DIR)/kernel_payload_main.c $(STAGE0_DIR)/mtk_panel.h $(STAGE0_DIR)/mtk_display.h $(STAGE0_DIR)/peacock_logo_asset.h | $(STAGE0_OUT_DIR)
 	$(CLANG) -target aarch64-none-elf -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -nostdlib -std=c11 -Wall -Wextra -Werror -O2 -mgeneral-regs-only $(STAGE0_KPAYLOAD_CPPFLAGS) -c $< -o $@
+
+$(STAGE0_OUT_DIR)/mk_boot.o: $(STAGE0_DIR)/mk_boot.c $(STAGE0_DIR)/mk_boot.h $(STAGE0_DIR)/mk_ext2.h | $(STAGE0_OUT_DIR)
+	$(CLANG) -target aarch64-none-elf -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -nostdlib -std=c11 -Wall -Wextra -Werror -O2 -mgeneral-regs-only $(STAGE0_KPAYLOAD_CPPFLAGS) -c $< -o $@
+
+$(STAGE0_OUT_DIR)/mk_ext2.o: $(STAGE0_DIR)/mk_ext2.c $(STAGE0_DIR)/mk_ext2.h $(STAGE0_DIR)/mtk_storage.h | $(STAGE0_OUT_DIR)
+	$(CLANG) -target aarch64-none-elf -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -nostdlib -std=c11 -Wall -Wextra -Werror -O2 -mgeneral-regs-only $(STAGE0_KPAYLOAD_CPPFLAGS) -c $< -o $@
+
+ZLIB_INFLATE_DIR := ../lk2nd_src/lib/zlib_inflate
+ZLIB_STAGE0_CFLAGS := -target aarch64-none-elf -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -nostdlib -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-sign-compare -O2 -mgeneral-regs-only -DZ_SOLO -I$(ZLIB_INFLATE_DIR)
+
+$(STAGE0_OUT_DIR)/mk_zlib_gzip.o: $(STAGE0_DIR)/mk_zlib_gzip.c $(STAGE0_DIR)/mk_zlib_gzip.h | $(STAGE0_OUT_DIR)
+	$(CLANG) $(ZLIB_STAGE0_CFLAGS) -c $< -o $@
+
+$(STAGE0_OUT_DIR)/zlib_inflate.o: $(ZLIB_INFLATE_DIR)/inflate.c | $(STAGE0_OUT_DIR)
+	$(CLANG) $(ZLIB_STAGE0_CFLAGS) -c $< -o $@
+
+$(STAGE0_OUT_DIR)/zlib_inffast.o: $(ZLIB_INFLATE_DIR)/inffast.c | $(STAGE0_OUT_DIR)
+	$(CLANG) $(ZLIB_STAGE0_CFLAGS) -c $< -o $@
+
+$(STAGE0_OUT_DIR)/zlib_inftrees.o: $(ZLIB_INFLATE_DIR)/inftrees.c | $(STAGE0_OUT_DIR)
+	$(CLANG) $(ZLIB_STAGE0_CFLAGS) -c $< -o $@
+
+$(STAGE0_OUT_DIR)/zlib_zutil.o: $(ZLIB_INFLATE_DIR)/zutil.c | $(STAGE0_OUT_DIR)
+	$(CLANG) $(ZLIB_STAGE0_CFLAGS) -c $< -o $@
+
+$(STAGE0_OUT_DIR)/zlib_adler32.o: $(ZLIB_INFLATE_DIR)/adler32.c | $(STAGE0_OUT_DIR)
+	$(CLANG) $(ZLIB_STAGE0_CFLAGS) -c $< -o $@
 
 $(STAGE0_OUT_DIR)/mtk_panel.o: $(STAGE0_DIR)/mtk_panel.c $(STAGE0_DIR)/mtk_panel.h | $(STAGE0_OUT_DIR)
 	$(CLANG) -target aarch64-none-elf -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -nostdlib -std=c11 -Wall -Wextra -Werror -O2 -mgeneral-regs-only -c $< -o $@

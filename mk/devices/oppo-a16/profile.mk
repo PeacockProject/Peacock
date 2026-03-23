@@ -2,8 +2,8 @@ DEVICE_NAME := oppo-a16
 SOC_FAMILY := mt6765
 
 # Runtime defaults for initial bring-up.
-BOOT_LABEL := PEACOCK_BOOT
-ROOT_LABEL := PEACOCK_ROOTFS
+BOOT_LABEL := boot
+ROOT_LABEL := root
 
 # Device-specific toggles (to be consumed by platform code later).
 HAS_TOUCH := y

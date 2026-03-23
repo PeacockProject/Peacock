@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"peacock/internal/manifest"
 	"peacock/internal/runner"
@@ -41,25 +42,42 @@ func (b *Builder) Download(url string, expectedChecksum string) (string, error) 
 		fmt.Printf("Cached file %s invalid, redownloading...\n", filename)
 	}
 
-	// Download
-	fmt.Printf("Downloading %s...\n", url)
-	resp, err := http.Get(url)
-	if err != nil {
-		return "", fmt.Errorf("download failed: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download failed with status: %s", resp.Status)
-	}
-	defer resp.Body.Close()
-
-	out, err := os.Create(destPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to create file: %w", err)
-	}
-	defer out.Close()
-
-	if _, err := io.Copy(out, resp.Body); err != nil {
-		return "", fmt.Errorf("failed to save file: %w", err)
+	// Copy or download source
+	if strings.HasPrefix(url, "file://") {
+		localPath := strings.TrimPrefix(url, "file://")
+		fmt.Printf("Copying local file %s...\n", localPath)
+		src, err := os.Open(localPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to open local source: %w", err)
+		}
+		defer src.Close()
+		out, err := os.Create(destPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to create cache file: %w", err)
+		}
+		defer out.Close()
+		if _, err := io.Copy(out, src); err != nil {
+			os.Remove(destPath)
+			return "", fmt.Errorf("failed to copy local source: %w", err)
+		}
+	} else {
+		fmt.Printf("Downloading %s...\n", url)
+		resp, err := http.Get(url)
+		if err != nil {
+			return "", fmt.Errorf("download failed: %w", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("download failed with status: %s", resp.Status)
+		}
+		defer resp.Body.Close()
+		out, err := os.Create(destPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to create file: %w", err)
+		}
+		defer out.Close()
+		if _, err := io.Copy(out, resp.Body); err != nil {
+			return "", fmt.Errorf("failed to save file: %w", err)
+		}
 	}
 
 	// Verify Checksum again

@@ -8,5 +8,7 @@ int mk_stage0_mtk_i2c_last_error(void);
 uint32_t mk_stage0_mtk_i2c_last_status(void);
 uint32_t mk_stage0_mtk_i2c_last_debug0(void);
 uint32_t mk_stage0_mtk_i2c_last_debug1(void);
+void mk_stage0_mtk_i2c_snapshot_if_needed(void);
+void mk_stage0_mtk_i2c_restore_for_linux(void);
 
 #endif

@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "mtk_usb.h"
+#include "mk_ext2.h"
 #include "mtk_i2c.h"
 #include "mtk_storage.h"
 
@@ -87,6 +88,7 @@
 #define MUSB_RXCSR_RXPKTRDY 0x0001U
 #define MUSB_RXCSR_FLUSHFIFO 0x0010U
 
+#define MTK_CLK_CFG_5 0x090U
 #define MTK_CLK_CFG_5_SET 0x094U
 #define MTK_CLK_CFG_5_CLR 0x098U
 #define MTK_CLK_CFG_UPDATE 0x004U
@@ -95,6 +97,7 @@
 #define MTK_CLK_CFG_UPDATE_USB_TOP_SEL_BIT 22U
 
 #define MTK_IFR2_CLR 0x084U
+#define MTK_IFR2_SET 0x080U
 #define MTK_IFR2_STA 0x090U
 #define MTK_IFR_ICUSB_BIT 8U
 #define MTK_PERI_USB_SW_RST_BIT 29U
@@ -113,6 +116,16 @@
 #define MT6357_RG_LDO_VUSB33_EN_0_BIT 0U
 #define MT6357_LDO_VUSB33_OP_EN_ADDR 0x199eU
 #define MT6357_LDO_VUSB33_OP_CFG_ADDR 0x19a4U
+
+/* MT6357 VEMC (eMMC VCC, 3.0 V). LDO_VEMC_CON0 = 0x1988, bit 0 = RG_LDO_VEMC_EN. */
+#define MT6357_RG_LDO_VEMC_EN_ADDR 0x1988U
+#define MT6357_RG_LDO_VEMC_EN_BIT  0U
+
+#define SPARSE_MAGIC 0xed26ff3aU
+#define CHUNK_TYPE_RAW 0xcac1U
+#define CHUNK_TYPE_FILL 0xcac2U
+#define CHUNK_TYPE_DONT 0xcac3U
+#define CHUNK_TYPE_CRC32 0xcac4U
 
 #define U2PHY_COM_BASE 0x800U
 #define U3P_USBPHYACR0 0x000U
@@ -188,7 +201,7 @@
 #define USB_PID_FASTBOOT 0x4ee0U
 #define MK_USB_STRING_ASCII_MAX 32U
 #define MK_FASTBOOT_CMD_MAX 64U
-#define MK_FASTBOOT_DOWNLOAD_MAX (32U * 1024U * 1024U)
+#define MK_FASTBOOT_DOWNLOAD_MAX (64U * 1024U * 1024U)
 
 /* SGM7220 Type-C controller (i2c5 @ 0x47) */
 #define SGM7220_I2C_ADDR 0x47U
@@ -229,25 +242,108 @@ typedef struct {
 extern void uart_puts_all(const char *s);
 extern void uart_puthex64_all(uint64_t v);
 
+static uint64_t mk_rd_cntpct(void)
+{
+	uint64_t v;
+	__asm__ volatile("mrs %0, cntpct_el0" : "=r"(v));
+	return v;
+}
+
+static uint64_t mk_rd_cntfrq(void)
+{
+	uint64_t v;
+	__asm__ volatile("mrs %0, cntfrq_el0" : "=r"(v));
+	return v;
+}
+
+/* Calibrated delay using the ARM system counter (accurate regardless of CPU clock). */
+static void mk_delay_ms(uint32_t ms)
+{
+	uint64_t freq = mk_rd_cntfrq();
+	uint64_t start = mk_rd_cntpct();
+	uint64_t ticks;
+
+	if (freq == 0U) {
+		return;
+	}
+	ticks = (freq * (uint64_t) ms) / 1000ULL;
+	while ((mk_rd_cntpct() - start) < ticks) {
+		__asm__ volatile("");
+	}
+}
+
+/* Print elapsed ms since 'start_ct' using the system counter. */
+static void mk_print_elapsed_ms(uint64_t start_ct, const char *label)
+{
+	uint64_t freq = mk_rd_cntfrq();
+	uint64_t elapsed = mk_rd_cntpct() - start_ct;
+	uint64_t ms;
+
+	ms = (freq != 0U) ? ((elapsed * 1000ULL) / freq) : 0ULL;
+	uart_puts_all("[mk] t+");
+	uart_puthex64_all(ms);
+	uart_puts_all("ms ");
+	uart_puts_all(label);
+	uart_puts_all("\r\n");
+}
+
 static usb_fastboot_state_t g_usb_state;
 static uint64_t g_tcpc_i2c_base;
 static uint8_t g_tcpc_addr;
 static uint8_t g_tcpc_ready;
+static struct {
+	uint64_t i2c_base;
+	uint8_t addr;
+	uint8_t mod;
+	uint8_t intr;
+	uint8_t set;
+	uint8_t valid;
+} g_tcpc_saved;
+static struct {
+	uint16_t en0;
+	uint16_t op_en;
+	uint16_t op_cfg;
+	uint8_t valid;
+} g_vusb33_saved;
+static struct {
+	uint32_t clk_cfg_5;
+	uint32_t ifr2_sta;
+	uint8_t valid;
+} g_usb_clock_saved;
+static struct {
+	uint32_t acr1;
+	uint32_t acr5;
+	uint32_t acr6;
+	uint32_t acr3;
+	uint32_t acr4;
+	uint32_t dtm0;
+	uint32_t dtm1;
+	uint32_t bc12c;
+	uint8_t valid;
+} g_usb_phy_saved;
 static uint8_t g_usb_serial_ascii[MK_USB_STRING_ASCII_MAX + 1U] = "GUCINNG6FAVW99OR";
 static uint8_t g_usb_serial_ascii_len = 16U;
+static char g_lk_bootargs[1024];
+static uint32_t g_lk_bootargs_len = 0U;
 static uint8_t g_usb_string_desc_buf[2U + (MK_USB_STRING_ASCII_MAX * 2U)];
 static uint8_t g_fastboot_cmd_buf[MK_FASTBOOT_CMD_MAX + 1U];
 static uint8_t g_fastboot_resp_buf[MK_FASTBOOT_CMD_MAX];
 static const uint8_t g_fb_okay_version[] = "OKAY0.4";
-static const uint8_t g_fb_okay_product[] = "OKAYMinKernel";
+static const uint8_t g_fb_okay_product[] = "OKAYMimKermel23";
 static const uint8_t g_fb_okay_empty[] = "OKAY";
 static const uint8_t g_fb_okay_raw[] = "OKAYraw";
+static const uint8_t g_fb_okay_no[] = "OKAYno";
+static const uint8_t g_fb_okay_zero[] = "OKAY0";
 static uint8_t g_fastboot_sector_buf[512];
+static uint8_t g_sparse_fill_buf[512U * 256U];
 static uint8_t g_fastboot_download_buf[MK_FASTBOOT_DOWNLOAD_MAX];
 static uint32_t g_fastboot_download_expected;
 static uint32_t g_fastboot_download_received;
 static uint32_t g_fastboot_download_staged_size;
 static uint8_t g_fastboot_download_active;
+static uint8_t g_fastboot_pending_action;
+static uint8_t g_fastboot_fetch_trace_packets;
+static uint32_t g_fastboot_fetch_trace_seq;
 
 #define MTK_GPIO_BASE 0x10005000ULL
 #define MTK_GPIO_DIR_BASE 0x0000U
@@ -284,6 +380,18 @@ static void bb_set_mode_gpio(uint32_t pin)
 	uint32_t val = raw_read32(addr);
 
 	val &= ~(0xfU << shift);
+	raw_write32(addr, val);
+}
+
+static void bb_set_mode_i2c(uint32_t pin)
+{
+	uint32_t group = pin / 8U;
+	uint32_t shift = (pin % 8U) * 4U;
+	uint64_t addr = MTK_GPIO_BASE + MTK_GPIO_MODE_BASE + ((uint64_t) group * MTK_GPIO_GROUP_STRIDE);
+	uint32_t val = raw_read32(addr);
+
+	val &= ~(0xfU << shift);
+	val |= (1U << shift);
 	raw_write32(addr, val);
 }
 
@@ -341,6 +449,7 @@ static void bb_drive_low(uint32_t pin)
 
 static void bb_i2c_prepare(void)
 {
+	mk_stage0_mtk_i2c_snapshot_if_needed();
 	bb_set_mode_gpio(MK_USB_TCPC_SCL_GPIO);
 	bb_set_mode_gpio(MK_USB_TCPC_SDA_GPIO);
 	bb_release_line(MK_USB_TCPC_SCL_GPIO);
@@ -543,6 +652,16 @@ static int usb_try_force_typec_sink_sgm7220_on(uint64_t i2c_base, uint8_t addr7)
 	int ret;
 	uint8_t mode_val;
 
+	if (g_tcpc_saved.valid == 0U) {
+		if (usb_sgm7220_read_reg8(i2c_base, addr7, SGM7220_REG_MOD, &g_tcpc_saved.mod) == 0 &&
+		    usb_sgm7220_read_reg8(i2c_base, addr7, SGM7220_REG_INT, &g_tcpc_saved.intr) == 0 &&
+		    usb_sgm7220_read_reg8(i2c_base, addr7, SGM7220_REG_SET, &g_tcpc_saved.set) == 0) {
+			g_tcpc_saved.i2c_base = i2c_base;
+			g_tcpc_saved.addr = addr7;
+			g_tcpc_saved.valid = 1U;
+		}
+	}
+
 	/*
 	 * Mirror kernel tcpc_sgm7220 flow:
 	 * REG_SET init, disable-UFP-access policy bit, advertise 3A,
@@ -625,7 +744,7 @@ static void usb_wait_typec_attach_sgm7220(void)
 		return;
 	}
 
-	for (loops = 0U; loops < 400U; loops++) {
+	for (loops = 0U; loops < 50U; loops++) {
 		if (usb_sgm7220_read_reg8(g_tcpc_i2c_base, g_tcpc_addr, SGM7220_REG_INT, &reg_int) == 0 &&
 		    usb_sgm7220_read_reg8(g_tcpc_i2c_base, g_tcpc_addr, SGM7220_REG_MOD, &reg_mod) == 0) {
 			uint8_t attach = (uint8_t) ((reg_int >> 6U) & 0x03U);
@@ -767,6 +886,14 @@ static void usb_enable_vusb33(void)
 	uint16_t op_cfg;
 	volatile uint8_t *base = (volatile uint8_t *) (uintptr_t) MTK_PMIC_WRAP_BASE;
 
+	if (g_vusb33_saved.valid == 0U) {
+		if (pwrap_read16(MT6357_RG_LDO_VUSB33_EN_0_ADDR, &g_vusb33_saved.en0) == 0 &&
+		    pwrap_read16(MT6357_LDO_VUSB33_OP_EN_ADDR, &g_vusb33_saved.op_en) == 0 &&
+		    pwrap_read16(MT6357_LDO_VUSB33_OP_CFG_ADDR, &g_vusb33_saved.op_cfg) == 0) {
+			g_vusb33_saved.valid = 1U;
+		}
+	}
+
 	if (pwrap_read16(MT6357_RG_LDO_VUSB33_EN_0_ADDR, &regv) != 0) {
 		uart_puts_all("[mk] usb vusb33: pwrap read failed en=0x");
 		uart_puthex64_all(mmio_read32(base, PWRAP_WACS2_EN));
@@ -818,6 +945,72 @@ static void usb_enable_vusb33(void)
 	}
 }
 
+static void usb_restore_vusb33(void)
+{
+	if (g_vusb33_saved.valid == 0U) {
+		return;
+	}
+
+	(void) pwrap_write16(MT6357_LDO_VUSB33_OP_EN_ADDR, g_vusb33_saved.op_en);
+	(void) pwrap_write16(MT6357_LDO_VUSB33_OP_CFG_ADDR, g_vusb33_saved.op_cfg);
+	(void) pwrap_write16(MT6357_RG_LDO_VUSB33_EN_0_ADDR, g_vusb33_saved.en0);
+	uart_puts_all("[mk] usb vusb33: restored\r\n");
+}
+
+/*
+ * Power-cycle the eMMC VCC (VEMC LDO) via MT6357 PMIC.
+ *
+ * Oppo LK enables Power-On Write Protection (CMD28 with US_PWR_WP_EN set) on
+ * the boot partition before jumping to MK.  Micron eMMC clears Power-On WP
+ * only on an actual VCC removal, not on CMD0.  Cycling VEMC is the equivalent
+ * of what the Linux mmc_power_cycle() → regulator_disable/enable path does.
+ *
+ * After this call the caller must issue a full eMMC re-init sequence (CMD1,
+ * CMD2, CMD3, CMD7, CMD6 bus-width, SELECT_PARTITION) — exactly what
+ * msdc0_go_idle_reinit() already does.
+ */
+static void emmc_vcc_cycle(void)
+{
+	uint16_t regv;
+
+	if (pwrap_read16(MT6357_RG_LDO_VEMC_EN_ADDR, &regv) != 0) {
+		uart_puts_all("[mk] msdc: vemc read failed, skip vcc cycle\r\n");
+		return;
+	}
+	uart_puts_all("[mk] msdc: vemc pre=0x");
+	uart_puthex64_all((uint64_t) regv);
+	uart_puts_all("\r\n");
+
+	/* Disable VEMC — eMMC VCC off. */
+	regv &= (uint16_t) ~(1U << MT6357_RG_LDO_VEMC_EN_BIT);
+	if (pwrap_write16(MT6357_RG_LDO_VEMC_EN_ADDR, regv) != 0) {
+		uart_puts_all("[mk] msdc: vemc disable failed\r\n");
+		return;
+	}
+	uart_puts_all("[mk] msdc: vemc off\r\n");
+
+	/* Hold VCC low for 50 ms.  The VEMC output capacitor (up to ~100 µF)
+	 * needs ~25 ms to discharge through the eMMC load.  Previously uncalibrated
+	 * spin loops ran for 300-600 ms at the effective CPU/cache speed; 50 ms is
+	 * sufficient for full de-powering with a conservative margin. */
+	mk_delay_ms(50U);
+
+	/* Re-enable VEMC. */
+	regv |= (uint16_t) (1U << MT6357_RG_LDO_VEMC_EN_BIT);
+	if (pwrap_write16(MT6357_RG_LDO_VEMC_EN_ADDR, regv) != 0) {
+		uart_puts_all("[mk] msdc: vemc enable failed\r\n");
+		return;
+	}
+	uart_puts_all("[mk] msdc: vemc on\r\n");
+
+	/* Wait 50 ms for VEMC to stabilize and the eMMC to complete its
+	 * internal power-on reset.  JESD84 requires CMD1 be issued within 1 s
+	 * of CMD0, but the card's power-on reset takes 10-50 ms in practice. */
+	mk_delay_ms(50U);
+
+	uart_puts_all("[mk] msdc: vcc cycle done\r\n");
+}
+
 static void usb_phy_init(void)
 {
 	volatile uint8_t *sif = (volatile uint8_t *) (uintptr_t) MTK_USB_SIF_BASE;
@@ -841,6 +1034,18 @@ static void usb_phy_init(void)
 	/* usb_phy_recover(): wait 50 usec before touching the PHY. */
 	for (volatile uint32_t spin = 0; spin < 3000U; spin++) {
 		__asm__ volatile("");
+	}
+
+	if (g_usb_phy_saved.valid == 0U) {
+		g_usb_phy_saved.acr1 = USBPHY_READ32(U3P_USBPHYACR1);
+		g_usb_phy_saved.acr5 = USBPHY_READ32(U3P_USBPHYACR5);
+		g_usb_phy_saved.acr6 = USBPHY_READ32(U3P_USBPHYACR6);
+		g_usb_phy_saved.acr3 = USBPHY_READ32(0x01cU);
+		g_usb_phy_saved.acr4 = USBPHY_READ32(U3P_U2PHYACR4);
+		g_usb_phy_saved.dtm0 = USBPHY_READ32(U3P_U2PHYDTM0);
+		g_usb_phy_saved.dtm1 = USBPHY_READ32(U3P_U2PHYDTM1);
+		g_usb_phy_saved.bc12c = USBPHY_READ32(U3P_U2PHYBC12C);
+		g_usb_phy_saved.valid = 1U;
 	}
 
 	/* Match downstream usb_phy_recover() register sequencing. */
@@ -929,6 +1134,25 @@ static void usb_phy_init(void)
 #undef USBPHY_CLR32
 }
 
+static void usb_phy_restore(void)
+{
+	volatile uint8_t *sif = (volatile uint8_t *) (uintptr_t) MTK_USB_SIF_BASE;
+
+	if (g_usb_phy_saved.valid == 0U) {
+		return;
+	}
+
+	mmio_write32(sif, U2PHY_COM_BASE + U3P_USBPHYACR1, g_usb_phy_saved.acr1);
+	mmio_write32(sif, U2PHY_COM_BASE + U3P_USBPHYACR5, g_usb_phy_saved.acr5);
+	mmio_write32(sif, U2PHY_COM_BASE + U3P_USBPHYACR6, g_usb_phy_saved.acr6);
+	mmio_write32(sif, U2PHY_COM_BASE + 0x01cU, g_usb_phy_saved.acr3);
+	mmio_write32(sif, U2PHY_COM_BASE + U3P_U2PHYACR4, g_usb_phy_saved.acr4);
+	mmio_write32(sif, U2PHY_COM_BASE + U3P_U2PHYDTM0, g_usb_phy_saved.dtm0);
+	mmio_write32(sif, U2PHY_COM_BASE + U3P_U2PHYDTM1, g_usb_phy_saved.dtm1);
+	mmio_write32(sif, U2PHY_COM_BASE + U3P_U2PHYBC12C, g_usb_phy_saved.bc12c);
+	uart_puts_all("[mk] usb phy: restored\r\n");
+}
+
 #define MUSB_SWRST 0x74U
 #define MUSB_SWRST_SWRST (1U << 1)
 #define MUSB_SWRST_DISUSBRESET (1U << 0)
@@ -995,11 +1219,40 @@ uint8_t mk_stage0_mtk_usb_fastboot_downloading(void)
 	return g_fastboot_download_active;
 }
 
+uint8_t mk_stage0_mtk_usb_fastboot_take_action(void)
+{
+	uint8_t action = g_fastboot_pending_action;
+
+	g_fastboot_pending_action = MK_FASTBOOT_ACTION_NONE;
+	return action;
+}
+
+const uint8_t *mk_stage0_mtk_usb_fastboot_download_buf(void)
+{
+	return g_fastboot_download_buf;
+}
+
+uint32_t mk_stage0_mtk_usb_fastboot_download_size(void)
+{
+	return g_fastboot_download_staged_size;
+}
+
+__attribute__((weak)) void mk_stage0_fastboot_action_immediate(uint8_t action)
+{
+	(void) action;
+}
+
 static void usb_clock_init(void)
 {
 	volatile uint8_t *top = (volatile uint8_t *) (uintptr_t) MTK_TOPCKGEN_BASE;
 	volatile uint8_t *infra = (volatile uint8_t *) (uintptr_t) MTK_INFRACFG_AO_BASE;
 	uint32_t mask;
+
+	if (g_usb_clock_saved.valid == 0U) {
+		g_usb_clock_saved.clk_cfg_5 = mmio_read32(top, MTK_CLK_CFG_5);
+		g_usb_clock_saved.ifr2_sta = mmio_read32(infra, MTK_IFR2_STA);
+		g_usb_clock_saved.valid = 1U;
+	}
 
 	mask = (1U << MTK_CLK_CFG_5_USB_TOP_SEL_BIT) |
 	       (1U << MTK_CLK_CFG_5_USB_TOP_GATE_BIT);
@@ -1009,6 +1262,55 @@ static void usb_clock_init(void)
 
 	mmio_write32(infra, MTK_IFR2_CLR, (1U << MTK_IFR_ICUSB_BIT));
 	(void) mmio_read32(infra, MTK_IFR2_STA);
+}
+
+static void usb_clock_quiesce(void)
+{
+	volatile uint8_t *top = (volatile uint8_t *) (uintptr_t) MTK_TOPCKGEN_BASE;
+	volatile uint8_t *infra = (volatile uint8_t *) (uintptr_t) MTK_INFRACFG_AO_BASE;
+
+	/*
+	 * Undo the clock enables done for stage0 fastboot. Linux should see a
+	 * passive USB block and bring the clocks back up on its own terms.
+	 */
+	mmio_write32(top, MTK_CLK_CFG_5_SET, (1U << MTK_CLK_CFG_5_USB_TOP_GATE_BIT));
+	mmio_write32(top, MTK_CLK_CFG_UPDATE, (1U << MTK_CLK_CFG_UPDATE_USB_TOP_SEL_BIT));
+	mmio_write32(infra, MTK_IFR2_SET, (1U << MTK_IFR_ICUSB_BIT));
+	(void) mmio_read32(infra, MTK_IFR2_STA);
+}
+
+static void usb_clock_restore(void)
+{
+	volatile uint8_t *top = (volatile uint8_t *) (uintptr_t) MTK_TOPCKGEN_BASE;
+	volatile uint8_t *infra = (volatile uint8_t *) (uintptr_t) MTK_INFRACFG_AO_BASE;
+	uint32_t sel = (1U << MTK_CLK_CFG_5_USB_TOP_SEL_BIT);
+	uint32_t gate = (1U << MTK_CLK_CFG_5_USB_TOP_GATE_BIT);
+	uint32_t icusb = (1U << MTK_IFR_ICUSB_BIT);
+
+	if (g_usb_clock_saved.valid == 0U) {
+		usb_clock_quiesce();
+		return;
+	}
+
+	if ((g_usb_clock_saved.clk_cfg_5 & sel) != 0U) {
+		mmio_write32(top, MTK_CLK_CFG_5_SET, sel);
+	} else {
+		mmio_write32(top, MTK_CLK_CFG_5_CLR, sel);
+	}
+	if ((g_usb_clock_saved.clk_cfg_5 & gate) != 0U) {
+		mmio_write32(top, MTK_CLK_CFG_5_SET, gate);
+	} else {
+		mmio_write32(top, MTK_CLK_CFG_5_CLR, gate);
+	}
+	mmio_write32(top, MTK_CLK_CFG_UPDATE, (1U << MTK_CLK_CFG_UPDATE_USB_TOP_SEL_BIT));
+
+	if ((g_usb_clock_saved.ifr2_sta & icusb) != 0U) {
+		mmio_write32(infra, MTK_IFR2_SET, icusb);
+	} else {
+		mmio_write32(infra, MTK_IFR2_CLR, icusb);
+	}
+	(void) mmio_read32(infra, MTK_IFR2_STA);
+	uart_puts_all("[mk] usb clock: restored\r\n");
 }
 
 static void ep_select(volatile uint8_t *base, uint8_t ep)
@@ -1104,6 +1406,27 @@ static uint8_t str_eq_lit(const char *s, const char *lit)
 		i++;
 	}
 	return (lit[i] == '\0' && s[i] == '\0') ? 1U : 0U;
+}
+
+static uint8_t str_contains_lit(const char *s, const char *needle)
+{
+	uint32_t i = 0U;
+	uint32_t j;
+
+	if (s == 0 || needle == 0 || needle[0] == '\0') {
+		return 0U;
+	}
+	while (s[i] != '\0') {
+		j = 0U;
+		while (needle[j] != '\0' && s[i + j] != '\0' && s[i + j] == needle[j]) {
+			j++;
+		}
+		if (needle[j] == '\0') {
+			return 1U;
+		}
+		i++;
+	}
+	return 0U;
 }
 
 static uint8_t ascii_len_bounded_char(const char *s, uint8_t max_len)
@@ -1399,6 +1722,25 @@ void mk_stage0_mtk_usb_set_serial_ascii(const char *serial)
 	g_usb_serial_ascii_len = out_len;
 }
 
+void mk_stage0_mtk_usb_set_lk_bootargs(const char *bootargs)
+{
+	uint32_t i;
+
+	if (bootargs == 0) {
+		return;
+	}
+	for (i = 0U; i < (sizeof(g_lk_bootargs) - 1U) && bootargs[i] != '\0'; i++) {
+		g_lk_bootargs[i] = bootargs[i];
+	}
+	g_lk_bootargs[i] = '\0';
+	g_lk_bootargs_len = i;
+}
+
+const char *mk_stage0_mtk_usb_get_lk_bootargs(void)
+{
+	return (g_lk_bootargs_len != 0U) ? g_lk_bootargs : 0;
+}
+
 static void handle_get_descriptor(volatile uint8_t *base, uint16_t value, uint16_t length)
 {
 	const uint8_t *desc = 0;
@@ -1565,12 +1907,45 @@ static void ep1_read_fifo(volatile uint8_t *base, uint8_t *buf, uint16_t len)
 	}
 }
 
+static void ep1_read_fifo_fast(volatile uint8_t *base, uint8_t *buf, uint16_t len)
+{
+	uint16_t i = 0U;
+
+	while ((uint16_t) (len - i) >= 4U) {
+		uint32_t v = mmio_read32(base, MUSB_FIFO_EP1);
+		buf[i + 0U] = (uint8_t) (v & 0xffU);
+		buf[i + 1U] = (uint8_t) ((v >> 8) & 0xffU);
+		buf[i + 2U] = (uint8_t) ((v >> 16) & 0xffU);
+		buf[i + 3U] = (uint8_t) ((v >> 24) & 0xffU);
+		i = (uint16_t) (i + 4U);
+	}
+	while (i < len) {
+		buf[i++] = mmio_read8(base, MUSB_FIFO_EP1);
+	}
+}
+
+static void ep1_discard_fifo_fast(volatile uint8_t *base, uint16_t len)
+{
+	while (len >= 4U) {
+		(void) mmio_read32(base, MUSB_FIFO_EP1);
+		len = (uint16_t) (len - 4U);
+	}
+	while (len != 0U) {
+		(void) mmio_read8(base, MUSB_FIFO_EP1);
+		len--;
+	}
+}
+
 static int ep1_wait_tx_ready(volatile uint8_t *base)
 {
 	uint32_t wait = 150000U;
+	uint32_t iter = 0U;
 
 	ep_select(base, 1U);
 	while (((mmio_read16(base, MUSB_TXCSR) & MUSB_TXCSR_TXPKTRDY) != 0U) && (wait-- != 0U)) {
+		if ((iter++ & 0x3ffU) == 0U) {
+			mk_stage0_storage_pet_wdt();
+		}
 		__asm__ volatile("");
 	}
 	if (wait == 0U) {
@@ -1584,16 +1959,43 @@ static int ep1_wait_tx_ready(volatile uint8_t *base)
 
 static void fastboot_send_raw(volatile uint8_t *base, const uint8_t *buf, uint16_t len)
 {
+	uint8_t trace = g_fastboot_fetch_trace_packets;
+	uint32_t seq = g_fastboot_fetch_trace_seq;
+
 	if (buf == 0 || len == 0U) {
 		return;
+	}
+	if (trace != 0U) {
+		uart_puts_all("[mk] raw seq=0x");
+		uart_puthex64_all(seq);
+		uart_puts_all(" enter len=0x");
+		uart_puthex64_all(len);
+		uart_puts_all("\r\n");
 	}
 	if (ep1_wait_tx_ready(base) != 0) {
 		uart_puts_all("[mk] fastboot raw drop: ep1 not ready\r\n");
 		return;
 	}
+	if (trace != 0U) {
+		uart_puts_all("[mk] raw seq=0x");
+		uart_puthex64_all(seq);
+		uart_puts_all(" txready\r\n");
+	}
 	ep_select(base, 1U);
 	ep1_write_fifo(base, buf, len);
+	if (trace != 0U) {
+		uart_puts_all("[mk] raw seq=0x");
+		uart_puthex64_all(seq);
+		uart_puts_all(" fifo\r\n");
+	}
 	mmio_write16(base, MUSB_TXCSR, MUSB_TXCSR_TXPKTRDY);
+	if (trace != 0U) {
+		uart_puts_all("[mk] raw seq=0x");
+		uart_puthex64_all(seq);
+		uart_puts_all(" txpktrdy\r\n");
+		g_fastboot_fetch_trace_seq = seq + 1U;
+		g_fastboot_fetch_trace_packets = (uint8_t) (trace - 1U);
+	}
 }
 
 static void fastboot_send_response(volatile uint8_t *base, const char *status4, const char *msg)
@@ -1689,9 +2091,211 @@ static void fastboot_send_bulk(volatile uint8_t *base, const uint8_t *buf, uint3
 	}
 }
 
+static void fastboot_fetch_progress_pump(volatile uint8_t *base)
+{
+	uint32_t spins;
+
+	for (spins = 0U; spins < 4U; spins++) {
+		(void) base;
+		mk_stage0_storage_pet_wdt();
+		mk_stage0_mtk_usb_fastboot_poll();
+	}
+}
+
 static void fastboot_fail_msg(volatile uint8_t *base, const char *msg)
 {
 	fastboot_send_response(base, "FAIL", msg);
+}
+
+static uint16_t rd_le16(const uint8_t *p)
+{
+	return (uint16_t) ((uint16_t) p[0] | ((uint16_t) p[1] << 8));
+}
+
+static uint32_t rd_le32(const uint8_t *p)
+{
+	return (uint32_t) p[0] |
+	    ((uint32_t) p[1] << 8) |
+	    ((uint32_t) p[2] << 16) |
+	    ((uint32_t) p[3] << 24);
+}
+
+static void wr_le32(uint8_t *p, uint32_t v)
+{
+	p[0] = (uint8_t) (v & 0xffU);
+	p[1] = (uint8_t) ((v >> 8) & 0xffU);
+	p[2] = (uint8_t) ((v >> 16) & 0xffU);
+	p[3] = (uint8_t) ((v >> 24) & 0xffU);
+}
+
+static int fastboot_flash_sparse(volatile uint8_t *base,
+	uint64_t part_lba, uint64_t part_sector_count)
+{
+	const uint8_t *buf = g_fastboot_download_buf;
+	uint32_t buf_sz = g_fastboot_download_staged_size;
+	uint16_t file_hdr_sz;
+	uint16_t chunk_hdr_sz;
+	uint32_t blk_sz;
+	uint32_t total_blks;
+	uint32_t total_chunks;
+	const uint8_t *p;
+	uint64_t cur_lba = part_lba;
+	uint32_t ci;
+
+	if (buf_sz < 28U) {
+		fastboot_fail_msg(base, "sparse: short header");
+		return 0;
+	}
+	file_hdr_sz = rd_le16(buf + 8U);
+	chunk_hdr_sz = rd_le16(buf + 10U);
+	blk_sz = rd_le32(buf + 12U);
+	total_blks = rd_le32(buf + 16U);
+	total_chunks = rd_le32(buf + 20U);
+	if (file_hdr_sz < 28U || file_hdr_sz > buf_sz ||
+	    chunk_hdr_sz < 12U || blk_sz == 0U || (blk_sz % 512U) != 0U) {
+		fastboot_fail_msg(base, "sparse: bad header");
+		return 0;
+	}
+	if (((uint64_t) total_blks * (uint64_t) blk_sz) >
+	    (part_sector_count * 512U)) {
+		fastboot_fail_msg(base, "image too large");
+		return 0;
+	}
+
+	p = buf + file_hdr_sz;
+	for (ci = 0U; ci < total_chunks; ci++) {
+		uint16_t ctype;
+		uint32_t chunk_sz;
+		uint32_t total_sz;
+		uint64_t out_sectors;
+		const uint8_t *data;
+		uint32_t ctype_u32;
+
+		if (((uint32_t) (p - buf) + (uint32_t) chunk_hdr_sz) > buf_sz) {
+			fastboot_fail_msg(base, "sparse: truncated");
+			return 0;
+		}
+		ctype = rd_le16(p);
+		chunk_sz = rd_le32(p + 4U);
+		total_sz = rd_le32(p + 8U);
+		if (total_sz < chunk_hdr_sz ||
+		    ((uint32_t) (p - buf) + total_sz) > buf_sz) {
+			fastboot_fail_msg(base, "sparse: bad chunk");
+			return 0;
+		}
+		data = p + chunk_hdr_sz;
+		out_sectors = ((uint64_t) chunk_sz * (uint64_t) blk_sz) / 512U;
+		ctype_u32 = (uint32_t) ctype;
+		uart_puts_all("[mk] sparse chunk idx=0x");
+		uart_puthex64_all(ci);
+		uart_puts_all(" type=0x");
+		uart_puthex64_all(ctype_u32);
+		uart_puts_all(" sectors=0x");
+		uart_puthex64_all(out_sectors);
+		uart_puts_all("\r\n");
+		if ((cur_lba + out_sectors) > (part_lba + part_sector_count)) {
+			fastboot_fail_msg(base, "sparse: overflows partition");
+			return 0;
+		}
+
+		if (ctype == CHUNK_TYPE_RAW) {
+			uint32_t data_sz = total_sz - chunk_hdr_sz;
+			uint32_t sector_count = (uint32_t) out_sectors;
+
+			if (data_sz != ((uint32_t) chunk_sz * blk_sz)) {
+				fastboot_fail_msg(base, "sparse: bad raw size");
+				return 0;
+			}
+			mk_stage0_storage_pet_wdt();
+			if (sector_count != 0U &&
+			    mk_stage0_storage_write_sectors(cur_lba, data, sector_count) == 0) {
+				fastboot_fail_msg(base, "sparse: write failed");
+				return 0;
+			}
+			cur_lba += out_sectors;
+		} else if (ctype == CHUNK_TYPE_FILL) {
+			uint32_t fill;
+			uint32_t i;
+			uint64_t s;
+
+			if ((total_sz - chunk_hdr_sz) != 4U) {
+				fastboot_fail_msg(base, "sparse: bad fill");
+				return 0;
+			}
+			fill = rd_le32(data);
+			uart_puts_all("[mk] sparse FILL val=0x");
+			uart_puthex64_all(fill);
+			uart_puts_all(" sectors=0x");
+			uart_puthex64_all(out_sectors);
+			uart_puts_all("\r\n");
+
+			if (fill == 0U) {
+				/*
+				 * Optimization: skip zero-fill chunks. The sparse format
+				 * asks us to materialize zeros, but for this userdata image
+				 * the large zero-fill regions are unallocated ext4 space.
+				 * RAW chunks still carry allocated metadata and real data.
+				 */
+				cur_lba += out_sectors;
+			} else {
+				for (i = 0U; i < ((512U * 256U) / 4U); i++) {
+					wr_le32(g_sparse_fill_buf + (i * 4U), fill);
+				}
+				for (s = 0U; s < out_sectors;) {
+					uint32_t batch = (uint32_t) (out_sectors - s);
+
+					if (batch > 256U) {
+						batch = 256U;
+					}
+					mk_stage0_storage_pet_wdt();
+					if (mk_stage0_storage_write_sectors(cur_lba + s,
+						g_sparse_fill_buf, batch) == 0) {
+						fastboot_fail_msg(base, "sparse: fill write failed");
+						return 0;
+					}
+					s += (uint64_t) batch;
+				}
+				cur_lba += out_sectors;
+			}
+		} else if (ctype == CHUNK_TYPE_DONT) {
+			if (total_sz != chunk_hdr_sz) {
+				fastboot_fail_msg(base, "sparse: bad dontcare");
+				return 0;
+			}
+			cur_lba += out_sectors;
+		} else if (ctype == CHUNK_TYPE_CRC32) {
+			if ((total_sz - chunk_hdr_sz) != 4U) {
+				fastboot_fail_msg(base, "sparse: bad crc32");
+				return 0;
+			}
+		} else {
+			fastboot_fail_msg(base, "sparse: unknown chunk");
+			return 0;
+		}
+
+		p += total_sz;
+	}
+
+	return 1;
+}
+
+static void fastboot_maybe_apply_action_now(volatile uint8_t *base, uint8_t action)
+{
+	uint32_t wait = 300000U;
+
+	if (action == MK_FASTBOOT_ACTION_NONE) {
+		return;
+	}
+
+	/*
+	 * Give EP1 IN some time to drain so host receives the OKAY before reset.
+	 * If it does not drain in time, still continue with reboot.
+	 */
+	ep_select(base, 1U);
+	while (((mmio_read16(base, MUSB_TXCSR) & MUSB_TXCSR_TXPKTRDY) != 0U) && (wait-- != 0U)) {
+		__asm__ volatile("");
+	}
+	mk_stage0_fastboot_action_immediate(action);
 }
 
 static void fastboot_handle_fetch_command(volatile uint8_t *base, const char *arg)
@@ -1707,6 +2311,8 @@ static void fastboot_handle_fetch_command(volatile uint8_t *base, const char *ar
 	uint64_t remain;
 	uint64_t lba;
 	uint32_t in_sector;
+	uint32_t send_chunk;
+	uint32_t part_chunk_index = 0U;
 	const char *p = arg;
 	uint32_t i;
 
@@ -1770,6 +2376,130 @@ static void fastboot_handle_fetch_command(volatile uint8_t *base, const char *ar
 		return;
 	}
 
+	if (str_eq_lit(label, "peacock-zImage") != 0U ||
+	    str_eq_lit(label, "peacock-initramfs") != 0U) {
+		mk_ext2_t ext2;
+		uint64_t boot_lba = 0U;
+		uint64_t boot_count = 0U;
+		uint64_t file_bytes;
+		uint64_t send_size;
+		uint64_t sent_total = 0U;
+		uint64_t next_progress = 1024U * 1024U;
+		const char *path = (str_eq_lit(label, "peacock-zImage") != 0U)
+			? "/zImage" : "/initramfs.cpio.gz";
+		int file_size;
+		const uint8_t *src;
+		uint32_t chunk_index = 0U;
+
+		if (mk_stage0_storage_prepare() == 0) {
+			fastboot_fail_msg(base, "storage unavailable");
+			return;
+		}
+		if (!mk_stage0_storage_find_partition_within("userdata", "boot", &boot_lba, &boot_count)) {
+			fastboot_fail_msg(base, "peacock boot not found");
+			return;
+		}
+		if (!mk_ext2_open(boot_lba, &ext2)) {
+			fastboot_fail_msg(base, "peacock boot fs bad");
+			return;
+		}
+		file_size = mk_ext2_load_file(&ext2, path, g_fastboot_download_buf, MK_FASTBOOT_DOWNLOAD_MAX);
+		if (file_size < 0) {
+			fastboot_fail_msg(base, "peacock file missing");
+			return;
+		}
+		file_bytes = (uint64_t) file_size;
+		if (offset > file_bytes) {
+			fastboot_fail_msg(base, "offset too large");
+			return;
+		}
+		remain = file_bytes - offset;
+		send_size = (size == 0U) ? remain : size;
+		if (send_size == 0U) {
+			fastboot_fail_msg(base, "empty fetch");
+			return;
+		}
+		if (file_bytes > 0xffffffffU) {
+			fastboot_fail_msg(base, "fetch >4g unsupported");
+			return;
+		}
+		if (send_size > remain) {
+			fastboot_fail_msg(base, "size too large");
+			return;
+		}
+		src = g_fastboot_download_buf + (uint32_t) offset;
+
+		uart_puts_all("[mk] fastboot fetch file=");
+		uart_puts_all(label);
+		uart_puts_all(" offset=0x");
+		uart_puthex64_all(offset);
+		uart_puts_all(" size=0x");
+		uart_puthex64_all(send_size);
+		uart_puts_all("\r\n");
+
+		uart_puts_all("[mk] fetch: before DATA\r\n");
+		fastboot_send_data_header(base, (uint32_t) send_size);
+		uart_puts_all("[mk] fetch: after DATA\r\n");
+		g_fastboot_fetch_trace_packets = 4U;
+		g_fastboot_fetch_trace_seq = 0U;
+		while (send_size != 0U) {
+			send_chunk = (uint32_t) send_size;
+			if (send_chunk > (4U * 1024U)) {
+				send_chunk = 4U * 1024U;
+			}
+			if (sent_total == 0U) {
+				uint32_t first_packet = send_chunk;
+
+				if (first_packet > 512U) {
+					first_packet = 512U;
+				}
+				uart_puts_all("[mk] fetch: before first bulk size=0x");
+				uart_puthex64_all(send_chunk);
+				uart_puts_all("\r\n");
+				uart_puts_all("[mk] fetch: before first raw size=0x");
+				uart_puthex64_all(first_packet);
+				uart_puts_all("\r\n");
+				fastboot_send_raw(base, src, (uint16_t) first_packet);
+				uart_puts_all("[mk] fetch: after first raw\r\n");
+				src += first_packet;
+				send_size -= (uint64_t) first_packet;
+				sent_total += (uint64_t) first_packet;
+				send_chunk -= first_packet;
+				if (send_chunk == 0U) {
+					uart_puts_all("[mk] fetch: first bulk done\r\n");
+					fastboot_fetch_progress_pump(base);
+					continue;
+				}
+			}
+			uart_puts_all("[mk] fetch: chunk begin idx=0x");
+			uart_puthex64_all(chunk_index);
+			uart_puts_all(" size=0x");
+			uart_puthex64_all(send_chunk);
+			uart_puts_all("\r\n");
+			fastboot_send_bulk(base, src, send_chunk);
+			sent_total += (uint64_t) send_chunk;
+			if (sent_total <= (uint64_t) (4U * 1024U)) {
+				uart_puts_all("[mk] fetch: first bulk done\r\n");
+			}
+			uart_puts_all("[mk] fetch: chunk done idx=0x");
+			uart_puthex64_all(chunk_index);
+			uart_puts_all("\r\n");
+			fastboot_fetch_progress_pump(base);
+			if (sent_total >= next_progress) {
+				uart_puts_all("[mk] fetch: sent=0x");
+				uart_puthex64_all(sent_total);
+				uart_puts_all("\r\n");
+				next_progress += 1024U * 1024U;
+			}
+			src += send_chunk;
+			send_size -= (uint64_t) send_chunk;
+			chunk_index++;
+		}
+		uart_puts_all("[mk] fetch: before OKAY\r\n");
+		fastboot_send_response(base, "OKAY", "");
+		return;
+	}
+
 	if (mk_stage0_storage_prepare() == 0) {
 		fastboot_fail_msg(base, "storage unavailable");
 		return;
@@ -1813,12 +2543,16 @@ static void fastboot_handle_fetch_command(volatile uint8_t *base, const char *ar
 	uart_puts_all("\r\n");
 
 	fastboot_send_data_header(base, (uint32_t) size);
+	g_fastboot_fetch_trace_packets = 4U;
+	g_fastboot_fetch_trace_seq = 0U;
 
 	lba = part_lba + (offset >> 9);
 	in_sector = (uint32_t) (offset & 0x1ffU);
 	while (size != 0U) {
 		uint32_t chunk;
+		uint32_t first_packet;
 
+		mk_stage0_storage_pet_wdt();
 		if (mk_stage0_storage_read_sector(lba, g_fastboot_sector_buf) == 0) {
 			fastboot_fail_msg(base, "read failed");
 			return;
@@ -1827,10 +2561,45 @@ static void fastboot_handle_fetch_command(volatile uint8_t *base, const char *ar
 		if ((uint64_t) chunk > size) {
 			chunk = (uint32_t) size;
 		}
-		fastboot_send_bulk(base, &g_fastboot_sector_buf[in_sector], chunk);
+		if (offset == 0U && in_sector == 0U && lba == part_lba) {
+			first_packet = chunk;
+			if (first_packet > 512U) {
+				first_packet = 512U;
+			}
+			uart_puts_all("[mk] fetch part: before first raw size=0x");
+			uart_puthex64_all(first_packet);
+			uart_puts_all("\r\n");
+			fastboot_send_raw(base, &g_fastboot_sector_buf[in_sector], (uint16_t) first_packet);
+			uart_puts_all("[mk] fetch part: after first raw\r\n");
+			if (chunk > first_packet) {
+				uart_puts_all("[mk] fetch part: chunk begin idx=0x");
+				uart_puthex64_all(part_chunk_index);
+				uart_puts_all(" size=0x");
+				uart_puthex64_all(chunk - first_packet);
+				uart_puts_all("\r\n");
+				fastboot_send_bulk(base, &g_fastboot_sector_buf[in_sector + first_packet],
+						  chunk - first_packet);
+				uart_puts_all("[mk] fetch part: chunk done idx=0x");
+				uart_puthex64_all(part_chunk_index);
+				uart_puts_all("\r\n");
+				fastboot_fetch_progress_pump(base);
+			}
+		} else {
+			uart_puts_all("[mk] fetch part: chunk begin idx=0x");
+			uart_puthex64_all(part_chunk_index);
+			uart_puts_all(" size=0x");
+			uart_puthex64_all(chunk);
+			uart_puts_all("\r\n");
+			fastboot_send_bulk(base, &g_fastboot_sector_buf[in_sector], chunk);
+			uart_puts_all("[mk] fetch part: chunk done idx=0x");
+			uart_puthex64_all(part_chunk_index);
+			uart_puts_all("\r\n");
+			fastboot_fetch_progress_pump(base);
+		}
 		size -= (uint64_t) chunk;
 		lba++;
 		in_sector = 0U;
+		part_chunk_index++;
 	}
 
 	fastboot_send_response(base, "OKAY", "");
@@ -1871,6 +2640,7 @@ static void fastboot_handle_flash_command(volatile uint8_t *base, const char *la
 	uint64_t part_lba = 0U;
 	uint64_t part_count = 0U;
 	uint64_t part_bytes = 0U;
+	uint32_t magic_le = 0U;
 	uint32_t remaining;
 	uint64_t lba;
 	const uint8_t *src;
@@ -1896,42 +2666,91 @@ static void fastboot_handle_flash_command(volatile uint8_t *base, const char *la
 		return;
 	}
 	part_bytes = part_count * 512U;
-	if ((uint64_t) g_fastboot_download_staged_size > part_bytes) {
+	magic_le = rd_le32(g_fastboot_download_buf);
+	if (magic_le != SPARSE_MAGIC &&
+	    (uint64_t) g_fastboot_download_staged_size > part_bytes) {
 		fastboot_fail_msg(base, "image too large");
 		return;
 	}
 
 	uart_puts_all("[mk] fastboot flash part=");
 	uart_puts_all(label);
+	uart_puts_all(" lba=0x");
+	uart_puthex64_all(part_lba);
+	uart_puts_all(" count=0x");
+	uart_puthex64_all(part_count);
 	uart_puts_all(" bytes=0x");
 	uart_puthex64_all(g_fastboot_download_staged_size);
 	uart_puts_all("\r\n");
 
-	remaining = g_fastboot_download_staged_size;
-	src = g_fastboot_download_buf;
-	lba = part_lba;
-	while (remaining >= 512U) {
-		if (mk_stage0_storage_write_sector(lba, src) == 0) {
-			fastboot_fail_msg(base, "write failed");
+	/* Power-cycle eMMC VCC to clear Micron Power-On Write Protection, then
+	 * re-initialize the eMMC.  msdc0_go_idle_reinit() (called inside
+	 * mk_stage0_storage_clr_write_prot_range) handles the post-VCC CMD1
+	 * polling and card bring-up. */
+	{
+		uint64_t t0 = mk_rd_cntpct();
+		emmc_vcc_cycle();
+		mk_print_elapsed_ms(t0, "vcc_cycle");
+		mk_stage0_storage_clr_write_prot_range(part_lba,
+		    (uint64_t) g_fastboot_download_staged_size / 512U + 1U);
+		mk_print_elapsed_ms(t0, "reinit");
+	}
+
+	if (magic_le == SPARSE_MAGIC) {
+		uart_puts_all("[mk] fastboot flash sparse\r\n");
+		if (fastboot_flash_sparse(base, part_lba, part_count) == 0) {
 			return;
 		}
-		src += 512U;
-		remaining -= 512U;
-		lba++;
+	} else {
+		remaining = g_fastboot_download_staged_size;
+		src = g_fastboot_download_buf;
+		lba = part_lba;
+
+		uart_puts_all("[mk] fastboot flash lba=0x");
+		uart_puthex64_all(lba);
+		uart_puts_all("\r\n");
+
+		if (remaining >= 512U) {
+			uint64_t tw = mk_rd_cntpct();
+			uint32_t full_sectors = remaining / 512U;
+			mk_stage0_storage_pet_wdt();
+			if (mk_stage0_storage_write_sectors(lba, src, full_sectors) == 0) {
+				fastboot_fail_msg(base, "write failed");
+				return;
+			}
+			mk_print_elapsed_ms(tw, "write");
+			lba += (uint64_t) full_sectors;
+			src += (uint64_t) full_sectors * 512U;
+			remaining -= full_sectors * 512U;
+		}
+
+		if (remaining != 0U) {
+			uint32_t i;
+			for (i = 0U; i < 512U; i++) {
+				g_fastboot_sector_buf[i] = 0U;
+			}
+			for (i = 0U; i < remaining; i++) {
+				g_fastboot_sector_buf[i] = src[i];
+			}
+			mk_stage0_storage_pet_wdt();
+			if (mk_stage0_storage_write_sector(lba, g_fastboot_sector_buf) == 0) {
+				fastboot_fail_msg(base, "write failed");
+				return;
+			}
+		}
 	}
-	if (remaining != 0U) {
-		uint32_t i;
-		for (i = 0U; i < 512U; i++) {
-			g_fastboot_sector_buf[i] = 0U;
-		}
-		for (i = 0U; i < remaining; i++) {
-			g_fastboot_sector_buf[i] = src[i];
-		}
-		if (mk_stage0_storage_write_sector(lba, g_fastboot_sector_buf) == 0) {
-			fastboot_fail_msg(base, "write failed");
+	uart_puts_all("[mk] fastboot flash write complete\r\n");
+	uart_puts_all("[mk] fastboot flash flush begin\r\n");
+	{
+		uint64_t tf = mk_rd_cntpct();
+		if (mk_stage0_storage_flush() == 0) {
+			uart_puts_all("[mk] fastboot flash flush failed\r\n");
+			fastboot_fail_msg(base, "flush failed");
 			return;
 		}
+		mk_print_elapsed_ms(tf, "flush");
 	}
+	uart_puts_all("[mk] fastboot flash flush complete\r\n");
 
 	g_fastboot_download_staged_size = 0U;
 	fastboot_send_response(base, "OKAY", "");
@@ -1991,6 +2810,24 @@ static void fastboot_handle_command(volatile uint8_t *base, const char *cmd)
 				fastboot_send_response(base, "OKAY", "");
 				return;
 			}
+			if (str_eq_lit(label, "peacock-zImage") != 0U ||
+			    str_eq_lit(label, "peacock-initramfs") != 0U) {
+				mk_ext2_t ext2;
+				uint64_t boot_lba = 0U;
+				uint64_t boot_count = 0U;
+				const char *path = (str_eq_lit(label, "peacock-zImage") != 0U)
+					? "/zImage" : "/initramfs.cpio.gz";
+				int file_size;
+
+				if (mk_stage0_storage_prepare() != 0 &&
+				    mk_stage0_storage_find_partition_within("userdata", "boot", &boot_lba, &boot_count) != 0 &&
+				    mk_ext2_open(boot_lba, &ext2) != 0) {
+					file_size = mk_ext2_load_file(&ext2, path, g_fastboot_download_buf, MK_FASTBOOT_DOWNLOAD_MAX);
+					if (file_size > 0) {
+						part_bytes = (uint64_t) file_size;
+					}
+				}
+			} else
 			if (mk_stage0_storage_prepare() != 0 &&
 			    mk_stage0_storage_find_partition(label, &part_lba, &part_count) != 0 &&
 			    part_count <= (UINT64_MAX / 512U)) {
@@ -2006,6 +2843,18 @@ static void fastboot_handle_command(volatile uint8_t *base, const char *cmd)
 			uart_puts_all("[mk] fastboot send begin parttype\r\n");
 			fastboot_send_raw(base, g_fb_okay_raw, sizeof(g_fb_okay_raw) - 1U);
 			uart_puts_all("[mk] fastboot send done parttype\r\n");
+		} else if (str_starts_with_lit(arg, "has-slot:") != 0U) {
+			uart_puts_all("[mk] fastboot getvar has-slot\r\n");
+			fastboot_send_raw(base, g_fb_okay_no, sizeof(g_fb_okay_no) - 1U);
+		} else if (str_starts_with_lit(arg, "is-logical:") != 0U) {
+			uart_puts_all("[mk] fastboot getvar is-logical\r\n");
+			fastboot_send_raw(base, g_fb_okay_no, sizeof(g_fb_okay_no) - 1U);
+		} else if (str_eq_lit(arg, "slot-count") != 0U) {
+			uart_puts_all("[mk] fastboot getvar slot-count\r\n");
+			fastboot_send_raw(base, g_fb_okay_zero, sizeof(g_fb_okay_zero) - 1U);
+		} else if (str_eq_lit(arg, "is-userspace") != 0U) {
+			uart_puts_all("[mk] fastboot getvar is-userspace\r\n");
+			fastboot_send_raw(base, g_fb_okay_no, sizeof(g_fb_okay_no) - 1U);
 		} else {
 			uart_puts_all("[mk] fastboot getvar unknown\r\n");
 			uart_puts_all("[mk] fastboot send begin unknown\r\n");
@@ -2032,16 +2881,101 @@ static void fastboot_handle_command(volatile uint8_t *base, const char *cmd)
 		fastboot_send_response(base, "FAIL", "erase unsupported");
 		return;
 	}
+	if (str_starts_with_lit(cmd, "reboot:") != 0U) {
+		const char *target = cmd + 7;
+
+		fastboot_send_response(base, "OKAY", "");
+		if (str_eq_lit(target, "recovery") != 0U) {
+			g_fastboot_pending_action = MK_FASTBOOT_ACTION_REBOOT_RECOVERY;
+		} else if (str_eq_lit(target, "bootloader") != 0U) {
+			g_fastboot_pending_action = MK_FASTBOOT_ACTION_REBOOT_BOOTLOADER;
+		} else {
+			g_fastboot_pending_action = MK_FASTBOOT_ACTION_REBOOT;
+		}
+		fastboot_maybe_apply_action_now(base, g_fastboot_pending_action);
+		return;
+	}
+	if (str_starts_with_lit(cmd, "reboot ") != 0U) {
+		const char *target = cmd + 7;
+
+		fastboot_send_response(base, "OKAY", "");
+		if (str_eq_lit(target, "recovery") != 0U) {
+			g_fastboot_pending_action = MK_FASTBOOT_ACTION_REBOOT_RECOVERY;
+		} else if (str_eq_lit(target, "bootloader") != 0U) {
+			g_fastboot_pending_action = MK_FASTBOOT_ACTION_REBOOT_BOOTLOADER;
+		} else {
+			g_fastboot_pending_action = MK_FASTBOOT_ACTION_REBOOT;
+		}
+		fastboot_maybe_apply_action_now(base, g_fastboot_pending_action);
+		return;
+	}
+	if (str_eq_lit(cmd, "reboot-recovery") != 0U) {
+		fastboot_send_response(base, "OKAY", "");
+		g_fastboot_pending_action = MK_FASTBOOT_ACTION_REBOOT_RECOVERY;
+		fastboot_maybe_apply_action_now(base, g_fastboot_pending_action);
+		return;
+	}
 	if (str_eq_lit(cmd, "reboot") != 0U) {
 		fastboot_send_response(base, "OKAY", "");
+		g_fastboot_pending_action = MK_FASTBOOT_ACTION_REBOOT;
+		fastboot_maybe_apply_action_now(base, g_fastboot_pending_action);
 		return;
 	}
 	if (str_eq_lit(cmd, "reboot-bootloader") != 0U) {
 		fastboot_send_response(base, "OKAY", "");
+		g_fastboot_pending_action = MK_FASTBOOT_ACTION_REBOOT_BOOTLOADER;
+		fastboot_maybe_apply_action_now(base, g_fastboot_pending_action);
 		return;
 	}
 	if (str_eq_lit(cmd, "continue") != 0U) {
 		fastboot_send_response(base, "OKAY", "");
+		g_fastboot_pending_action = MK_FASTBOOT_ACTION_CONTINUE;
+		return;
+	}
+	if (str_eq_lit(cmd, "oem dump-bootargs") != 0U) {
+		uart_puts_all("[mk] fastboot oem dump-bootargs\r\n");
+		if (g_lk_bootargs_len != 0U) {
+			uint32_t off = 0U;
+			char chunk[57];
+
+			while (off < g_lk_bootargs_len) {
+				uint32_t i;
+
+				for (i = 0U; i < 56U && g_lk_bootargs[off + i] != '\0'; i++) {
+					chunk[i] = g_lk_bootargs[off + i];
+				}
+				chunk[i] = '\0';
+				fastboot_send_response(base, "INFO", chunk);
+				off += i;
+			}
+		}
+		fastboot_send_response(base, "OKAY", "");
+		return;
+	}
+	if (str_eq_lit(cmd, "oem boot-kernel") != 0U ||
+	    str_eq_lit(cmd, "oem boot-kernel zImage") != 0U) {
+		if (g_fastboot_download_staged_size == 0U) {
+			fastboot_send_response(base, "FAIL", "no staged kernel");
+			return;
+		}
+		uart_puts_all("[mk] fastboot oem boot-kernel bytes=0x");
+		uart_puthex64_all(g_fastboot_download_staged_size);
+		uart_puts_all("\r\n");
+		fastboot_send_response(base, "OKAY", "");
+		g_fastboot_pending_action = MK_FASTBOOT_ACTION_BOOT_STAGED_KERNEL;
+		return;
+	}
+	if (str_starts_with_lit(cmd, "reboot") != 0U) {
+		/* Be tolerant of host command variants: pick action by keyword. */
+		fastboot_send_response(base, "OKAY", "");
+		if (str_contains_lit(cmd, "recovery") != 0U) {
+			g_fastboot_pending_action = MK_FASTBOOT_ACTION_REBOOT_RECOVERY;
+		} else if (str_contains_lit(cmd, "bootloader") != 0U) {
+			g_fastboot_pending_action = MK_FASTBOOT_ACTION_REBOOT_BOOTLOADER;
+		} else {
+			g_fastboot_pending_action = MK_FASTBOOT_ACTION_REBOOT;
+		}
+		fastboot_maybe_apply_action_now(base, g_fastboot_pending_action);
 		return;
 	}
 
@@ -2104,6 +3038,7 @@ int mk_stage0_mtk_usb_fastboot_init(void)
 	g_fastboot_download_received = 0U;
 	g_fastboot_download_staged_size = 0U;
 	g_fastboot_download_active = 0U;
+	g_fastboot_pending_action = MK_FASTBOOT_ACTION_NONE;
 
 	/* Preboot CC/USB policy cannot be trusted in stage0; configure it here. */
 	usb_try_force_typec_sink_sgm7220();
@@ -2167,6 +3102,125 @@ int mk_stage0_mtk_usb_fastboot_init(void)
 	return 0;
 }
 
+static void usb_restore_typec_sink_policy(void)
+{
+	if (g_tcpc_saved.valid == 0U) {
+		return;
+	}
+
+	(void) usb_sgm7220_write_reg8(g_tcpc_saved.i2c_base, g_tcpc_saved.addr,
+				      SGM7220_REG_MOD, g_tcpc_saved.mod);
+	(void) usb_sgm7220_write_reg8(g_tcpc_saved.i2c_base, g_tcpc_saved.addr,
+				      SGM7220_REG_INT, g_tcpc_saved.intr);
+	(void) usb_sgm7220_write_reg8(g_tcpc_saved.i2c_base, g_tcpc_saved.addr,
+				      SGM7220_REG_SET, g_tcpc_saved.set);
+	/* Bitbang leaves GPIOs 48/49 in GPIO mode; restore I2C peripheral mux
+	 * so the kernel's I2C5 controller can drive the bus. */
+	bb_set_mode_i2c(MK_USB_TCPC_SCL_GPIO);
+	bb_set_mode_i2c(MK_USB_TCPC_SDA_GPIO);
+	uart_puts_all("[mk] usb tcpc: restored\r\n");
+}
+
+static void usb_fastboot_transport_stop(void)
+{
+	volatile uint8_t *base;
+	uint8_t power;
+	uint8_t devctl;
+
+	if (g_usb_state.started == 0U) {
+		return;
+	}
+
+	base = usb_regs();
+
+	mmio_write16(base, MUSB_INTRTXE, 0U);
+	mmio_write16(base, MUSB_INTRRXE, 0U);
+	mmio_write8(base, MUSB_INTRUSBE, 0U);
+	mmio_write16(base, MUSB_INTRTX, 0xffffU);
+	mmio_write16(base, MUSB_INTRRX, 0xffffU);
+	mmio_write8(base, MUSB_INTRUSB, 0xffU);
+	mmio_write32(base, MTK_USB_L1INTM, 0U);
+	mmio_write32(base, MTK_USB_L1INTS, 0xffffffffU);
+	mmio_write32(base, MUSB_HSDMA_INTR, 0x00ff00ffU);
+
+	power = mmio_read8(base, MUSB_POWER);
+	power &= (uint8_t) ~(MUSB_POWER_SOFTCONN | MUSB_POWER_HSENAB | MUSB_POWER_ENSUSPEND);
+	mmio_write8(base, MUSB_POWER, power);
+
+	devctl = mmio_read8(base, MUSB_DEVCTL);
+	devctl &= (uint8_t) ~MUSB_DEVCTL_SESSION;
+	mmio_write8(base, MUSB_DEVCTL, devctl);
+
+	usb_core_reset(base);
+}
+
+static void usb_platform_restore_saved_state(void)
+{
+	if (g_usb_phy_saved.valid != 0U) {
+		usb_phy_restore();
+	} else {
+		uart_puts_all("[mk] usb phy: no snapshot\r\n");
+	}
+
+	if (g_tcpc_saved.valid != 0U) {
+		usb_restore_typec_sink_policy();
+	} else {
+		uart_puts_all("[mk] usb tcpc: no snapshot\r\n");
+	}
+
+	if (g_vusb33_saved.valid != 0U) {
+		usb_restore_vusb33();
+	} else {
+		uart_puts_all("[mk] usb vusb33: no snapshot\r\n");
+	}
+
+	if (g_usb_clock_saved.valid != 0U) {
+		usb_clock_restore();
+	} else {
+		uart_puts_all("[mk] usb clock: no snapshot, passive gate\r\n");
+		usb_clock_quiesce();
+	}
+}
+
+static void usb_fastboot_state_clear(void)
+{
+	g_usb_state.started = 0U;
+	g_usb_state.configured = 0U;
+	g_usb_state.address = 0U;
+	g_usb_state.pending_address = 0U;
+	g_usb_state.address_pending = 0U;
+	g_usb_state.ep1_ready = 0U;
+	g_fastboot_download_expected = 0U;
+	g_fastboot_download_received = 0U;
+	g_fastboot_download_staged_size = 0U;
+	g_fastboot_download_active = 0U;
+	g_fastboot_pending_action = MK_FASTBOOT_ACTION_NONE;
+}
+
+void mk_stage0_mtk_usb_fastboot_quiesce(void)
+{
+	if (g_usb_state.started == 0U) {
+		return;
+	}
+
+	usb_fastboot_transport_stop();
+	usb_platform_restore_saved_state();
+	usb_fastboot_state_clear();
+}
+
+void mk_stage0_mtk_usb_platform_restore_for_linux(void)
+{
+	uart_puts_all("[mk] usb platform restore begin\r\n");
+	if (g_usb_state.started != 0U) {
+		usb_fastboot_transport_stop();
+	} else {
+		uart_puts_all("[mk] usb fastboot: not-started\r\n");
+	}
+	usb_platform_restore_saved_state();
+	usb_fastboot_state_clear();
+	uart_puts_all("[mk] usb platform restore done\r\n");
+}
+
 void mk_stage0_mtk_usb_fastboot_poll(void)
 {
 	volatile uint8_t *base = usb_regs();
@@ -2222,6 +3276,7 @@ void mk_stage0_mtk_usb_fastboot_poll(void)
 		g_fastboot_download_received = 0U;
 		g_fastboot_download_staged_size = 0U;
 		g_fastboot_download_active = 0U;
+		g_fastboot_pending_action = MK_FASTBOOT_ACTION_NONE;
 
 		/* Re-arm device-mode interrupt/mode state after bus reset. */
 		mmio_write16(base, MUSB_INTRRXE, 0x0000U);
@@ -2312,25 +3367,26 @@ void mk_stage0_mtk_usb_fastboot_poll(void)
 	if (g_usb_state.ep1_ready != 0U) {
 		uint16_t rxcsr;
 		uint16_t rxcount;
+		uint32_t ep1_loops = 0U;
 
 		ep_select(base, 1U);
 		rxcsr = mmio_read16(base, MUSB_RXCSR);
-		if ((rxcsr & MUSB_RXCSR_RXPKTRDY) != 0U) {
+		while (((rxcsr & MUSB_RXCSR_RXPKTRDY) != 0U) && (ep1_loops < 64U)) {
 			rxcount = (uint16_t) (mmio_read16(base, MUSB_RXCOUNT) & 0x1fffU);
 			if (g_fastboot_download_active != 0U) {
 				uint32_t remaining = g_fastboot_download_expected - g_fastboot_download_received;
 				uint16_t consume = rxcount;
-				uint16_t i;
 
 				if ((uint32_t) consume > remaining) {
 					consume = (uint16_t) remaining;
 				}
-				for (i = 0U; i < consume; i++) {
-					g_fastboot_download_buf[g_fastboot_download_received + i] =
-						mmio_read8(base, MUSB_FIFO_EP1);
+				if (consume != 0U) {
+					ep1_read_fifo_fast(base,
+							   g_fastboot_download_buf + g_fastboot_download_received,
+							   consume);
 				}
-				for (; i < rxcount; i++) {
-					(void) mmio_read8(base, MUSB_FIFO_EP1);
+				if (rxcount > consume) {
+					ep1_discard_fifo_fast(base, (uint16_t) (rxcount - consume));
 				}
 				mmio_write16(base, MUSB_RXCSR, 0U);
 
@@ -2367,6 +3423,8 @@ void mk_stage0_mtk_usb_fastboot_poll(void)
 				mmio_write16(base, MUSB_RXCSR, 0U);
 				fastboot_handle_command(base, (const char *) g_fastboot_cmd_buf);
 			}
+			rxcsr = mmio_read16(base, MUSB_RXCSR);
+			ep1_loops++;
 		}
 	}
 

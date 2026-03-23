@@ -1,16 +1,29 @@
 #include "mtk_i2c.h"
 
 #define MTK_TOPCKGEN_BASE 0x10000000ULL
+#define MTK_TOP_CLK_CFG_6 0x00a0U
+#define MTK_TOP_CLK_CFG_6_SET 0x00a4U
 #define MTK_TOP_CLK_CFG_6_CLR 0x00a8U
 #define MTK_TOP_CLK_CFG_UPDATE 0x0004U
 #define MTK_TOP_I2C_SEL_CLR_MASK 0x00000087U
 #define MTK_TOP_I2C_UPDATE_BIT (1U << 24)
 
 #define MTK_INFRACFG_AO_BASE 0x10001000ULL
+#define MTK_IFR2_SET 0x0080U
 #define MTK_IFR2_CLR 0x0084U
+#define MTK_IFR2_STA 0x0090U
+#define MTK_IFR3_SET 0x0088U
 #define MTK_IFR3_CLR 0x008cU
+#define MTK_IFR3_STA 0x0094U
+#define MTK_IFR4_SET 0x00a4U
+#define MTK_IFR4_CLR 0x00a8U
+#define MTK_IFR4_STA 0x00acU
 #define MTK_IFR_I2C_AP_BIT (1U << 11)
 #define MTK_IFR_AP_DMA_BIT (1U << 18)
+#define MTK_IFR4_I2C5_BIT     (1U << 18)
+#define MTK_IFR4_I2C5_ARB_BIT (1U << 19)
+#define MTK_IFR4_I2C5_IMM_BIT (1U << 20)
+#define MTK_IFR4_I2C5_ALL_BITS (MTK_IFR4_I2C5_BIT | MTK_IFR4_I2C5_ARB_BIT | MTK_IFR4_I2C5_IMM_BIT)
 
 #define MTK_GPIO_BASE 0x10005000ULL
 #define MTK_GPIO_MODE_BASE 0x0300U
@@ -82,6 +95,17 @@ static int g_last_i2c_error;
 static uint32_t g_last_i2c_status;
 static uint32_t g_last_i2c_debug0;
 static uint32_t g_last_i2c_debug1;
+
+static uint8_t g_i2c_snapshot_done;
+static uint32_t g_snap_clk6;
+static uint32_t g_snap_ifr2;
+static uint32_t g_snap_ifr3;
+static uint32_t g_snap_ifr4;
+
+static uint32_t reg_read32(uint64_t addr)
+{
+	return *(volatile uint32_t *) (uintptr_t) addr;
+}
 
 static void reg_write32(uint64_t addr, uint32_t value)
 {
@@ -242,4 +266,67 @@ uint32_t mk_stage0_mtk_i2c_last_debug0(void)
 uint32_t mk_stage0_mtk_i2c_last_debug1(void)
 {
 	return g_last_i2c_debug1;
+}
+
+void uart_puts_all(const char *s);
+void uart_puthex64_all(uint64_t v);
+
+void mk_stage0_mtk_i2c_snapshot_if_needed(void)
+{
+	if (g_i2c_snapshot_done)
+		return;
+	g_snap_clk6 = reg_read32(MTK_TOPCKGEN_BASE + MTK_TOP_CLK_CFG_6);
+	g_snap_ifr2 = reg_read32(MTK_INFRACFG_AO_BASE + MTK_IFR2_STA);
+	g_snap_ifr3 = reg_read32(MTK_INFRACFG_AO_BASE + MTK_IFR3_STA);
+	g_snap_ifr4 = reg_read32(MTK_INFRACFG_AO_BASE + MTK_IFR4_STA);
+	g_i2c_snapshot_done = 1;
+}
+
+void mk_stage0_mtk_i2c_restore_for_linux(void)
+{
+	uint32_t cur_ifr2, cur_ifr3, cur_ifr4;
+	uint32_t to_set2, to_clr2, to_set3, to_clr3, to_set4, to_clr4;
+
+	if (!g_i2c_snapshot_done)
+		return;
+
+	/* CLK_CFG_6: directly writable mux register */
+	reg_write32(MTK_TOPCKGEN_BASE + MTK_TOP_CLK_CFG_6, g_snap_clk6);
+	reg_write32(MTK_TOPCKGEN_BASE + MTK_TOP_CLK_CFG_UPDATE, MTK_TOP_I2C_UPDATE_BIT);
+
+	/* IFR CG: set/clear style — restore only the bits MK touches */
+	cur_ifr2 = reg_read32(MTK_INFRACFG_AO_BASE + MTK_IFR2_STA);
+	to_set2 = (g_snap_ifr2 & MTK_IFR_I2C_AP_BIT) & ~(cur_ifr2 & MTK_IFR_I2C_AP_BIT);
+	to_clr2 = (~g_snap_ifr2 & MTK_IFR_I2C_AP_BIT) & (cur_ifr2 & MTK_IFR_I2C_AP_BIT);
+	if (to_set2)
+		reg_write32(MTK_INFRACFG_AO_BASE + MTK_IFR2_SET, to_set2);
+	if (to_clr2)
+		reg_write32(MTK_INFRACFG_AO_BASE + MTK_IFR2_CLR, to_clr2);
+
+	cur_ifr3 = reg_read32(MTK_INFRACFG_AO_BASE + MTK_IFR3_STA);
+	to_set3 = (g_snap_ifr3 & MTK_IFR_AP_DMA_BIT) & ~(cur_ifr3 & MTK_IFR_AP_DMA_BIT);
+	to_clr3 = (~g_snap_ifr3 & MTK_IFR_AP_DMA_BIT) & (cur_ifr3 & MTK_IFR_AP_DMA_BIT);
+	if (to_set3)
+		reg_write32(MTK_INFRACFG_AO_BASE + MTK_IFR3_SET, to_set3);
+	if (to_clr3)
+		reg_write32(MTK_INFRACFG_AO_BASE + MTK_IFR3_CLR, to_clr3);
+
+	/* IFR4: I2C5 dedicated clock gates */
+	cur_ifr4 = reg_read32(MTK_INFRACFG_AO_BASE + MTK_IFR4_STA);
+	to_set4 = (g_snap_ifr4 & MTK_IFR4_I2C5_ALL_BITS) & ~(cur_ifr4 & MTK_IFR4_I2C5_ALL_BITS);
+	to_clr4 = (~g_snap_ifr4 & MTK_IFR4_I2C5_ALL_BITS) & (cur_ifr4 & MTK_IFR4_I2C5_ALL_BITS);
+	if (to_set4)
+		reg_write32(MTK_INFRACFG_AO_BASE + MTK_IFR4_SET, to_set4);
+	if (to_clr4)
+		reg_write32(MTK_INFRACFG_AO_BASE + MTK_IFR4_CLR, to_clr4);
+
+	uart_puts_all("[mk] i2c restore: clk6=0x");
+	uart_puthex64_all((uint64_t)g_snap_clk6);
+	uart_puts_all(" ifr2=0x");
+	uart_puthex64_all((uint64_t)g_snap_ifr2);
+	uart_puts_all(" ifr3=0x");
+	uart_puthex64_all((uint64_t)g_snap_ifr3);
+	uart_puts_all(" ifr4=0x");
+	uart_puthex64_all((uint64_t)g_snap_ifr4);
+	uart_puts_all("\r\n");
 }

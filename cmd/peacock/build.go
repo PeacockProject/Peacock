@@ -33,6 +33,7 @@ import (
 var deviceName string
 var useQemuFlag string
 var crossCompileFlag string
+var emptyRootfsFlag bool
 
 type buildCleanup struct {
 	loopDev     string
@@ -156,24 +157,34 @@ This process involves:
 		extraPackages := viper.GetStringSlice("extra_packages")
 		userName := viper.GetString("user_name")
 		userPassword := viper.GetString("user_password")
+		emptyRootfs := viper.GetBool("empty_rootfs")
 
-		if len(extraPackages) == 0 {
-			extraPackages = promptCSV(reader, "Extra packages (comma-separated, empty for none)")
-		}
+		if emptyRootfs {
+			fmt.Println("Empty-rootfs mode enabled: skipping rootfs package/user/desktop setup and producing a small debug image.")
+			desktopChoice = "none"
+			displayManagerChoice = "none"
+			extraPackages = nil
+			userName = ""
+			userPassword = ""
+		} else {
+			if len(extraPackages) == 0 {
+				extraPackages = promptCSV(reader, "Extra packages (comma-separated, empty for none)")
+			}
 
-		if desktopChoice == "" {
-			fmt.Print(userland.DescribeChoices())
-			desktopChoice = promptSelect(reader, "Desktop", userland.DesktopNames(), "none")
-		}
-		if displayManagerChoice == "" {
-			displayManagerChoice = promptSelect(reader, "Display manager", userland.DisplayManagerNames(), "none")
-		}
+			if desktopChoice == "" {
+				fmt.Print(userland.DescribeChoices())
+				desktopChoice = promptSelect(reader, "Desktop", userland.DesktopNames(), "none")
+			}
+			if displayManagerChoice == "" {
+				displayManagerChoice = promptSelect(reader, "Display manager", userland.DisplayManagerNames(), "none")
+			}
 
-		if userName == "" {
-			userName = promptLine(reader, "Username (empty to skip user creation)", "")
-		}
-		if userName != "" && userPassword == "" {
-			userPassword = promptPassword(reader, "Password (plaintext)", "Confirm password")
+			if userName == "" {
+				userName = promptLine(reader, "Username (empty to skip user creation)", "")
+			}
+			if userName != "" && userPassword == "" {
+				userPassword = promptPassword(reader, "Password (plaintext)", "Confirm password")
+			}
 		}
 
 		// Base packages should be defined in device/package.toml dependencies
@@ -740,30 +751,34 @@ This process involves:
 		// Determine packages to install
 		allPackages := pkgs
 
-		// Add local packages
-		if len(localPackages) > 0 {
-			// Copy local packages to cache so they can be found by pacman
-			for _, pkgPath := range localPackages {
-				dst := filepath.Join(cacheDir, filepath.Base(pkgPath))
-				if err := execCommand("cp", "-f", pkgPath, dst); err != nil {
-					fmt.Printf("Warning: failed to copy package %s to cache: %v\n", pkgPath, err)
+		if !emptyRootfs {
+			// Add local packages
+			if len(localPackages) > 0 {
+				// Copy local packages to cache so they can be found by pacman
+				for _, pkgPath := range localPackages {
+					dst := filepath.Join(cacheDir, filepath.Base(pkgPath))
+					if err := execCommand("cp", "-f", pkgPath, dst); err != nil {
+						fmt.Printf("Warning: failed to copy package %s to cache: %v\n", pkgPath, err)
+					}
 				}
 			}
-		}
 
-		// Install packages to rootfs
-		fmt.Println("Installing packages to rootfs...")
-		if err := b.InstallPackagesToRootfs(imageChrootRoot, rootfsPath, allPackages, dev.Device.Architecture); err != nil {
-			fmt.Printf("Error installing packages to rootfs: %v\n", err)
-			fatal()
-		}
-		if userName != "" {
-			if err := b.CreateUserInRootfs(imageChrootRoot, rootfsPath, userName, userPassword); err != nil {
-				fmt.Printf("Error creating user '%s': %v\n", userName, err)
+			// Install packages to rootfs
+			fmt.Println("Installing packages to rootfs...")
+			if err := b.InstallPackagesToRootfs(imageChrootRoot, rootfsPath, allPackages, dev.Device.Architecture); err != nil {
+				fmt.Printf("Error installing packages to rootfs: %v\n", err)
 				fatal()
 			}
+			if userName != "" {
+				if err := b.CreateUserInRootfs(imageChrootRoot, rootfsPath, userName, userPassword); err != nil {
+					fmt.Printf("Error creating user '%s': %v\n", userName, err)
+					fatal()
+				}
+			}
+		} else {
+			fmt.Println("Skipping package installation into rootfs (empty-rootfs mode)")
 		}
-		if initSystem == "openrc" {
+		if initSystem == "openrc" && !emptyRootfs {
 			// Enable OpenRC logging for debug visibility.
 			rcConfPath := filepath.Join(rootfsPath, "etc", "rc.conf")
 			_ = execCommand("sudo", "sh", "-c", fmt.Sprintf(`set -e
@@ -1026,7 +1041,7 @@ fi
 		fmt.Println("Creating disk image...")
 		imageSizeMB := viper.GetInt("image_size_mb")
 		if imageSizeMB <= 0 {
-			imageSizeMB = estimateImageSizeMB(rootfsPath)
+			imageSizeMB = estimateImageSizeMB(rootfsPath, emptyRootfs)
 			fmt.Printf("Auto image size: %dMB\n", imageSizeMB)
 		}
 		if err := b.CreateDiskImage(imageChrootRoot, rootfsPath, imagePath, imageSizeMB, dev.Quirks.LegacyRootfsExt4); err != nil {
@@ -1756,6 +1771,7 @@ func init() {
 	buildCmd.Flags().String("user", "", "Create user account in rootfs")
 	buildCmd.Flags().String("password", "", "Password for --user (plaintext)")
 	buildCmd.Flags().Int("image-size", 0, "Disk image size in MB (0 = auto)")
+	buildCmd.Flags().BoolVar(&emptyRootfsFlag, "empty-rootfs", false, "Create a small debug image with boot assets only and an empty labeled root partition")
 	buildCmd.Flags().StringVar(&useQemuFlag, "use-qemu", "auto", "Use qemu for foreign arch builds: auto|true|false")
 	buildCmd.Flags().StringVar(&crossCompileFlag, "cross-compile", "", "Cross compiler prefix (e.g. arm-none-eabi-)")
 	viper.BindPFlag("init_system", buildCmd.Flags().Lookup("init"))
@@ -1765,10 +1781,25 @@ func init() {
 	viper.BindPFlag("user_name", buildCmd.Flags().Lookup("user"))
 	viper.BindPFlag("user_password", buildCmd.Flags().Lookup("password"))
 	viper.BindPFlag("image_size_mb", buildCmd.Flags().Lookup("image-size"))
+	viper.BindPFlag("empty_rootfs", buildCmd.Flags().Lookup("empty-rootfs"))
 	buildCmd.MarkFlagRequired("device")
 }
 
-func estimateImageSizeMB(rootfsPath string) int {
+func estimateImageSizeMB(rootfsPath string, emptyRootfs bool) int {
+	if emptyRootfs {
+		const minMB = 768
+		const overheadMB = 64
+
+		usedMB := duSizeMB(rootfsPath)
+		size := usedMB + overheadMB
+		if size < minMB {
+			size = minMB
+		}
+		// Round up to nearest 64MB for compact debug images.
+		size = ((size + 63) / 64) * 64
+		return size
+	}
+
 	const minMB = 2048
 	const overheadMB = 256
 
