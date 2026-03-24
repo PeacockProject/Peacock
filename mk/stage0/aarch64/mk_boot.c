@@ -10,27 +10,14 @@
 
 #include <stdint.h>
 #include "mk_boot.h"
+#include "mk_common.h"
+#include "mk_fdt.h"
 #include "mk_ext2.h"
 #include "mtk_i2c.h"
 #include "mtk_usb.h"
 #include "mk_zlib_gzip.h"
-
-/* ------------------------------------------------------------------ */
-/* UART (declared in kernel_payload_main.c)                            */
-/* ------------------------------------------------------------------ */
-
-void uart_puts_all(const char *s);
-void uart_puthex64_all(uint64_t v);
-void pet_wdt(void);
-void mk_stage0_log_reset_watchdog_state(const char *tag);
-extern char __mk_stack_top[];
-extern char __mk_el1_vectors[];
-extern char __mk_el1_trampoline[];
-extern void __mk_chainload_raw(uint64_t fdt_pa, uint64_t entry);
-extern uint64_t __mk_saved_el2_valid;
-extern uint64_t __mk_saved_cptr_el2;
-extern uint64_t __mk_saved_vbar_el2;
-extern uint64_t __mk_saved_sctlr_el2;
+#include "mk_wdt.h"
+#include "mk_ui.h"
 
 #define MK_UART0_BASE_ADDR          0x11002000ULL
 #define MK_UART_RBR_THR_DLL_OFF     0x00U
@@ -82,120 +69,18 @@ extern uint64_t __mk_saved_sctlr_el2;
 #define MK_ICC_SRE_EL2_ENABLE         (1ULL << 3)
 
 /* ------------------------------------------------------------------ */
-/* FDT tokens and header offsets                                       */
+/* FDT tokens and header offsets (subset used by fdt_patch)            */
 /* ------------------------------------------------------------------ */
 
-#define FDT_MAGIC_VAL      0xD00DFEEDUL
-#define FDT_BEGIN_NODE     1U
-#define FDT_END_NODE       2U
-#define FDT_PROP           3U
-#define FDT_NOP            4U
-#define FDT_END            9U
-
-#define FDT_OFF_TOTALSIZE  4U
-#define FDT_OFF_STRUCT     8U
-#define FDT_OFF_STRINGS    12U
-#define FDT_OFF_SIZE_STR   32U
-#define FDT_OFF_SIZE_STRUCT 36U
-
-/* ------------------------------------------------------------------ */
-/* Byte helpers (no libc)                                              */
-/* ------------------------------------------------------------------ */
-
-static uint32_t mk_strlen(const char *s)
-{
-	uint32_t n = 0U;
-	while (s[n] != '\0') { n++; }
-	return n;
-}
-
-static uint32_t mk_strnlen(const char *s, uint32_t max_len)
-{
-	uint32_t n = 0U;
-	while (n < max_len && s[n] != '\0') { n++; }
-	return n;
-}
-
-static int mk_str_starts(const char *s, const char *prefix)
-{
-	while (*prefix != '\0') {
-		if (*s != *prefix) { return 0; }
-		s++;
-		prefix++;
-	}
-	return 1;
-}
-
-static void mk_memcpy(uint8_t *dst, const uint8_t *src, uint32_t n)
-{
-	uint32_t i;
-	for (i = 0U; i < n; i++) { dst[i] = src[i]; }
-}
-
-static void mk_memmove(uint8_t *dst, const uint8_t *src, uint32_t n)
-{
-	uint32_t i;
-	if (dst <= src) {
-		for (i = 0U; i < n; i++) { dst[i] = src[i]; }
-	} else {
-		for (i = n; i > 0U; i--) { dst[i - 1U] = src[i - 1U]; }
-	}
-}
-
-static void mk_memset(uint8_t *dst, uint8_t val, uint32_t n)
-{
-	uint32_t i;
-	for (i = 0U; i < n; i++) { dst[i] = val; }
-}
-
-static uint32_t be32r(const uint8_t *p)
-{
-	return ((uint32_t) p[0] << 24) | ((uint32_t) p[1] << 16) |
-	       ((uint32_t) p[2] << 8)  |  (uint32_t) p[3];
-}
-
-static void be32w(uint8_t *p, uint32_t v)
-{
-	p[0] = (uint8_t) (v >> 24);
-	p[1] = (uint8_t) (v >> 16);
-	p[2] = (uint8_t) (v >> 8);
-	p[3] = (uint8_t) v;
-}
-
-static void be64w(uint8_t *p, uint64_t v)
-{
-	be32w(p, (uint32_t) (v >> 32));
-	be32w(p + 4U, (uint32_t) v);
-}
-
-static uint32_t le32r(const uint8_t *p)
-{
-	return (uint32_t) p[0] | ((uint32_t) p[1] << 8) |
-	       ((uint32_t) p[2] << 16) | ((uint32_t) p[3] << 24);
-}
-
-static uint32_t mk_mmio_read32(uint64_t addr)
-{
-	return *(volatile uint32_t *) (uintptr_t) addr;
-}
-
-static void mk_mmio_write32(uint64_t addr, uint32_t value)
-{
-	*(volatile uint32_t *) (uintptr_t) addr = value;
-}
-
-static uint64_t le64r(const uint8_t *p)
-{
-	return (uint64_t) le32r(p) | ((uint64_t) le32r(p + 4U) << 32);
-}
+/* FDT constants now from mk_fdt.h (MK_FDT_MAGIC etc.) */
 
 static void trace_first16(const char *tag, const uint8_t *p)
 {
 	uart_puts_all(tag);
 	uart_puts_all(" [0..7]=0x");
-	uart_puthex64_all(le64r(p));
+	uart_puthex64_all(le64_read(p));
 	uart_puts_all(" [8..15]=0x");
-	uart_puthex64_all(le64r(p + 8U));
+	uart_puthex64_all(le64_read(p + 8U));
 	uart_puts_all("\r\n");
 }
 
@@ -903,334 +788,14 @@ static int gunzip(const uint8_t *src, uint32_t src_len,
 }
 
 /* ------------------------------------------------------------------ */
-/* FDT /chosen patcher                                                 */
+/* FDT patch: bootargs + initrd (uses mk_fdt.h helpers)               */
 /* ------------------------------------------------------------------ */
-
-static uint32_t fdt_hdr32(const uint8_t *fdt, uint32_t off)
-{
-	return be32r(fdt + off);
-}
-
-static void fdt_hdr32w(uint8_t *fdt, uint32_t off, uint32_t v)
-{
-	be32w(fdt + off, v);
-}
-
-/*
- * Append a null-terminated string to the strings section.
- * Returns its nameoff within the strings section.
- */
-static uint32_t fdt_str_append(uint8_t *fdt, const char *s)
-{
-	uint32_t off_str   = fdt_hdr32(fdt, FDT_OFF_STRINGS);
-	uint32_t sz_str    = fdt_hdr32(fdt, FDT_OFF_SIZE_STR);
-	uint32_t totalsize = fdt_hdr32(fdt, FDT_OFF_TOTALSIZE);
-	uint32_t nameoff   = sz_str;
-	uint32_t slen      = mk_strlen(s) + 1U;
-	uint32_t i;
-
-	for (i = 0U; i < slen; i++) {
-		fdt[off_str + sz_str + i] = (uint8_t) s[i];
-	}
-
-	fdt_hdr32w(fdt, FDT_OFF_SIZE_STR, sz_str + slen);
-	fdt_hdr32w(fdt, FDT_OFF_TOTALSIZE, totalsize + slen);
-	return nameoff;
-}
-
-/*
- * Insert 'len' bytes into the struct section at struct-relative byte
- * 'struct_off'. Shifts the entire remainder of the FDT (including the
- * strings section) to make room.
- */
-static void fdt_struct_insert(uint8_t *fdt, uint32_t struct_off,
-			      const uint8_t *data, uint32_t len)
-{
-	uint32_t off_struct  = fdt_hdr32(fdt, FDT_OFF_STRUCT);
-	uint32_t sz_struct   = fdt_hdr32(fdt, FDT_OFF_SIZE_STRUCT);
-	uint32_t off_strings = fdt_hdr32(fdt, FDT_OFF_STRINGS);
-	uint32_t totalsize   = fdt_hdr32(fdt, FDT_OFF_TOTALSIZE);
-	uint8_t *insert_at   = fdt + off_struct + struct_off;
-	/* Move everything from insert point to end of FDT (includes strings). */
-	uint32_t bytes_to_move = totalsize - off_struct - struct_off;
-	uint32_t rem;
-
-	uart_puts_all("[mk] fdt: insert struct_off=0x");
-	uart_puthex64_all((uint64_t) struct_off);
-	uart_puts_all(" len=0x");
-	uart_puthex64_all((uint64_t) len);
-	uart_puts_all(" off_struct=0x");
-	uart_puthex64_all((uint64_t) off_struct);
-	uart_puts_all(" sz_struct=0x");
-	uart_puthex64_all((uint64_t) sz_struct);
-	uart_puts_all("\r\n");
-	uart_puts_all("[mk] fdt: insert off_strings=0x");
-	uart_puthex64_all((uint64_t) off_strings);
-	uart_puts_all(" totalsize=0x");
-	uart_puthex64_all((uint64_t) totalsize);
-	uart_puts_all(" bytes_to_move=0x");
-	uart_puthex64_all((uint64_t) bytes_to_move);
-	uart_puts_all("\r\n");
-	uart_puts_all("[mk] fdt: insert memmove begin\r\n");
-	/*
-	 * Do the overlap copy explicitly here instead of relying on the
-	 * compiler's inlined memmove lowering. This keeps the copy shape
-	 * simple and lets us pet the watchdog inside long copies.
-	 */
-	rem = bytes_to_move;
-	while (rem > 0U) {
-		rem--;
-		insert_at[len + rem] = insert_at[rem];
-		if ((rem & 0xFFFFU) == 0U) {
-			pet_wdt();
-			uart_puts_all("[mk] fdt: insert rem=0x");
-			uart_puthex64_all((uint64_t) rem);
-			uart_puts_all("\r\n");
-		}
-	}
-	uart_puts_all("[mk] fdt: insert memmove done\r\n");
-	mk_memcpy(insert_at, data, len);
-	uart_puts_all("[mk] fdt: insert memcpy done\r\n");
-
-	fdt_hdr32w(fdt, FDT_OFF_SIZE_STRUCT, sz_struct + len);
-	/* Strings section moves right if it lives after the struct. */
-	if (off_strings > off_struct + struct_off) {
-		fdt_hdr32w(fdt, FDT_OFF_STRINGS, off_strings + len);
-	}
-	fdt_hdr32w(fdt, FDT_OFF_TOTALSIZE, totalsize + len);
-	uart_puts_all("[mk] fdt: insert hdr done\r\n");
-}
-
-/*
- * Build a FDT_PROP record into buf and return its byte length.
- * buf must be at least 12 + ((val_len + 3) & ~3) bytes.
- */
-static uint32_t fdt_build_prop(uint8_t *buf, uint32_t nameoff,
-				const uint8_t *value, uint32_t val_len)
-{
-	uint32_t padded = (val_len + 3U) & ~3U;
-
-	be32w(buf,       FDT_PROP);
-	be32w(buf + 4U,  val_len);
-	be32w(buf + 8U,  nameoff);
-	mk_memcpy(buf + 12U, value, val_len);
-	mk_memset(buf + 12U + val_len, 0U, padded - val_len);
-
-	return 12U + padded;
-}
-
-/*
- * Find the struct-section byte offset of the FDT_END_NODE that closes
- * /chosen (depth 1). We insert new properties just before this offset.
- * Returns 0 on failure.
- */
-static uint32_t fdt_chosen_end_off(const uint8_t *fdt)
-{
-	uint32_t off_struct = fdt_hdr32(fdt, FDT_OFF_STRUCT);
-	uint32_t sz_struct  = fdt_hdr32(fdt, FDT_OFF_SIZE_STRUCT);
-	const uint8_t *p    = fdt + off_struct;
-	const uint8_t *end  = p + sz_struct;
-	int depth    = -1;
-	int in_chose = 0;
-
-	while (p + 4U <= end) {
-		uint32_t token   = be32r(p);
-
-		p += 4U;
-
-		if (token == FDT_BEGIN_NODE) {
-			const char *nm = (const char *) p;
-
-			depth++;
-
-			if (depth == 1) {
-				/* Check if node name is "chosen". */
-				if (nm[0] == 'c' && nm[1] == 'h' && nm[2] == 'o' &&
-				    nm[3] == 's' && nm[4] == 'e' && nm[5] == 'n' &&
-				    nm[6] == '\0') {
-					in_chose = 1;
-				}
-			}
-			while (p < end && *p != '\0') { p++; }
-			if (p < end) { p++; }
-			while (((uintptr_t) p & 3U) != 0U && p < end) { p++; }
-
-		} else if (token == FDT_END_NODE) {
-			uint32_t cur_off = (uint32_t) ((p - 4U) - (fdt + off_struct));
-			if (in_chose && depth == 1) {
-				/* Found it: insert BEFORE this token. */
-				return cur_off;
-			}
-			if (depth >= 0) { depth--; }
-			if (depth < 1)  { in_chose = 0; }
-
-		} else if (token == FDT_PROP) {
-			uint32_t val_len;
-			uint32_t padded;
-
-			if (p + 8U > end) { break; }
-			val_len = be32r(p);
-			padded  = (val_len + 3U) & ~3U;
-			p += 8U + padded;
-
-		} else if (token == FDT_NOP) {
-			/* nothing */
-		} else {
-			break;
-		}
-	}
-
-	return 0U;
-}
-
-/*
- * Find the struct-section byte offset of the FDT_END_NODE that closes
- * the first node whose name matches 'nodename' (at any depth).
- * Returns 0 on failure.
- */
-static uint32_t fdt_node_end_off(const uint8_t *fdt, const char *nodename)
-{
-	uint32_t off_struct = fdt_hdr32(fdt, FDT_OFF_STRUCT);
-	uint32_t sz_struct  = fdt_hdr32(fdt, FDT_OFF_SIZE_STRUCT);
-	const uint8_t *base = fdt + off_struct;
-	const uint8_t *p    = base;
-	const uint8_t *end  = p + sz_struct;
-	int depth        = -1;
-	int target_depth = -1;
-
-	while (p + 4U <= end) {
-		uint32_t token = be32r(p);
-
-		p += 4U;
-
-		if (token == FDT_BEGIN_NODE) {
-			const char *nm = (const char *) p;
-			uint32_t ni = 0U;
-			int match = 1;
-
-			depth++;
-			if (target_depth < 0) {
-				/* compare node name with nodename */
-				while (nodename[ni] != '\0') {
-					if (nm[ni] != nodename[ni]) {
-						match = 0;
-						break;
-					}
-					ni++;
-				}
-				if (match && nm[ni] != '\0' && nm[ni] != '@') {
-					match = 0;
-				}
-				if (match) {
-					target_depth = depth;
-				}
-			}
-			while (p < end && *p != '\0') { p++; }
-			if (p < end) { p++; }
-			while (((uintptr_t) p & 3U) != 0U && p < end) { p++; }
-
-		} else if (token == FDT_END_NODE) {
-			if (target_depth >= 0 && depth == target_depth) {
-				return (uint32_t) ((p - 4U) - base);
-			}
-			if (depth >= 0) { depth--; }
-
-		} else if (token == FDT_PROP) {
-			uint32_t val_len;
-			uint32_t padded;
-
-			if (p + 8U > end) { break; }
-			val_len = be32r(p);
-			padded  = (val_len + 3U) & ~3U;
-			p += 8U + padded;
-
-		} else if (token == FDT_NOP) {
-			/* nothing */
-		} else {
-			break;
-		}
-	}
-
-	return 0U;
-}
-
-static int fdt_name_eq(const char *a, const char *b)
-{
-	while (*a != '\0' && *b != '\0') {
-		if (*a != *b) { return 0; }
-		a++;
-		b++;
-	}
-	return (*a == '\0' && *b == '\0') ? 1 : 0;
-}
-
-static int fdt_chosen_find_prop(const uint8_t *fdt, const char *name,
-				uint32_t *val_off, uint32_t *val_len)
-{
-	uint32_t off_struct  = fdt_hdr32(fdt, FDT_OFF_STRUCT);
-	uint32_t off_strings = fdt_hdr32(fdt, FDT_OFF_STRINGS);
-	uint32_t sz_struct   = fdt_hdr32(fdt, FDT_OFF_SIZE_STRUCT);
-	const uint8_t *p     = fdt + off_struct;
-	const uint8_t *end   = p + sz_struct;
-	int depth     = -1;
-	int in_chose  = 0;
-
-	while (p + 4U <= end) {
-		uint32_t token = be32r(p);
-
-		p += 4U;
-
-		if (token == FDT_BEGIN_NODE) {
-			const char *nm = (const char *) p;
-
-			depth++;
-			if (depth == 1 &&
-			    nm[0] == 'c' && nm[1] == 'h' && nm[2] == 'o' &&
-			    nm[3] == 's' && nm[4] == 'e' && nm[5] == 'n' &&
-			    nm[6] == '\0') {
-				in_chose = 1;
-			}
-			while (p < end && *p != '\0') { p++; }
-			if (p < end) { p++; }
-			while (((uintptr_t) p & 3U) != 0U && p < end) { p++; }
-
-		} else if (token == FDT_END_NODE) {
-			if (depth >= 0) { depth--; }
-			if (depth < 1) { in_chose = 0; }
-
-		} else if (token == FDT_PROP) {
-			uint32_t plen;
-			uint32_t nameoff;
-			uint32_t padded;
-			const char *prop_name;
-
-			if (p + 8U > end) { break; }
-			plen = be32r(p);
-			nameoff = be32r(p + 4U);
-			padded = (plen + 3U) & ~3U;
-			prop_name = (const char *) (fdt + off_strings + nameoff);
-			if (in_chose && depth == 1 && fdt_name_eq(prop_name, name)) {
-				*val_off = (uint32_t) ((p + 8U) - fdt);
-				*val_len = plen;
-				return 1;
-			}
-			p += 8U + padded;
-
-		} else if (token == FDT_NOP) {
-			/* nothing */
-		} else {
-			break;
-		}
-	}
-
-	return 0;
-}
 
 /*
  * Large scratch buffer for FDT property records.
  * Placed in BSS so it doesn't consume stack.
  */
-static uint8_t s_prop_buf[2100];
+static uint8_t __attribute__((aligned(8))) s_prop_buf[2100];
 static char    s_bootargs_copy[2048];
 static char    s_bootargs_effective[2048] __attribute__((unused));
 
@@ -1239,63 +804,142 @@ static const char s_diag_bootargs[] =
 	"console=ttyS0,921600n1 "
 	"earlycon=uart8250,mmio32,0x11002000,921600n1 "
 	"keep_bootcon "
-	"loglevel=4 "
+	"loglevel=7 "
 	"vmalloc=400M "
 	"page_owner=on "
 	"swiotlb=noforce "
 	"androidboot.hardware=mt6765 "
 	"maxcpus=8 "
 	"loop.max_part=7 "
-	"firmware_class.path=/vendor/firmware "
+	/* firmware_class.path=/vendor/firmware removed — no /vendor/firmware on Peacock */
 	"bootopt=64S3,32N2,64N2 "
 	"buildvariant=user "
 	"disable_uart=0 "
 	"force_uart=1 "
 	"mtk_printk_ctrl.disable_uart=0 "
-	"printk.force_uart=1";
+	"printk.force_uart=1 "
+	"nokaslr";
 
 /*
- * Search bootargs for key=value token starting with prefix.
- * Returns pointer to start of the match, or 0 if not found.
+ * Check if a key= prefix already exists in the bootargs string.
+ * key_start/key_len delimit the key portion (before '=') of a token.
+ * Returns 1 if found, 0 otherwise.
  */
-static const char *
-find_bootarg(const char *bootargs, const char *prefix, uint32_t prefix_len)
+static int
+bootargs_has_key(const char *args, const char *key_start, uint32_t key_len)
 {
-	uint32_t i;
+	uint32_t i = 0U;
 
-	if (bootargs == 0 || prefix == 0) {
-		return 0;
-	}
-	for (i = 0U; bootargs[i] != '\0'; i++) {
+	while (args[i] != '\0') {
+		/* skip leading spaces */
+		while (args[i] == ' ') { i++; }
+		if (args[i] == '\0') { break; }
+		/* compare key at this position */
 		uint32_t j;
-
-		if (i != 0U && bootargs[i - 1U] != ' ') {
-			continue;
+		int match = 1;
+		for (j = 0U; j < key_len; j++) {
+			if (args[i + j] == '\0' || args[i + j] != key_start[j]) {
+				match = 0;
+				break;
+			}
 		}
-		for (j = 0U; j < prefix_len && bootargs[i + j] == prefix[j]; j++) {
+		/* key matches if next char is '=' or ' ' or '\0' */
+		if (match && (args[i + key_len] == '=' ||
+			      args[i + key_len] == ' ' ||
+			      args[i + key_len] == '\0')) {
+			return 1;
 		}
-		if (j == prefix_len) {
-			return &bootargs[i];
-		}
+		/* skip to next token */
+		while (args[i] != ' ' && args[i] != '\0') { i++; }
 	}
 	return 0;
 }
 
 /*
- * Append specific key=value tokens from the LK bootargs to dst.
- * Only passes through keys critical for hardware detection.
+ * Append LK bootargs tokens to dst, skipping any whose key already
+ * exists in the effective string.  This passes through all vendor
+ * params (ramoops, phoenix, androidboot, etc.) without duplicating
+ * params already set by extlinux or s_diag_bootargs.
  */
 static uint32_t
 append_lk_passthrough(char *dst, uint32_t pos, uint32_t dst_max)
 {
-	(void) dst_max;
-	/* Passthrough temporarily disabled to isolate boot crash. */
+	const char *lk = mk_stage0_mtk_usb_get_lk_bootargs();
+	uint32_t li;
+	uint32_t tok_start;
+	uint32_t key_len;
+
+	if (lk == 0 || lk[0] == '\0') {
+		dst[pos] = '\0';
+		return pos;
+	}
+
+	li = 0U;
+	while (lk[li] != '\0') {
+		/* skip spaces */
+		while (lk[li] == ' ') { li++; }
+		if (lk[li] == '\0') { break; }
+
+		tok_start = li;
+
+		/* find key length (up to '=' or end of token) */
+		key_len = 0U;
+		while (lk[li] != ' ' && lk[li] != '\0') {
+			if (lk[li] == '=' && key_len == 0U) {
+				key_len = li - tok_start;
+			}
+			li++;
+		}
+		/* valueless token: key_len is the whole token */
+		if (key_len == 0U) {
+			key_len = li - tok_start;
+		}
+
+		uint32_t tok_len = li - tok_start;
+
+		/* skip if this key is already present */
+		if (bootargs_has_key(dst, lk + tok_start, key_len)) {
+			continue;
+		}
+
+		/* drop keys that are harmful on Peacock */
+		{
+			static const char *const s_drop_keys[] = {
+				"firmware_class.path",
+			};
+			int drop = 0;
+			uint32_t dk;
+			for (dk = 0U; dk < sizeof(s_drop_keys) / sizeof(s_drop_keys[0]); dk++) {
+				const char *k = s_drop_keys[dk];
+				uint32_t kl = 0U;
+				while (k[kl] != '\0') { kl++; }
+				if (kl == key_len) {
+					uint32_t m;
+					int eq = 1;
+					for (m = 0U; m < kl; m++) {
+						if (lk[tok_start + m] != k[m]) { eq = 0; break; }
+					}
+					if (eq) { drop = 1; break; }
+				}
+			}
+			if (drop) { continue; }
+		}
+
+		/* append space + token */
+		if (pos + 1U + tok_len + 1U >= dst_max) { break; }
+		dst[pos++] = ' ';
+		uint32_t ti;
+		for (ti = 0U; ti < tok_len; ti++) {
+			dst[pos++] = lk[tok_start + ti];
+		}
+	}
+
+	dst[pos] = '\0';
 
 	uart_puts_all("[mk] lk passthrough: final pos=0x");
 	uart_puthex64_all((uint64_t) pos);
 	uart_puts_all("\r\n");
 
-	dst[pos] = '\0';
 	return pos;
 }
 
@@ -1363,102 +1007,6 @@ build_effective_bootargs(char *dst, uint32_t dst_max, const char *base)
 	uart_puts_all("\r\n");
 }
 
-static uint32_t parse_decimal_u32(const char *s)
-{
-	uint32_t val = 0U;
-
-	while (*s >= '0' && *s <= '9') {
-		val = val * 10U + (uint32_t) (*s - '0');
-		s++;
-	}
-	return val;
-}
-
-/*
- * Populate the oplus_project DT node with hardware identity data
- * extracted from LK bootargs.  The node already exists in the DTB
- * (from the kernel DTS) but is empty — LK normally fills it at
- * runtime.  Since MK replaces LK, we do it here.
- */
-static void
-fdt_patch_oplus_project(uint8_t *fdt)
-{
-	const char *lk;
-	const char *match;
-	uint32_t project_no;
-	uint32_t noff;
-	uint32_t plen;
-	uint8_t  val[4];
-	uint32_t no_newcdt, no_nVersion, no_nProject, no_nDtsi;
-	uint32_t no_nAudio, no_nRF, no_nPCB, no_eng, no_conf;
-
-	lk = mk_stage0_mtk_usb_get_lk_bootargs();
-	if (lk == 0) {
-		uart_puts_all("[mk] fdt: oplus_project: no LK bootargs\r\n");
-		return;
-	}
-
-	match = find_bootarg(lk, "androidboot.prjname=", 20U);
-	if (match == 0) {
-		uart_puts_all("[mk] fdt: oplus_project: no prjname\r\n");
-		return;
-	}
-
-	project_no = parse_decimal_u32(match + 20U);
-	if (project_no == 0U) {
-		uart_puts_all("[mk] fdt: oplus_project: prjname=0\r\n");
-		return;
-	}
-
-	noff = fdt_node_end_off(fdt, "oplus_project");
-	if (noff == 0U) {
-		uart_puts_all("[mk] fdt: oplus_project node not found\r\n");
-		return;
-	}
-
-	uart_puts_all("[mk] fdt: oplus_project end=0x");
-	uart_puthex64_all((uint64_t) noff);
-	uart_puts_all(" prj=0x");
-	uart_puthex64_all((uint64_t) project_no);
-	uart_puts_all("\r\n");
-
-	/* Append property name strings to the string table. */
-	no_newcdt   = fdt_str_append(fdt, "newcdt");
-	no_nVersion = fdt_str_append(fdt, "nVersion");
-	no_nProject = fdt_str_append(fdt, "nProject");
-	no_nDtsi    = fdt_str_append(fdt, "nDtsi");
-	no_nAudio   = fdt_str_append(fdt, "nAudio");
-	no_nRF      = fdt_str_append(fdt, "nRF");
-	no_nPCB     = fdt_str_append(fdt, "nPCB");
-	no_eng      = fdt_str_append(fdt, "eng_version");
-	no_conf     = fdt_str_append(fdt, "is_confidential");
-
-	/*
-	 * Insert properties in reverse desired order.  Each insert at
-	 * 'noff' pushes the previous ones right, so the final layout
-	 * (reading forwards) matches insertion order reversed.
-	 */
-#define OP_INS_U32(nameoff, v) do {		\
-	be32w(val, (v));			\
-	plen = fdt_build_prop(s_prop_buf, (nameoff), val, 4U); \
-	fdt_struct_insert(fdt, noff, s_prop_buf, plen); \
-} while (0)
-
-	OP_INS_U32(no_conf,     0U);             /* is_confidential */
-	OP_INS_U32(no_eng,      0U);             /* eng_version */
-	OP_INS_U32(no_nPCB,     0U);             /* nPCB */
-	OP_INS_U32(no_nRF,      0U);             /* nRF */
-	OP_INS_U32(no_nAudio,   project_no);     /* nAudio */
-	OP_INS_U32(no_nDtsi,    project_no);     /* nDtsi */
-	OP_INS_U32(no_nProject, project_no);     /* nProject */
-	OP_INS_U32(no_nVersion, 1U);             /* nVersion */
-	OP_INS_U32(no_newcdt,   1U);             /* newcdt */
-
-#undef OP_INS_U32
-
-	uart_puts_all("[mk] fdt: oplus_project patched\r\n");
-}
-
 /*
  * Copy src_fdt to dst, then add /chosen properties for the Linux boot:
  *   bootargs       = append line from extlinux.conf
@@ -1494,13 +1042,13 @@ fdt_patch(const uint8_t *src_fdt, uint8_t *dst,
 	uart_puthex64_all((uint64_t) (uintptr_t) dst);
 	uart_puts_all("\r\n");
 
-	magic = be32r(src_fdt);
+	magic = be32_read(src_fdt);
 	uart_puts_all("[mk] fdt: magic=0x");
 	uart_puthex64_all((uint64_t) magic);
 	uart_puts_all("\r\n");
-	if (magic != FDT_MAGIC_VAL) { return 0; }
+	if (magic != MK_FDT_MAGIC) { return 0; }
 
-	totalsize = be32r(src_fdt + FDT_OFF_TOTALSIZE);
+	totalsize = be32_read(src_fdt + 4U /* FDT totalsize offset */);
 	uart_puts_all("[mk] fdt: totalsize=0x");
 	uart_puthex64_all((uint64_t) totalsize);
 	uart_puts_all("\r\n");
@@ -1510,7 +1058,7 @@ fdt_patch(const uint8_t *src_fdt, uint8_t *dst,
 	mk_memset(dst + totalsize, 0U, 1024U);
 	uart_puts_all("[mk] fdt: copy done\r\n");
 
-	coff = fdt_chosen_end_off(dst);
+	coff = mk_fdt_chosen_end_off(dst);
 	uart_puts_all("[mk] fdt: chosen end off=0x");
 	uart_puthex64_all((uint64_t) coff);
 	uart_puts_all("\r\n");
@@ -1523,7 +1071,7 @@ fdt_patch(const uint8_t *src_fdt, uint8_t *dst,
 	 * the FDT_PROP token, so the prop record starts at val_off - 12.
 	 * Total record: 4(token) + 4(len) + 4(nameoff) + padded(value).
 	 */
-	if (fdt_chosen_find_prop(dst, "bootargs", &prop_off, &prop_len)) {
+	if (mk_fdt_chosen_find_prop(dst, "bootargs", &prop_off, &prop_len)) {
 		uint32_t old_start = prop_off - 12U;
 		uint32_t old_padded = (prop_len + 3U) & ~3U;
 		uint32_t old_total = 12U + old_padded;
@@ -1535,28 +1083,28 @@ fdt_patch(const uint8_t *src_fdt, uint8_t *dst,
 		uart_puthex64_all((uint64_t) old_total);
 		uart_puts_all("\r\n");
 		for (nop_i = 0U; nop_i < old_total; nop_i += 4U) {
-			be32w(dst + old_start + nop_i, FDT_NOP);
+			be32_write(dst + old_start + nop_i, MK_FDT_NOP);
 		}
 	}
 
-	have_ie = fdt_chosen_find_prop(dst, "linux,initrd-end", &prop_off, &prop_len);
+	have_ie = mk_fdt_chosen_find_prop(dst, "linux,initrd-end", &prop_off, &prop_len);
 	if (have_ie && prop_len == 8U) {
-		be64w(dst + prop_off, initrd_end);
+		be64_write(dst + prop_off, initrd_end);
 		uart_puts_all("[mk] fdt: overwrote initrd-end64\r\n");
 	} else if (have_ie && prop_len == 4U) {
 		/* 32-bit is fine — of_read_number handles len/4 cells.
 		 * All our initrd addresses are below 4GB. */
-		be32w(dst + prop_off, (uint32_t) initrd_end);
+		be32_write(dst + prop_off, (uint32_t) initrd_end);
 		uart_puts_all("[mk] fdt: overwrote initrd-end32\r\n");
 	} else {
 		have_ie = 0;
 	}
-	have_is = fdt_chosen_find_prop(dst, "linux,initrd-start", &prop_off, &prop_len);
+	have_is = mk_fdt_chosen_find_prop(dst, "linux,initrd-start", &prop_off, &prop_len);
 	if (have_is && prop_len == 8U) {
-		be64w(dst + prop_off, initrd_start);
+		be64_write(dst + prop_off, initrd_start);
 		uart_puts_all("[mk] fdt: overwrote initrd-start64\r\n");
 	} else if (have_is && prop_len == 4U) {
-		be32w(dst + prop_off, (uint32_t) initrd_start);
+		be32_write(dst + prop_off, (uint32_t) initrd_start);
 		uart_puts_all("[mk] fdt: overwrote initrd-start32\r\n");
 	} else {
 		have_is = 0;
@@ -1567,9 +1115,9 @@ fdt_patch(const uint8_t *src_fdt, uint8_t *dst,
 	 * fdt_struct_insert will shift the strings section rightward,
 	 * so the nameoffs remain valid.
 	 */
-	no_ba = fdt_str_append(dst, "bootargs");
-	no_is = fdt_str_append(dst, "linux,initrd-start");
-	no_ie = fdt_str_append(dst, "linux,initrd-end");
+	no_ba = mk_fdt_str_append(dst, "bootargs");
+	no_is = mk_fdt_str_append(dst, "linux,initrd-start");
+	no_ie = mk_fdt_str_append(dst, "linux,initrd-end");
 	uart_puts_all("[mk] fdt: nameoff bootargs=0x");
 	uart_puthex64_all((uint64_t) no_ba);
 	uart_puts_all(" initrd-start=0x");
@@ -1598,23 +1146,23 @@ fdt_patch(const uint8_t *src_fdt, uint8_t *dst,
 
 	if (!have_ie) {
 		/* arm64 expects 64-bit initrd address cells in /chosen. */
-		be64w(val, initrd_end);
-		plen = fdt_build_prop(s_prop_buf, no_ie, val, 8U);
+		be64_write(val, initrd_end);
+		plen = mk_fdt_build_prop(s_prop_buf, no_ie, val, 8U);
 		uart_puts_all("[mk] fdt: build initrd-end plen=0x");
 		uart_puthex64_all((uint64_t) plen);
 		uart_puts_all("\r\n");
-		fdt_struct_insert(dst, coff, s_prop_buf, plen);
+		mk_fdt_struct_insert(dst, coff, s_prop_buf, plen);
 		uart_puts_all("[mk] fdt: inserted initrd-end\r\n");
 	}
 
 	/* 2. initrd-start (inserted at same coff, goes before initrd-end). */
 	if (!have_is) {
-		be64w(val, initrd_start);
-		plen = fdt_build_prop(s_prop_buf, no_is, val, 8U);
+		be64_write(val, initrd_start);
+		plen = mk_fdt_build_prop(s_prop_buf, no_is, val, 8U);
 		uart_puts_all("[mk] fdt: build initrd-start plen=0x");
 		uart_puthex64_all((uint64_t) plen);
 		uart_puts_all("\r\n");
-		fdt_struct_insert(dst, coff, s_prop_buf, plen);
+		mk_fdt_struct_insert(dst, coff, s_prop_buf, plen);
 		uart_puts_all("[mk] fdt: inserted initrd-start\r\n");
 	}
 
@@ -1627,11 +1175,11 @@ fdt_patch(const uint8_t *src_fdt, uint8_t *dst,
 	uart_puthex64_all((uint64_t) ba_len);
 	uart_puts_all("\r\n");
 	padded = (ba_len + 3U) & ~3U;
-	be32w(s_prop_buf, FDT_PROP);
+	be32_write(s_prop_buf, MK_FDT_PROP);
 	uart_puts_all("[mk] fdt: build bootargs hdr0\r\n");
-	be32w(s_prop_buf + 4U, ba_len);
+	be32_write(s_prop_buf + 4U, ba_len);
 	uart_puts_all("[mk] fdt: build bootargs hdr1\r\n");
-	be32w(s_prop_buf + 8U, no_ba);
+	be32_write(s_prop_buf + 8U, no_ba);
 	uart_puts_all("[mk] fdt: build bootargs hdr2\r\n");
 	for (i = 0U; i < ba_len; i++) {
 		s_prop_buf[12U + i] = (uint8_t) s_bootargs_copy[i];
@@ -1648,7 +1196,7 @@ fdt_patch(const uint8_t *src_fdt, uint8_t *dst,
 	uart_puts_all(" ba_len=0x");
 	uart_puthex64_all((uint64_t) ba_len);
 	uart_puts_all("\r\n");
-	fdt_struct_insert(dst, coff, s_prop_buf, plen);
+	mk_fdt_struct_insert(dst, coff, s_prop_buf, plen);
 	uart_puts_all("[mk] fdt: inserted bootargs\r\n");
 
 	(void) no_is;
@@ -1656,7 +1204,7 @@ fdt_patch(const uint8_t *src_fdt, uint8_t *dst,
 	uart_puts_all("[mk] fdt: chosen ok\r\n");
 
 	/* Populate /odm/oplus_project with LK hardware identity data. */
-	fdt_patch_oplus_project(dst);
+	mk_fdt_patch_oplus_project(dst);
 
 	uart_puts_all("[mk] fdt: patch ok\r\n");
 
@@ -1709,13 +1257,13 @@ static uint64_t handoff_entry_branch_target(uint64_t entry, uint32_t word1)
 static void handoff_dump_entry_bytes(uint64_t entry)
 {
 	const uint8_t *p = (const uint8_t *) (uintptr_t) entry;
-	uint32_t word1 = le32r(p + 4U);
+	uint32_t word1 = le32_read(p + 4U);
 	uint64_t branch_target = handoff_entry_branch_target(entry, word1);
 	const uint8_t *bt = (const uint8_t *) (uintptr_t) branch_target;
 
 	trace_first16("[mk] handoff: live entry [0..15]", p);
 	trace_first16("[mk] handoff: live entry [16..31]", p + 16U);
-	handoff_dump_reg("entry_word0", (uint64_t) le32r(p));
+	handoff_dump_reg("entry_word0", (uint64_t) le32_read(p));
 	handoff_dump_reg("entry_word1", (uint64_t) word1);
 	handoff_dump_reg("entry_branch_target", branch_target);
 	trace_first16("[mk] handoff: live target [0..15]", bt);
@@ -1728,7 +1276,7 @@ static void mk_uart_quiesce_for_linux(void)
 	uint32_t lsr;
 
 	for (timeout = 0U; timeout < 1000000U; timeout++) {
-		lsr = mk_mmio_read32(MK_UART0_BASE_ADDR + MK_UART_LSR_OFF);
+		lsr = mmio_read32(MK_UART0_BASE_ADDR + MK_UART_LSR_OFF);
 		if ((lsr & (MK_UART_LSR_THRE | MK_UART_LSR_TEMT)) ==
 		    (MK_UART_LSR_THRE | MK_UART_LSR_TEMT)) {
 			break;
@@ -1739,11 +1287,11 @@ static void mk_uart_quiesce_for_linux(void)
 	}
 
 	/* Stop interrupts and vendor side channels before Linux probes UART0. */
-	mk_mmio_write32(MK_UART0_BASE_ADDR + MK_UART_IER_DLH_OFF, 0U);
-	mk_mmio_write32(MK_UART0_BASE_ADDR + MK_UART_DMA_EN_OFF, 0U);
-	mk_mmio_write32(MK_UART0_BASE_ADDR + MK_UART_SLEEP_EN_OFF, 0U);
-	mk_mmio_write32(MK_UART0_BASE_ADDR + MK_UART_ESCAPE_EN_OFF, 0U);
-	mk_mmio_write32(MK_UART0_BASE_ADDR + MK_UART_IIR_FCR_OFF,
+	mmio_write32(MK_UART0_BASE_ADDR + MK_UART_IER_DLH_OFF, 0U);
+	mmio_write32(MK_UART0_BASE_ADDR + MK_UART_DMA_EN_OFF, 0U);
+	mmio_write32(MK_UART0_BASE_ADDR + MK_UART_SLEEP_EN_OFF, 0U);
+	mmio_write32(MK_UART0_BASE_ADDR + MK_UART_ESCAPE_EN_OFF, 0U);
+	mmio_write32(MK_UART0_BASE_ADDR + MK_UART_IIR_FCR_OFF,
 			MK_UART_FCR_FIFO_EN | MK_UART_FCR_CLEAR_RX | MK_UART_FCR_CLEAR_TX);
 	__asm__ volatile("dsb sy" ::: "memory");
 	__asm__ volatile("isb" ::: "memory");
@@ -1809,6 +1357,23 @@ jump_to_kernel(uint64_t entry, uint64_t fdt_pa)
 	uart_puts_all("[mk] handoff: ic iallu done\r\n");
 	uart_puts_all("[mk] handoff: before branch\r\n");
 	handoff_dump_entry_bytes(entry);
+	/*
+	 * SCP reset: hold the co-processor in reset so the kernel's SCP driver
+	 * can reinitialize it cleanly.  MK's delay between LK and kernel causes
+	 * SCP to timeout — the driver then hits NULL IPI handlers and crashes.
+	 * Writing 0 to SCP_SW_RSTN (SCP_CFG + 0x0) holds SCP_A in reset.
+	 * Clear pending host interrupts so the driver starts from a clean slate.
+	 */
+#define SCP_CFG_BASE        0x105C0000U
+#define SCP_SW_RSTN         (SCP_CFG_BASE + 0x0000U)
+#define SCP_A_TO_HOST_REG   (SCP_CFG_BASE + 0x001CU)
+	uart_puts_all("[mk] handoff: scp reset\r\n");
+	mmio_write32(SCP_SW_RSTN, 0U);           /* hold SCP in reset */
+	mmio_write32(SCP_A_TO_HOST_REG, 0xFFFFFFFFU); /* clear pending IRQs */
+#undef SCP_A_TO_HOST_REG
+#undef SCP_SW_RSTN
+#undef SCP_CFG_BASE
+
 	uart_puts_all("[mk] handoff: wdt restore\r\n");
 	mk_stage0_wdt_restore_for_linux();
 	uart_puts_all("[mk] handoff: msdc restore\r\n");
@@ -1986,6 +1551,7 @@ static void mk_boot_linux_common(uint64_t fdt_ptr, uint64_t boot_lba,
 	uart_puts_all("[mk] boot: src probe ok\r\n");
 
 	/* Decompress into kernel_base. */
+	mk_ui_boot_status("Decompressing kernel");
 	uart_puts_all("[mk] boot: decompress start\r\n");
 	if (mk_zlib_is_gzip_package(kernel_src, kernel_src_size)) {
 		int z_rc;
@@ -2022,7 +1588,7 @@ static void mk_boot_linux_common(uint64_t fdt_ptr, uint64_t boot_lba,
 					     kernel_base, MK_KERNEL_MAX_SIZE);
 		}
 	} else {
-		img_magic = le32r(kernel_src + ARM64_HDR_MAGIC_OFF);
+		img_magic = le32_read(kernel_src + ARM64_HDR_MAGIC_OFF);
 		if (img_magic == ARM64_IMAGE_MAGIC) {
 			if (kernel_src_size > MK_KERNEL_MAX_SIZE) {
 				uart_puts_all("[mk] boot: raw Image too large\r\n");
@@ -2049,7 +1615,7 @@ static void mk_boot_linux_common(uint64_t fdt_ptr, uint64_t boot_lba,
 
 	/* Parse arm64 Image header. */
 	uart_puts_all("[mk] boot: image header begin\r\n");
-	img_magic = le32r(kernel_base + ARM64_HDR_MAGIC_OFF);
+	img_magic = le32_read(kernel_base + ARM64_HDR_MAGIC_OFF);
 	uart_puts_all("[mk] boot: image magic=0x");
 	uart_puthex64_all((uint64_t) img_magic);
 	uart_puts_all("\r\n");
@@ -2059,8 +1625,8 @@ static void mk_boot_linux_common(uint64_t fdt_ptr, uint64_t boot_lba,
 	}
 
 	uart_puts_all("[mk] boot: image hdr fields begin\r\n");
-	text_offset = le64r(kernel_base + ARM64_HDR_TEXT_OFFSET);
-	img_size    = le64r(kernel_base + ARM64_HDR_IMAGE_SIZE);
+	text_offset = le64_read(kernel_base + ARM64_HDR_TEXT_OFFSET);
+	img_size    = le64_read(kernel_base + ARM64_HDR_IMAGE_SIZE);
 
 	/* Fall back to standard 0x80000 for old kernels (image_size == 0). */
 	if (img_size == 0U) {
@@ -2093,6 +1659,7 @@ static void mk_boot_linux_common(uint64_t fdt_ptr, uint64_t boot_lba,
 			   kernel_end;
 
 	/* Load initramfs. */
+	mk_ui_boot_status("Loading initramfs");
 	uart_puts_all("[mk] boot: initrd=");
 	uart_puts_all(s_entry.initrd);
 	uart_puts_all("\r\n");
@@ -2111,6 +1678,7 @@ static void mk_boot_linux_common(uint64_t fdt_ptr, uint64_t boot_lba,
 	uart_puthex64_all(initrd_end);
 	uart_puts_all("\r\n");
 
+	mk_ui_boot_status("Patching device tree");
 	build_effective_bootargs(s_bootargs_effective,
 				(uint32_t) sizeof(s_bootargs_effective),
 				s_entry.append);
@@ -2159,6 +1727,7 @@ static void mk_boot_linux_common(uint64_t fdt_ptr, uint64_t boot_lba,
 	flush_dcache_range(MK_FDT_COPY_ADDR,
 			   MK_FDT_COPY_ADDR + (uint64_t) MK_FDT_MAX_SIZE);
 	mk_stage0_log_reset_watchdog_state("pre-handoff");
+	mk_ui_boot_status("We detach");
 
 	jump_to_kernel((uint64_t) (uintptr_t) kernel_entry, handoff_fdt);
 }

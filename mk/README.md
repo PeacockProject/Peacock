@@ -1,6 +1,10 @@
 # mk (minkernel)
 
-`mk` is a lightweight MTK-focused chainloader project.
+`mk` is a baremetal ARM64 chainloader for MediaTek devices.
+
+It replaces the stock bootloader's kernel payload, runs as a freestanding
+aarch64 binary injected into the boot image, and chainloads Linux from an
+ext2 partition using extlinux.conf.
 
 Design goals:
 - Keep core boot flow small and auditable.
@@ -9,84 +13,55 @@ Design goals:
 - Avoid EDK2-style layout and complexity.
 
 Current status:
-- Initial scaffold with clear module boundaries.
-- Phase 1 baseline: raw block reads + GPT header/entry scanning.
-- SoC driver registry is in place.
-  - `mt6765`: functional storage/GPT path
-  - `mt6761`: functional storage/GPT path
-- MTK backends share a common block I/O layer with per-SoC open hooks.
-- Device profiles provide:
-  - block-device probe path lists
-  - panel compatibility hints
-  - default boot/root labels
-- MTK backends now consume panel hints during init:
-  - detect from `/proc/device-tree/compatible` when available
-  - fallback to profile-preferred panel
-- Host-buildable development binary (`mk-dev`) for fast iteration.
+- Boots Linux to OpenRC on OPPO A16 (MT6765/MT6357).
+- Fastboot USB with download, flash, getvar, and `oem` commands.
+- Display driver with DSI panel init, OVL overlay, and boot splash.
+- On-screen fastboot menu with volume/power key navigation.
+- Offline charging mode (charger-only boot detection, power off on unplug).
+- Boot status display (decompressing, loading initramfs, handoff).
+- ext2 filesystem reader, gzip/zlib decompressor, FDT patcher.
+- Watchdog management, PMIC access (MT6357 via pwrap).
 
-Quick usage:
-- Build: `make -C mk`
-- Build ARM64 stage0 entry artifact (freestanding):
-  - `make -C mk stage0`
-- Build ARM64 Linux-Image-header-compatible payload (no Linux kernel):
-  - `make -C mk stage0-kpayload`
-  - outputs:
-    - `mk/out/stage0/mk-kpayload.bin`
-    - `mk/out/stage0/mk-kpayload.bin.gz`
-- Build no-kernel boot.img in one command (uses internal target layout DB):
-  - `make -C mk bootimg-nokernel DEVICE=oppo-a16`
-  - output:
-    - `mk/out/bootimg/mk-oppo-a16-boot.img`
-- List supported device profiles:
-  - `mk/mk-dev --list-devices`
-- List GPT partition names:
-  - `mk/mk-dev --device oppo-a16 --list /dev/block/by-name/userdata`
-  - or `MK_BLOCK_DEV=/path/to/disk.img mk/mk-dev --list`
-- Find one partition:
-  - `mk/mk-dev --device oppo-a16 recovery /dev/block/by-name/userdata`
-- Select SoC driver:
-  - `MK_SOC=mt6765 mk/mk-dev --list /dev/block/by-name/userdata`
-- Select device via env:
-  - `MK_DEVICE=oppo-a16 mk/mk-dev --list`
+## Building
 
-Direct-flash scaffolding (no initramfs workflow):
-- Stage0 entrypoint artifacts:
-  - `mk/out/stage0/mk-stage0.elf`
-  - `mk/out/stage0/mk-stage0.bin`
-- Android boot.img pack helper:
-  - `mk/tools/pack-bootimg.sh --device oppo-a16 --kernel <Image.gz> --out mk-boot.img`
-  - list internal layouts:
-    - `mk/tools/pack-bootimg.sh --list-devices`
-  - layout files:
-    - `mk/devices/layouts/oppo-a16.env`
-    - `mk/devices/layouts/mt6761-ref.env`
-  - MTK-style auto-derive from dumped stock boot image:
-    - `mk/tools/pack-bootimg.sh --kernel <Image.gz> --out mk-boot.img --from-stock /path/to/boot.img`
-  - Optional second blob:
-    - `mk/tools/pack-bootimg.sh ... --second mk/out/stage0/mk-stage0.bin`
-  - Samsung/legacy compatibility flags:
-    - `--append-seandroidenforce`
-    - `--normalize-v0` (for header v0 images)
+```bash
+make -C mk            # builds stage0 (default target)
+make -C mk clean      # clean build artifacts
+```
 
-`pack-bootimg.sh` behavior:
-- prefers lk2nd's `mkbootimg` script when available
-- uses a 1-byte ramdisk by default
-- supports internal per-device layout defaults (no manual offsets)
-- supports stock-image introspection when you explicitly want re-derivation
+Outputs:
+- `mk/out/stage0/mk-stage0.elf` / `.bin` — stage0 entry stub
+- `mk/out/stage0/mk-kpayload.elf` / `.bin` / `.bin.gz` — kernel payload
 
-No-kernel experiment flow (boot header + mk payload):
+## Boot image
+
+Build a flashable boot.img:
 ```bash
 make -C mk bootimg-nokernel DEVICE=oppo-a16
 ```
+Output: `mk/out/bootimg/mk-oppo-a16-boot.img`
 
-Important:
-- This repo now includes packaging/entrypoint scaffolding, but the current
-  device bootloader still decides what payloads are executable.
-- A directly bootable mk path still requires the kernel/boot chain handoff
-  integration to transfer control into mk logic.
+The pack helper supports:
+- Internal per-device layouts: `mk/devices/layouts/oppo-a16.env`
+- Stock image introspection: `--from-stock /path/to/boot.img`
+- List devices: `mk/tools/pack-bootimg.sh --list-devices`
 
-Planned runtime stages:
-1. Storage + GPT + partition lookup. (in progress)
-2. Filesystem reader + extlinux parser.
-3. Payload loader + Linux handoff.
-4. Fastboot + simple UI (optional).
+## Source layout
+
+```
+stage0/aarch64/          — baremetal aarch64 source (the actual bootloader)
+  kernel_payload_main.c  — boot orchestrator
+  mk_boot.c             — Linux boot chain (extlinux, decompress, FDT, jump)
+  mk_fdt.c              — FDT read/query/patch
+  mk_wdt.c              — watchdog timer
+  mk_pmic.c             — PMIC wrapper (MT6357)
+  mk_ui.c               — display, menus, charging screen, boot status
+  mk_ext2.c             — ext2 filesystem reader
+  mtk_usb.c             — USB PHY + fastboot protocol
+  mtk_display.c          — DSI/OVL display backend
+  mtk_panel.c           — panel profiles
+  mtk_dsi.c / mtk_gpio.c / mtk_i2c.c / mtk_pwm.c — peripheral drivers
+  mk_common.h           — shared inline helpers
+devices/                 — per-device profiles and boot image layouts
+tools/                   — pack-bootimg.sh
+```

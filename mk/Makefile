@@ -1,24 +1,5 @@
-CC ?= cc
-CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O2
 CLANG ?= clang
 LD_LLD ?= ld.lld
-
-INCLUDES := -Iinclude -Isrc
-
-SRCS := \
-	src/core/main.c \
-	src/core/device_profile.c \
-	src/core/hal.c \
-	src/core/gpt.c \
-	src/core/extlinux.c \
-	src/apps/menu.c \
-	src/soc/registry.c \
-	src/platform/mtk/common_block.c \
-	src/platform/mtk/common_display.c \
-	src/platform/mtk6765/hal_mtk6765.c \
-	src/platform/mt6761/hal_mt6761.c
-
-OBJS := $(SRCS:.c=.o)
 
 STAGE0_DIR := stage0/aarch64
 STAGE0_OUT_DIR := out/stage0
@@ -34,6 +15,9 @@ STAGE0_KPAYLOAD_OBJS := \
 	$(STAGE0_OUT_DIR)/kernel_payload.o \
 	$(STAGE0_OUT_DIR)/kernel_payload_main.o \
 	$(STAGE0_OUT_DIR)/mk_boot.o \
+	$(STAGE0_OUT_DIR)/mk_fdt.o \
+	$(STAGE0_OUT_DIR)/mk_wdt.o \
+	$(STAGE0_OUT_DIR)/mk_pmic.o \
 	$(STAGE0_OUT_DIR)/mk_ext2.o \
 	$(STAGE0_OUT_DIR)/mk_zlib_gzip.o \
 	$(STAGE0_OUT_DIR)/zlib_inflate.o \
@@ -47,7 +31,8 @@ STAGE0_KPAYLOAD_OBJS := \
 	$(STAGE0_OUT_DIR)/mtk_i2c.o \
 	$(STAGE0_OUT_DIR)/mtk_dsi.o \
 	$(STAGE0_OUT_DIR)/mtk_pwm.o \
-	$(STAGE0_OUT_DIR)/mtk_usb.o
+	$(STAGE0_OUT_DIR)/mtk_usb.o \
+	$(STAGE0_OUT_DIR)/mk_ui.o
 DEVICE ?= oppo-a16
 DEVICE_PROFILE_MK := devices/$(DEVICE)/profile.mk
 BOOTIMG_OUT_DIR := out/bootimg
@@ -96,13 +81,7 @@ endif
 
 .PHONY: all clean stage0 stage0-clean stage0-kpayload bootimg-nokernel
 
-all: mk-dev
-
-mk-dev: $(OBJS)
-	$(CC) $(CFLAGS) $(OBJS) -o $@
-
-%.o: %.c
-	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+all: stage0 bootimg-nokernel
 
 stage0: $(STAGE0_ELF) $(STAGE0_BIN) stage0-kpayload
 
@@ -134,13 +113,24 @@ $(STAGE0_OUT_DIR)/kernel_payload.o: $(STAGE0_DIR)/kernel_payload.S | $(STAGE0_OU
 	$(CLANG) -target aarch64-none-elf -ffreestanding -fno-stack-protector -nostdlib -c $< -o $@
 
 $(STAGE0_OUT_DIR)/kernel_payload_main.o: $(STAGE0_DIR)/kernel_payload_main.c $(STAGE0_DIR)/mtk_panel.h $(STAGE0_DIR)/mtk_display.h $(STAGE0_DIR)/peacock_logo_asset.h | $(STAGE0_OUT_DIR)
-	$(CLANG) -target aarch64-none-elf -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -nostdlib -std=c11 -Wall -Wextra -Werror -O2 -mgeneral-regs-only $(STAGE0_KPAYLOAD_CPPFLAGS) -c $< -o $@
+	$(CLANG) $(STAGE0_CFLAGS) $(STAGE0_KPAYLOAD_CPPFLAGS) -c $< -o $@
 
-$(STAGE0_OUT_DIR)/mk_boot.o: $(STAGE0_DIR)/mk_boot.c $(STAGE0_DIR)/mk_boot.h $(STAGE0_DIR)/mk_ext2.h | $(STAGE0_OUT_DIR)
-	$(CLANG) -target aarch64-none-elf -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -nostdlib -std=c11 -Wall -Wextra -Werror -O2 -mgeneral-regs-only $(STAGE0_KPAYLOAD_CPPFLAGS) -c $< -o $@
+$(STAGE0_OUT_DIR)/mk_boot.o: $(STAGE0_DIR)/mk_boot.c $(STAGE0_DIR)/mk_boot.h $(STAGE0_DIR)/mk_ext2.h $(STAGE0_DIR)/mk_ui.h | $(STAGE0_OUT_DIR)
+	$(CLANG) $(STAGE0_CFLAGS) $(STAGE0_KPAYLOAD_CPPFLAGS) -c $< -o $@
+
+$(STAGE0_OUT_DIR)/mk_fdt.o: $(STAGE0_DIR)/mk_fdt.c $(STAGE0_DIR)/mk_fdt.h $(STAGE0_DIR)/mk_common.h | $(STAGE0_OUT_DIR)
+	$(CLANG) $(STAGE0_CFLAGS) $(STAGE0_KPAYLOAD_CPPFLAGS) -c $< -o $@
+
+$(STAGE0_OUT_DIR)/mk_wdt.o: $(STAGE0_DIR)/mk_wdt.c $(STAGE0_DIR)/mk_wdt.h $(STAGE0_DIR)/mk_common.h | $(STAGE0_OUT_DIR)
+	$(CLANG) $(STAGE0_CFLAGS) $(STAGE0_KPAYLOAD_CPPFLAGS) -c $< -o $@
+
+$(STAGE0_OUT_DIR)/mk_pmic.o: $(STAGE0_DIR)/mk_pmic.c $(STAGE0_DIR)/mk_pmic.h $(STAGE0_DIR)/mk_common.h | $(STAGE0_OUT_DIR)
+	$(CLANG) $(STAGE0_CFLAGS) $(STAGE0_KPAYLOAD_CPPFLAGS) -c $< -o $@
 
 $(STAGE0_OUT_DIR)/mk_ext2.o: $(STAGE0_DIR)/mk_ext2.c $(STAGE0_DIR)/mk_ext2.h $(STAGE0_DIR)/mtk_storage.h | $(STAGE0_OUT_DIR)
-	$(CLANG) -target aarch64-none-elf -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -nostdlib -std=c11 -Wall -Wextra -Werror -O2 -mgeneral-regs-only $(STAGE0_KPAYLOAD_CPPFLAGS) -c $< -o $@
+	$(CLANG) $(STAGE0_CFLAGS) $(STAGE0_KPAYLOAD_CPPFLAGS) -c $< -o $@
+
+STAGE0_CFLAGS := -target aarch64-none-elf -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -nostdlib -std=c11 -Wall -Wextra -Werror -O2 -mgeneral-regs-only
 
 ZLIB_INFLATE_DIR := ../lk2nd_src/lib/zlib_inflate
 ZLIB_STAGE0_CFLAGS := -target aarch64-none-elf -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -nostdlib -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-sign-compare -O2 -mgeneral-regs-only -DZ_SOLO -I$(ZLIB_INFLATE_DIR)
@@ -164,25 +154,28 @@ $(STAGE0_OUT_DIR)/zlib_adler32.o: $(ZLIB_INFLATE_DIR)/adler32.c | $(STAGE0_OUT_D
 	$(CLANG) $(ZLIB_STAGE0_CFLAGS) -c $< -o $@
 
 $(STAGE0_OUT_DIR)/mtk_panel.o: $(STAGE0_DIR)/mtk_panel.c $(STAGE0_DIR)/mtk_panel.h | $(STAGE0_OUT_DIR)
-	$(CLANG) -target aarch64-none-elf -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -nostdlib -std=c11 -Wall -Wextra -Werror -O2 -mgeneral-regs-only -c $< -o $@
+	$(CLANG) $(STAGE0_CFLAGS) -c $< -o $@
 
 $(STAGE0_OUT_DIR)/mtk_display.o: $(STAGE0_DIR)/mtk_display.c $(STAGE0_DIR)/mtk_display.h $(STAGE0_DIR)/mtk_panel.h $(STAGE0_DIR)/mtk_gpio.h $(STAGE0_DIR)/mtk_i2c.h $(STAGE0_DIR)/mtk_dsi.h $(STAGE0_DIR)/mtk_pwm.h $(STAGE0_DIR)/panel_nt35695b_init.h | $(STAGE0_OUT_DIR)
-	$(CLANG) -target aarch64-none-elf -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -nostdlib -std=c11 -Wall -Wextra -Werror -O2 -mgeneral-regs-only -c $< -o $@
+	$(CLANG) $(STAGE0_CFLAGS) -c $< -o $@
 
 $(STAGE0_OUT_DIR)/mtk_gpio.o: $(STAGE0_DIR)/mtk_gpio.c $(STAGE0_DIR)/mtk_gpio.h $(STAGE0_DIR)/mtk_panel.h | $(STAGE0_OUT_DIR)
-	$(CLANG) -target aarch64-none-elf -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -nostdlib -std=c11 -Wall -Wextra -Werror -O2 -mgeneral-regs-only -c $< -o $@
+	$(CLANG) $(STAGE0_CFLAGS) -c $< -o $@
 
 $(STAGE0_OUT_DIR)/mtk_i2c.o: $(STAGE0_DIR)/mtk_i2c.c $(STAGE0_DIR)/mtk_i2c.h | $(STAGE0_OUT_DIR)
-	$(CLANG) -target aarch64-none-elf -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -nostdlib -std=c11 -Wall -Wextra -Werror -O2 -mgeneral-regs-only -c $< -o $@
+	$(CLANG) $(STAGE0_CFLAGS) -c $< -o $@
 
 $(STAGE0_OUT_DIR)/mtk_dsi.o: $(STAGE0_DIR)/mtk_dsi.c $(STAGE0_DIR)/mtk_dsi.h $(STAGE0_DIR)/mtk_panel.h | $(STAGE0_OUT_DIR)
-	$(CLANG) -target aarch64-none-elf -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -nostdlib -std=c11 -Wall -Wextra -Werror -O2 -mgeneral-regs-only -c $< -o $@
+	$(CLANG) $(STAGE0_CFLAGS) -c $< -o $@
 
 $(STAGE0_OUT_DIR)/mtk_pwm.o: $(STAGE0_DIR)/mtk_pwm.c $(STAGE0_DIR)/mtk_pwm.h | $(STAGE0_OUT_DIR)
-	$(CLANG) -target aarch64-none-elf -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -nostdlib -std=c11 -Wall -Wextra -Werror -O2 -mgeneral-regs-only -c $< -o $@
+	$(CLANG) $(STAGE0_CFLAGS) -c $< -o $@
 
 $(STAGE0_OUT_DIR)/mtk_usb.o: $(STAGE0_DIR)/mtk_usb.c $(STAGE0_DIR)/mtk_usb.h | $(STAGE0_OUT_DIR)
-	$(CLANG) -target aarch64-none-elf -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -nostdlib -std=c11 -Wall -Wextra -Werror -O2 -mgeneral-regs-only -c $< -o $@
+	$(CLANG) $(STAGE0_CFLAGS) -c $< -o $@
+
+$(STAGE0_OUT_DIR)/mk_ui.o: $(STAGE0_DIR)/mk_ui.c $(STAGE0_DIR)/mk_ui.h $(STAGE0_DIR)/mk_common.h $(STAGE0_DIR)/peacock_logo_asset.h | $(STAGE0_OUT_DIR)
+	$(CLANG) $(STAGE0_CFLAGS) $(STAGE0_KPAYLOAD_CPPFLAGS) -c $< -o $@
 
 $(STAGE0_KPAYLOAD_ELF): $(STAGE0_KPAYLOAD_OBJS) $(STAGE0_DIR)/kernel_payload.ld
 	$(LD_LLD) -nostdlib -T $(STAGE0_DIR)/kernel_payload.ld -o $@ $(STAGE0_KPAYLOAD_OBJS)
@@ -197,5 +190,4 @@ stage0-clean:
 	rm -rf $(STAGE0_OUT_DIR)
 
 clean:
-	rm -f $(OBJS) mk-dev
 	rm -rf $(STAGE0_OUT_DIR)

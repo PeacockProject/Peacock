@@ -102,6 +102,24 @@ _start:
 	msr sctlr_el2, x1
 	isb
 
+	/*
+	 * Clear alignment-fault enable at the current EL so the compiler
+	 * may freely emit multi-byte loads/stores to byte-aligned buffers.
+	 * LK on MT6765 leaves SCTLR_ELx.A = 1; without this, any 8-byte
+	 * store to a 4-byte-aligned address faults immediately.
+	 */
+	cmp x21, #2
+	b.eq .Lfix_sctlr_el2
+	mrs x1, sctlr_el1
+	bic x1, x1, #(1 << 1)		/* A: clear alignment fault enable */
+	bic x1, x1, #(1 << 3)		/* SA: clear SP alignment check */
+	msr sctlr_el1, x1
+	isb
+	b .Lfix_sctlr_done
+.Lfix_sctlr_el2:
+	/* EL2 case already handled above */
+.Lfix_sctlr_done:
+
 	/* Restore FDT pointer into x0 before entering C. */
 	mov x0, x19
 

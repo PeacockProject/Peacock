@@ -22,5 +22,6 @@ uint32_t mk_stage0_mtk_usb_fastboot_download_size(void);
 #define MK_FASTBOOT_ACTION_CONTINUE 3U
 #define MK_FASTBOOT_ACTION_REBOOT_RECOVERY 4U
 #define MK_FASTBOOT_ACTION_BOOT_STAGED_KERNEL 5U
+#define MK_FASTBOOT_ACTION_POWEROFF 6U
 
 #endif
