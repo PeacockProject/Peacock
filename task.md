@@ -11,20 +11,25 @@
   Today it lives in-tree as 1.6k lines of Go assembling the cpio. Packaging it would
   let the Peacock host tool stay focused on orchestration and let the initramfs be
   versioned/installed via pacman like everything else in peacock-ports.
-- [ ] Replace the `prp/vendor/<device>/rootfs-runtime` lookup in
-  `internal/mkinitfs/mkinitfs.go:1243-1264` with a peacock-ports package build.
-  Stub manifests landed at `peacock-ports/base/util-linux` and
-  `peacock-ports/base/lvm2`. Wire `runtimeVendorCandidates` and the dmsetup
-  lookup to consume their built artifacts (sbin/, lib/) instead of the now-empty
-  `prp/vendor/` path. Drop the `prp/vendor` + `prp/out` candidate roots once the
-  package path is verified.
-- [ ] Install the canonical subparts-mount shell library into the initramfs.
-  `assets/initramfs/subparts-mount.sh` is a copy of PRP's
-  `initramfs/rootfs/usr/lib/prp/subparts-mount.sh`. Have `mkinitfs` drop it at
-  `/usr/lib/peacock/subparts-mount.sh` in the cpio and source it from the init
-  shell so the inline subparts logic in `mkinitfs.go:600-840` can be replaced
-  by a single `. /usr/lib/peacock/subparts-mount.sh`. Rename the log prefix from
-  `PRP-subparts:` to `subparts:` during the move.
+- [x] Replace the `prp/vendor/<device>/rootfs-runtime` lookup in
+  `internal/mkinitfs/mkinitfs.go` with a peacock-ports package build.
+  `InitConfig` now carries `UtilLinuxBuildDir` + `Lvm2BuildDir`;
+  `cmd/peacock/build.go` builds the util-linux + lvm2 ports via the new
+  `buildPortForInitramfs` helper (built on top of `buildPackageInChrootStep`)
+  and plumbs the build dirs through. `runtimeVendorCandidates` now consumes
+  `UtilLinuxBuildDir`; the `prp/vendor` and `prp/out` candidate roots are
+  gone. The dmsetup lookup + lib search now prefer
+  `Lvm2BuildDir/sbin/dmsetup` and `Lvm2BuildDir/{lib,usr/lib,stage/...}`
+  with host paths as a final fallback.
+- [/] Install the canonical subparts-mount shell library into the initramfs.
+  `mkinitfs.Build` now drops `assets/initramfs/subparts-mount.sh` (with
+  legacy `prp/initramfs/rootfs/usr/lib/prp/subparts-mount.sh` fallback) at
+  `/usr/lib/peacock/subparts-mount.sh`, mode 0755. Remaining work: switch
+  the inline init shell to `. /usr/lib/peacock/subparts-mount.sh`, delete
+  the inline `setup_prp_like_subparts` function, and rename the
+  `PRP-subparts:` log prefix to `subparts:`. The inline function now
+  carries a note pointing at the canonical implementation pending that
+  follow-up.
 
 ## Bootloaders as ports
 

@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"text/template"
 
 	"peacock/internal/runner"
@@ -23,6 +22,15 @@ type InitConfig struct {
 	Architecture      string // Target arch (e.g., "armv7h", "aarch64", "x86_64")
 	DeviceName        string // Device codename (e.g., "samsung-jflte")
 	EnableS4CameraLED bool   // Enable S4-specific camera LED debug flashes in initramfs
+	// UtilLinuxBuildDir points at the staged util-linux port build directory
+	// (sbin/, bin/, usr/bin/, lib/, usr/lib/). When set, the initramfs builder
+	// harvests losetup/partx/blkid/lsblk + shared libs from here. Falls back to
+	// a no-op when empty (e.g. legacy callers or partial builds).
+	UtilLinuxBuildDir string
+	// Lvm2BuildDir points at the staged lvm2 port build directory which
+	// provides sbin/dmsetup and libdevmapper. When set, the initramfs builder
+	// prefers this over host paths for the dmsetup binary + its lib search.
+	Lvm2BuildDir string
 }
 
 // Compile-time toggle for S4 camera LED debug flashes in initramfs.
@@ -566,6 +574,13 @@ resolve_userdata_dev() {
     return 1
 }
 
+# NOTE: setup_prp_like_subparts is an inline copy of the canonical sub-partition
+# mount shell. The canonical implementation now ships in the cpio at
+# /usr/lib/peacock/subparts-mount.sh (vendored from PRP's
+# initramfs/rootfs/usr/lib/prp/subparts-mount.sh). This inline version stays as
+# a fallback for now; once init scripts are switched to source the file (and
+# the PRP-only branches that still rely on this code path are gone), this
+# function should be removed.
 setup_prp_like_subparts() {
     local userdata_dev="${1:-}"
     local boot_start=2048
@@ -1237,33 +1252,31 @@ func appendUniquePath(paths []string, p string) []string {
 	return append(paths, clean)
 }
 
-func runtimeVendorCandidates(deviceName string) []string {
+// runtimeVendorCandidates returns directories whose sbin/, bin/, usr/bin/,
+// lib/, usr/lib/ trees are copied verbatim into the initramfs to provide rich
+// util-linux tooling (losetup/partx/blkid/lsblk + shared libs) for nested-root
+// probing. Historically this consumed `prp/vendor/<device>/rootfs-runtime`
+// when PRP was vendored in-tree; that path is gone since the PRP split, so the
+// canonical source is now the util-linux port build directory passed in via
+// InitConfig.UtilLinuxBuildDir.
+func runtimeVendorCandidates(utilLinuxBuildDir string) []string {
 	var out []string
-	if deviceName != "" {
-		out = appendUniquePath(out, filepath.Join("prp", "vendor", deviceName, "rootfs-runtime"))
-	}
-	// Optional generic runtime location for shared assets.
-	out = appendUniquePath(out, filepath.Join("prp", "vendor", "rootfs-runtime"))
-
-	matches, _ := filepath.Glob(filepath.Join("prp", "vendor", "*", "rootfs-runtime"))
-	sort.Strings(matches)
-	for _, m := range matches {
-		out = appendUniquePath(out, m)
+	if utilLinuxBuildDir != "" {
+		out = appendUniquePath(out, utilLinuxBuildDir)
+		// Some package layouts stage payloads under a "stage" subdir.
+		out = appendUniquePath(out, filepath.Join(utilLinuxBuildDir, "stage"))
 	}
 	return out
 }
 
+// runtimeStageCandidates used to enumerate `prp/out/<device>/initramfs-stage`
+// directories produced by a vendored PRP build. With PRP split out and no
+// in-tree analogue yet, this returns nothing — keeping the function around
+// so the rest of the dmsetup/library-search wiring can be extended cheaply
+// when a future port emits an initramfs-stage tree.
 func runtimeStageCandidates(deviceName string) []string {
-	var out []string
-	if deviceName != "" {
-		out = appendUniquePath(out, filepath.Join("prp", "out", deviceName, "initramfs-stage"))
-	}
-	matches, _ := filepath.Glob(filepath.Join("prp", "out", "*", "initramfs-stage"))
-	sort.Strings(matches)
-	for _, m := range matches {
-		out = appendUniquePath(out, m)
-	}
-	return out
+	_ = deviceName
+	return nil
 }
 
 func copyFileOrSymlink(src, dst string) error {
@@ -1423,9 +1436,10 @@ func Build(output string, cfg InitConfig) error {
 		fmt.Printf("Warning: resize2fs not found, rootfs resize will be skipped\n")
 	}
 
-	// Copy runtime userspace from PRP sync when available.
-	// With 512MiB BOOT, we can carry richer util-linux tooling for nested root probing.
-	runtimeRoot := findFirstExisting(runtimeVendorCandidates(cfg.DeviceName))
+	// Copy runtime userspace from the util-linux port build directory when
+	// available. With 512MiB BOOT, we can carry richer util-linux tooling
+	// (losetup/partx/blkid/lsblk + shared libs) for nested root probing.
+	runtimeRoot := findFirstExisting(runtimeVendorCandidates(cfg.UtilLinuxBuildDir))
 	stageRoots := runtimeStageCandidates(cfg.DeviceName)
 	if runtimeRoot != "" {
 		type runtimeCopy struct {
@@ -1450,8 +1464,17 @@ func Build(output string, cfg InitConfig) error {
 		}
 	}
 
-	// Keep dmsetup fallback copy for environments without runtime sync.
+	// Locate dmsetup. Prefer the lvm2 port build directory (canonical source);
+	// fall back to the util-linux runtime root (unlikely to have it, but keep
+	// the legacy shape), then any stage roots, then host paths so dev builds
+	// without the lvm2 port still produce a usable cpio.
 	dmsetupCandidates := []string{}
+	if cfg.Lvm2BuildDir != "" {
+		dmsetupCandidates = append(dmsetupCandidates,
+			filepath.Join(cfg.Lvm2BuildDir, "sbin", "dmsetup"),
+			filepath.Join(cfg.Lvm2BuildDir, "stage", "sbin", "dmsetup"),
+		)
+	}
 	if runtimeRoot != "" {
 		dmsetupCandidates = append(dmsetupCandidates, filepath.Join(runtimeRoot, "sbin", "dmsetup"))
 	}
@@ -1483,6 +1506,12 @@ func Build(output string, cfg InitConfig) error {
 		}
 
 		libSearchDirs := []string{}
+		if cfg.Lvm2BuildDir != "" {
+			libSearchDirs = appendUniquePath(libSearchDirs, filepath.Join(cfg.Lvm2BuildDir, "lib"))
+			libSearchDirs = appendUniquePath(libSearchDirs, filepath.Join(cfg.Lvm2BuildDir, "usr", "lib"))
+			libSearchDirs = appendUniquePath(libSearchDirs, filepath.Join(cfg.Lvm2BuildDir, "stage", "lib"))
+			libSearchDirs = appendUniquePath(libSearchDirs, filepath.Join(cfg.Lvm2BuildDir, "stage", "usr", "lib"))
+		}
 		if runtimeRoot != "" {
 			libSearchDirs = appendUniquePath(libSearchDirs, filepath.Join(runtimeRoot, "lib"))
 			libSearchDirs = appendUniquePath(libSearchDirs, filepath.Join(runtimeRoot, "usr", "lib"))
@@ -1569,6 +1598,33 @@ func Build(output string, cfg InitConfig) error {
 		if err := os.WriteFile(conspiracyDst, conspiracyInput, 0644); err != nil {
 			return fmt.Errorf("failed to write conspiracy image: %w", err)
 		}
+	}
+
+	// Install the canonical Peacock sub-partition mount shell library into the
+	// cpio at /usr/lib/peacock/subparts-mount.sh. The inline shell function
+	// in this file is still emitted for now, but the long-term plan is to
+	// replace it with `. /usr/lib/peacock/subparts-mount.sh` in the init script.
+	subpartsSrc := findFirstExisting([]string{
+		filepath.Join("assets", "initramfs", "subparts-mount.sh"),
+		// Legacy compat: vendored PRP tree (kept for out-of-tree builds that
+		// still hold a PRP checkout next to the Peacock source).
+		filepath.Join("prp", "initramfs", "rootfs", "usr", "lib", "prp", "subparts-mount.sh"),
+	})
+	if subpartsSrc != "" {
+		subpartsDir := filepath.Join(tmpDir, "usr", "lib", "peacock")
+		if err := os.MkdirAll(subpartsDir, 0755); err != nil {
+			return fmt.Errorf("failed to create subparts-mount dir: %w", err)
+		}
+		subpartsContent, err := os.ReadFile(subpartsSrc)
+		if err != nil {
+			return fmt.Errorf("failed to read subparts-mount.sh: %w", err)
+		}
+		subpartsDst := filepath.Join(subpartsDir, "subparts-mount.sh")
+		if err := os.WriteFile(subpartsDst, subpartsContent, 0755); err != nil {
+			return fmt.Errorf("failed to write subparts-mount.sh: %w", err)
+		}
+	} else {
+		fmt.Printf("Warning: subparts-mount.sh not found in assets/initramfs/ or prp/initramfs/, using only inline subparts logic\n")
 	}
 
 	// Copy msm-fb-refresher binary (for MSM framebuffer refresh loop)

@@ -509,6 +509,14 @@ This process involves:
 			fmt.Printf("Info: skipping msm-fb-refresher for device %s\n", deviceName)
 		}
 
+		// Build util-linux + lvm2 ports for initramfs runtime tooling.
+		// Replaces the legacy prp/vendor/<device>/rootfs-runtime lookup that
+		// no longer resolves after the PRP split. Best-effort: if a port
+		// fails to build (e.g. missing checksum / network), the initramfs
+		// still goes out with whatever we managed to produce.
+		utilLinuxBuildDir := buildPortForInitramfs(b, "util-linux", dev.Device.Architecture, workDir, useQemuFlag, crossCompileFlag)
+		lvm2BuildDir := buildPortForInitramfs(b, "lvm2", dev.Device.Architecture, workDir, useQemuFlag, crossCompileFlag)
+
 		// Define root partition label for init script
 		rootLabel := "ROOT"
 
@@ -522,14 +530,16 @@ This process involves:
 		}
 
 		initCfg := mkinitfs.InitConfig{
-			InitSystem:    initSystem,
-			RootLabel:     rootLabel,
-			BusyboxPath:   busyboxPath,
-			Resize2fsPath: resize2fsPath,
-			SplashPath:    splashPath,
-			RefresherPath: refresherPath,
-			Architecture:  dev.Device.Architecture,
-			DeviceName:    deviceName,
+			InitSystem:        initSystem,
+			RootLabel:         rootLabel,
+			BusyboxPath:       busyboxPath,
+			Resize2fsPath:     resize2fsPath,
+			SplashPath:        splashPath,
+			RefresherPath:     refresherPath,
+			Architecture:      dev.Device.Architecture,
+			DeviceName:        deviceName,
+			UtilLinuxBuildDir: utilLinuxBuildDir,
+			Lvm2BuildDir:      lvm2BuildDir,
 		}
 
 		initramfsPath := filepath.Join(workDir, "initramfs.cpio.gz")
@@ -1480,6 +1490,49 @@ func findCachedPackageArtifact(b *builder.Builder, pkg *manifest.Package, target
 		return ""
 	}
 	return artifactPath
+}
+
+// buildPortForInitramfs loads a port package from peacock-ports/base/<name>
+// and produces (or reuses a cached) build directory containing its staged
+// payload (sbin/, lib/, etc.). Used to source util-linux + lvm2 binaries for
+// the initramfs after the PRP vendor tree was dropped.
+//
+// Returns the build-dir path on success, "" on any error (errors are logged
+// to stdout). Callers MUST tolerate "" gracefully — the initramfs builder
+// falls back to host paths when the supplied dir is empty.
+func buildPortForInitramfs(b *builder.Builder, name, targetArch, workDir, useQemuFlag, crossCompileFlag string) string {
+	manifestPath := filepath.Join("peacock-ports", "base", name, "package.toml")
+	pkg, err := manifest.LoadPackage(manifestPath)
+	if err != nil {
+		fmt.Printf("Warning: skipping %s for initramfs (manifest load failed): %v\n", name, err)
+		return ""
+	}
+
+	// Compute the build-dir path so we can reuse a previous in-chroot build
+	// without re-running the full pipeline when only the .pkg.tar.gz is cached.
+	_, chrootArch, err := resolveBuildOptions(pkg, targetArch, useQemuFlag, crossCompileFlag)
+	if err != nil {
+		fmt.Printf("Warning: skipping %s for initramfs (resolveBuildOptions failed): %v\n", name, err)
+		return ""
+	}
+	buildChrootDir := filepath.Join(workDir, "build-chroot", chrootArch)
+	buildDirHint := filepath.Join(buildChrootDir, "build", fmt.Sprintf("%s-%s-%s", pkg.Package.Name, pkg.Package.Version, targetArch))
+
+	if artifactPath := findCachedPackageArtifact(b, pkg, targetArch); artifactPath != "" {
+		if fileExists(buildDirHint) {
+			fmt.Printf("Reusing cached %s build dir at %s\n", name, buildDirHint)
+			return buildDirHint
+		}
+		fmt.Printf("Cached %s package present but build dir missing; rebuilding for initramfs\n", name)
+	}
+
+	fmt.Printf("Building %s for initramfs...\n", name)
+	buildDir, _, err := buildPackageInChrootStep(b, pkg, targetArch, workDir, useQemuFlag, crossCompileFlag)
+	if err != nil {
+		fmt.Printf("Warning: skipping %s for initramfs (build failed): %v\n", name, err)
+		return ""
+	}
+	return buildDir
 }
 
 // buildPackageInChrootStep performs the full chroot-build pipeline for a single
