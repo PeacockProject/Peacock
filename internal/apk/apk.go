@@ -2,22 +2,38 @@
 // for Peacock. It mirrors the surface of internal/pacman so the build
 // path can fork on flavor without compile errors.
 //
-// This commit lands the configuration scaffolding only:
+// The package shells out to Alpine's `apk` tool to populate a chroot at
+// rootDir. The conventional invocation is:
 //
-//   - Version constants (V3_18 / V3_19 / V3_20 / Edge) and DefaultVersion.
-//   - DefaultMirror / DefaultBranches for the apk repositories file.
-//   - Config{Version, Arch, Mirror, Branches} with sensible defaults.
-//   - archToApk(): Peacock arch → apk arch translation, with a sibling
-//     shape to internal/apt's archToDpkg.
-//   - GenerateConfigContent(): emits the /etc/apk/repositories body
-//     used by Setup.
+//	apk add --root <rootDir> --initdb --arch <apk-arch> \
+//	    --no-cache --update-cache \
+//	    --repository <mirror>/<version>/main \
+//	    alpine-base
 //
-// Bootstrap / Setup / Install land in follow-up commits; the stub
-// surface is preserved here so the build path keeps compiling.
+// All commands run via internal/runner.RunCmd so cancellation, log
+// routing, and process-group cleanup work the same way as the pacman
+// path.
+//
+// Host prerequisites: the Peacock host needs an `apk` binary. The
+// cleanest cross-host option is `apk.static` from
+// https://gitlab.alpinelinux.org/alpine/apk-tools (the statically
+// linked variant of apk that needs no Alpine userland to run). The
+// package name varies by host distro:
+//
+//	Alpine: apk add apk-tools-static
+//	Arch:   pacman -S apk-tools-static  (AUR)
+//	Debian: build from source (see apk-tools README)
+//
+// findAPK() searches $PATH for `apk`, `apk.static`, `apk-tools-static`
+// in that order. checkHostPrereqs() surfaces an actionable error early
+// if none is found.
 package apk
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"peacock/internal/runner"
@@ -103,6 +119,55 @@ func archToApk(peacockArch string) string {
 	}
 }
 
+// ArchToApk is the exported wrapper so callers outside the package can
+// translate Peacock arch → apk arch with a clear error on unknowns.
+// Mirrors internal/apt.ArchToDpkg.
+func ArchToApk(peacockArch string) (string, error) {
+	a := archToApk(peacockArch)
+	if a == "" {
+		return "", fmt.Errorf("apk: unsupported peacock arch %q", peacockArch)
+	}
+	return a, nil
+}
+
+// findAPK searches $PATH for an apk binary. The order is:
+//
+//  1. apk            — present on Alpine hosts.
+//  2. apk.static     — upstream static build.
+//  3. apk-tools-static — Arch AUR / various distro packages.
+//
+// Returns the absolute path of the first match or an actionable error
+// listing all three names and install hints.
+func findAPK() (string, error) {
+	candidates := []string{"apk", "apk.static", "apk-tools-static"}
+	for _, name := range candidates {
+		if p, err := exec.LookPath(name); err == nil {
+			return p, nil
+		}
+	}
+	return "", errMissingAPK(candidates)
+}
+
+// errMissingAPK builds the actionable "no apk on PATH" error message.
+// Extracted so tests can assert on the wording without mutating $PATH.
+func errMissingAPK(candidates []string) error {
+	return fmt.Errorf(
+		"no apk binary found on $PATH (looked for %s); install one of: "+
+			"Alpine `apk add apk-tools-static`, "+
+			"Arch (AUR) `pacman -S apk-tools-static`, "+
+			"Debian: build apk-tools from source at https://gitlab.alpinelinux.org/alpine/apk-tools",
+		strings.Join(candidates, ", "),
+	)
+}
+
+// checkHostPrereqs is the actionable preflight: confirm an apk binary
+// exists on the host before we kick off a bootstrap. The error message
+// from findAPK is already actionable so we just forward it.
+func checkHostPrereqs() error {
+	_, err := findAPK()
+	return err
+}
+
 // GenerateConfigContent returns the contents of an /etc/apk/repositories
 // file for the given Config. One line per branch, in the form
 // "<mirror>/<version>/<branch>".
@@ -117,15 +182,69 @@ func GenerateConfigContent(cfg Config) string {
 	return b.String()
 }
 
+// Bootstrap fills rootDir with an Alpine base system via
+// `apk add --initdb`. The call is idempotent: if rootDir already looks
+// like an Alpine root (i.e. /etc/alpine-release exists) we log a skip
+// and return nil.
+//
+// cfg.Arch must be set to a non-empty apk arch (see archToApk).
+func Bootstrap(rootDir string, cfg Config) error {
+	cfg = cfg.withDefaults()
+	if cfg.Arch == "" {
+		return fmt.Errorf("apk.Bootstrap: cfg.Arch is required (use archToApk to translate)")
+	}
+	if rootDir == "" {
+		return fmt.Errorf("apk.Bootstrap: rootDir is required")
+	}
+
+	apkBin, err := findAPK()
+	if err != nil {
+		return fmt.Errorf("apk.Bootstrap: %w", err)
+	}
+	fmt.Fprintf(runner.LogWriter(), "info: internal/apk: using %s\n", apkBin)
+
+	if _, err := os.Stat(filepath.Join(rootDir, "etc", "alpine-release")); err == nil {
+		fmt.Fprintf(runner.LogWriter(), "info: internal/apk: %s already looks like an Alpine root; skipping bootstrap\n", rootDir)
+		return nil
+	}
+
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+		return fmt.Errorf("apk.Bootstrap: failed to create rootDir: %w", err)
+	}
+
+	mainRepo := fmt.Sprintf("%s/%s/main", cfg.Mirror, cfg.Version)
+	args := []string{
+		"add",
+		"--root", rootDir,
+		"--initdb",
+		"--arch", cfg.Arch,
+		"--no-cache",
+		"--update-cache",
+		"--repository", mainRepo,
+		"--allow-untrusted",
+		"alpine-base",
+	}
+	// apk's --initdb path requires root for chowning files under
+	// rootDir; sudo here mirrors the pacman path's behavior.
+	cmd := exec.Command("sudo", append([]string{apkBin}, args...)...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = runner.LogWriter()
+	cmd.Stderr = runner.LogWriter()
+	if err := runner.RunCmd(cmd); err != nil {
+		return fmt.Errorf("apk.Bootstrap: %w", err)
+	}
+	return nil
+}
+
 // --- pacman-surface compatibility shims ----------------------------------
 //
 // These keep the surface symmetric with internal/pacman so the build
-// path can keep compiling while Bootstrap / Setup / Install land in
-// follow-up commits.
+// path can keep compiling while Setup / Install land in follow-up
+// commits.
 
-func notImplemented() error {
-	fmt.Fprintf(runner.LogWriter(), "info: internal/apk: flavor %q not yet implemented (phase 3 stub)\n", flavor)
-	return fmt.Errorf("flavor %q not yet implemented (phase 3 stub)", flavor)
+func notImplemented(name string) error {
+	fmt.Fprintf(runner.LogWriter(), "info: internal/apk: %s not yet implemented (phase 3 in-flight)\n", name)
+	return fmt.Errorf("apk.%s: not yet implemented", name)
 }
 
 // GenerateConfig is the apk analogue of pacman.GenerateConfig. Stubbed
@@ -133,7 +252,7 @@ func notImplemented() error {
 func GenerateConfig(target string, arch string) error {
 	_ = target
 	_ = arch
-	return notImplemented()
+	return notImplemented("GenerateConfig")
 }
 
 // Install mirrors pacman.Install. Stub.
@@ -144,7 +263,7 @@ func Install(target string, configFile string, packages []string, cacheDir strin
 	_ = cacheDir
 	_ = skipScripts
 	_ = execRoot
-	return notImplemented()
+	return notImplemented("Install")
 }
 
 // InstallLocal mirrors pacman.InstallLocal. Stub.
@@ -155,12 +274,5 @@ func InstallLocal(target string, configFile string, packageFiles []string, cache
 	_ = cacheDir
 	_ = skipScripts
 	_ = execRoot
-	return notImplemented()
-}
-
-// Bootstrap is the apk analogue of pacman.Bootstrap. Stub.
-func Bootstrap(root string, packages []string) error {
-	_ = root
-	_ = packages
-	return notImplemented()
+	return notImplemented("InstallLocal")
 }

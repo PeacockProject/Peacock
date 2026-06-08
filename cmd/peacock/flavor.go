@@ -12,17 +12,24 @@ import (
 )
 
 // bootstrapBaseChroot is the fork point for per-flavor base-distro
-// bootstrap. arch hits the existing pacman.Bootstrap path; debian and
-// alpine route to their stubs which return "flavor not yet implemented"
-// so callers fail fast instead of crashing mid-build. Lives in its own
-// file so both build.go and build_packages.go can reuse it.
+// bootstrap. arch hits the existing pacman.Bootstrap path; alpine
+// routes to the real internal/apk implementation. debian still hits
+// the apt stub today; that parallel work lands separately.
+//
+// peacockArch is the manifest's Device.Architecture string (aarch64,
+// armv7h, x86_64). apk needs it to set --arch on `apk add --initdb`.
+// It is unused for the arch flavor today (pacman picks up arch via the
+// pacman.conf written separately) but kept on the signature so the
+// debian / alpine branches can read it without churning the
+// build.go / build_packages.go call sites again.
 //
 // ctx is accepted but not yet plumbed into the underlying bootstrap
 // helpers — those still rely on runner.SetContext for cancellation.
 // Keeping it in the signature lets us upgrade later without churning
 // the call sites again.
-func bootstrapBaseChroot(ctx context.Context, flavor, root string, packages []string) error {
+func bootstrapBaseChroot(ctx context.Context, flavor, root, peacockArch string, packages []string) error {
 	_ = ctx
+	_ = peacockArch // consumed by the alpine branch; debian / arch ignore for now
 	if !config.IsValidFlavor(flavor) {
 		return fmt.Errorf("invalid flavor %q (valid: %v)", flavor, config.ValidFlavors)
 	}
@@ -33,8 +40,14 @@ func bootstrapBaseChroot(ctx context.Context, flavor, root string, packages []st
 		fmt.Fprintf(runner.LogWriter(), "info: bootstrapping debian flavor via internal/apt (stub)\n")
 		return apt.Bootstrap(root, packages)
 	case "alpine":
-		fmt.Fprintf(runner.LogWriter(), "info: bootstrapping alpine flavor via internal/apk (stub)\n")
-		return apk.Bootstrap(root, packages)
+		fmt.Fprintf(runner.LogWriter(), "info: bootstrapping alpine flavor via internal/apk\n")
+		apkArch, err := apk.ArchToApk(peacockArch)
+		if err != nil {
+			return fmt.Errorf("apk bootstrap: %w", err)
+		}
+		// packages plumbed in on a follow-up commit (Setup + Install).
+		_ = packages
+		return apk.Bootstrap(root, apk.Config{Arch: apkArch})
 	default:
 		// Unreachable: IsValidFlavor gates entry. Belt-and-braces in
 		// case ValidFlavors grows without this switch being updated.
