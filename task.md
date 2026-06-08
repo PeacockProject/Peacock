@@ -43,7 +43,8 @@
   `make TOOLCHAIN_PREFIX=... msm8953 LK2ND_DEVICE=<dev>`) for qcom devices.
   Once these exist, mk and lk2nd are versioned/installed like any other
   device-firmware port instead of being out-of-tree clones.
-  Initial coverage: `xiaomi-daisy` (msm8953). More device variants will follow the same pattern.
+  Initial coverage: `xiaomi-daisy` (msm8953), `samsung-jflte` (msm8960/msm8660 — verify).
+  More device variants will follow the same pattern.
 
 ## Assets
 
