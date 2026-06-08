@@ -39,6 +39,7 @@ import (
 	"runtime"
 	"strings"
 
+	"peacock/internal/builder"
 	"peacock/internal/runner"
 )
 
@@ -318,18 +319,20 @@ func Setup(root string, cfg Config) error {
 }
 
 // Install runs `apt-get install -y --no-install-recommends <packages>`
-// inside root. Alias-table resolution lands in a follow-up commit; for
-// now packages are passed straight through.
+// inside root. Packages are routed through the debian flavor's alias
+// table first so manifests that name `base-devel` (Arch) get rewritten
+// to `build-essential` (Debian) on the way in.
 func Install(root string, packages []string) error {
 	if len(packages) == 0 {
 		return nil
 	}
+	resolved := builder.ResolveBuildDeps(packages, "debian")
 	args := []string{
 		"chroot", root,
 		"apt-get", "install",
 		"-y", "--no-install-recommends",
 	}
-	args = append(args, packages...)
+	args = append(args, resolved...)
 	if err := runSudo([]string{"DEBIAN_FRONTEND=noninteractive"}, args...); err != nil {
 		// Mirror pacman.Install's single-retry policy after a fresh
 		// metadata refresh — flaky mirrors are the same problem here.
