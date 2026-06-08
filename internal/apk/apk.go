@@ -236,43 +236,131 @@ func Bootstrap(rootDir string, cfg Config) error {
 	return nil
 }
 
+// Setup writes /etc/apk/repositories inside the chroot and runs
+// `apk update --root <rootDir>`. Equivalent of pacman.Bootstrap's
+// keyring-init + sync tail (apk has no separate keyring step — its
+// signature DB ships in alpine-keys which is pulled by alpine-base).
+func Setup(rootDir string, cfg Config) error {
+	cfg = cfg.withDefaults()
+	if rootDir == "" {
+		return fmt.Errorf("apk.Setup: rootDir is required")
+	}
+	apkBin, err := findAPK()
+	if err != nil {
+		return fmt.Errorf("apk.Setup: %w", err)
+	}
+
+	reposDir := filepath.Join(rootDir, "etc", "apk")
+	if err := os.MkdirAll(reposDir, 0o755); err != nil {
+		// Fall back to sudo for chroots we don't own.
+		if mkErr := runner.Run("sudo", "mkdir", "-p", reposDir); mkErr != nil {
+			return fmt.Errorf("apk.Setup: failed to create %s: %w (also tried sudo: %v)", reposDir, err, mkErr)
+		}
+	}
+
+	content := GenerateConfigContent(cfg)
+	reposPath := filepath.Join(reposDir, "repositories")
+	// Write to a host-side temp first then move with sudo, so the
+	// chroot file ends up root-owned without relying on the caller's
+	// uid.
+	tmp, err := os.CreateTemp("", "peacock-apk-repositories-*")
+	if err != nil {
+		return fmt.Errorf("apk.Setup: temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		return fmt.Errorf("apk.Setup: write temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("apk.Setup: close temp: %w", err)
+	}
+	if err := runner.Run("sudo", "cp", tmpPath, reposPath); err != nil {
+		return fmt.Errorf("apk.Setup: install repositories file: %w", err)
+	}
+	if err := runner.Run("sudo", "chmod", "0644", reposPath); err != nil {
+		return fmt.Errorf("apk.Setup: chmod repositories file: %w", err)
+	}
+
+	cmd := exec.Command("sudo", apkBin, "update", "--root", rootDir, "--no-cache", "--allow-untrusted")
+	cmd.Stdout = runner.LogWriter()
+	cmd.Stderr = runner.LogWriter()
+	if err := runner.RunCmd(cmd); err != nil {
+		return fmt.Errorf("apk.Setup: apk update: %w", err)
+	}
+	return nil
+}
+
+// Install adds packages into an existing Alpine root via
+// `apk add --root <rootDir> --no-cache`. Alias resolution (Arch →
+// Alpine name rewrites via peacock-ports/flavors/alpine/aliases.toml)
+// lands in a follow-up commit; for now packages pass through verbatim.
+//
+// Idempotent: apk add on an already-installed package is a no-op.
+func Install(rootDir string, packages []string) error {
+	if len(packages) == 0 {
+		return nil
+	}
+	if rootDir == "" {
+		return fmt.Errorf("apk.Install: rootDir is required")
+	}
+	apkBin, err := findAPK()
+	if err != nil {
+		return fmt.Errorf("apk.Install: %w", err)
+	}
+
+	args := append([]string{apkBin, "add", "--root", rootDir, "--no-cache"}, packages...)
+	cmd := exec.Command("sudo", args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = runner.LogWriter()
+	cmd.Stderr = runner.LogWriter()
+	if err := runner.RunCmd(cmd); err != nil {
+		return fmt.Errorf("apk.Install: %w", err)
+	}
+	return nil
+}
+
 // --- pacman-surface compatibility shims ----------------------------------
 //
-// These keep the surface symmetric with internal/pacman so the build
-// path can keep compiling while Setup / Install land in follow-up
-// commits.
+// These keep the surface symmetric with internal/pacman for the
+// downstream pipeline (which still has pacman-shaped callsites the
+// alpine work hasn't reached yet).
 
-func notImplemented(name string) error {
-	fmt.Fprintf(runner.LogWriter(), "info: internal/apk: %s not yet implemented (phase 3 in-flight)\n", name)
-	return fmt.Errorf("apk.%s: not yet implemented", name)
-}
-
-// GenerateConfig is the apk analogue of pacman.GenerateConfig. Stubbed
-// until Setup lands.
+// GenerateConfig writes /etc/apk/repositories for `arch` (Peacock arch
+// naming) inside target. Equivalent of pacman.GenerateConfig — uses
+// defaults for version/mirror/branches.
 func GenerateConfig(target string, arch string) error {
-	_ = target
-	_ = arch
-	return notImplemented("GenerateConfig")
+	cfg := Config{Arch: archToApk(arch)}
+	if cfg.Arch == "" {
+		return fmt.Errorf("apk.GenerateConfig: unsupported arch %q", arch)
+	}
+	dir := filepath.Join(target, "etc", "apk")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "repositories"), []byte(GenerateConfigContent(cfg)), 0o644)
 }
 
-// Install mirrors pacman.Install. Stub.
-func Install(target string, configFile string, packages []string, cacheDir string, skipScripts bool, execRoot string) error {
-	_ = target
-	_ = configFile
-	_ = packages
-	_ = cacheDir
-	_ = skipScripts
-	_ = execRoot
-	return notImplemented("Install")
-}
-
-// InstallLocal mirrors pacman.InstallLocal. Stub.
-func InstallLocal(target string, configFile string, packageFiles []string, cacheDir string, skipScripts bool, execRoot string) error {
-	_ = target
-	_ = configFile
-	_ = packageFiles
-	_ = cacheDir
-	_ = skipScripts
-	_ = execRoot
-	return notImplemented("InstallLocal")
+// InstallLocal installs local .apk files into the chroot. apk treats
+// `add <file.apk>` the same as `add <name>` so the implementation is
+// just a thin wrapper around Install with --allow-untrusted toggled on
+// (local files won't be signed by the upstream key).
+func InstallLocal(target string, packageFiles []string) error {
+	if len(packageFiles) == 0 {
+		return nil
+	}
+	apkBin, err := findAPK()
+	if err != nil {
+		return fmt.Errorf("apk.InstallLocal: %w", err)
+	}
+	args := append([]string{apkBin, "add", "--root", target, "--no-cache", "--allow-untrusted"}, packageFiles...)
+	cmd := exec.Command("sudo", args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = runner.LogWriter()
+	cmd.Stderr = runner.LogWriter()
+	if err := runner.RunCmd(cmd); err != nil {
+		return fmt.Errorf("apk.InstallLocal: %w", err)
+	}
+	return nil
 }
