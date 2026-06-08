@@ -20,7 +20,22 @@ const (
 	KeyUserPassword   = "user_password"
 	KeyEmptyRootfs    = "empty_rootfs"
 	KeyImageSizeMB    = "image_size_mb"
+	KeyFlavor         = "flavor"
 )
+
+// ValidFlavors enumerates the base-distro flavors Peacock can target.
+// "arch" remains the default for back-compat with existing user configs.
+var ValidFlavors = []string{"arch", "debian", "alpine"}
+
+// IsValidFlavor reports whether s names a flavor Peacock knows how to build.
+func IsValidFlavor(s string) bool {
+	for _, f := range ValidFlavors {
+		if f == s {
+			return true
+		}
+	}
+	return false
+}
 
 // Typed accessors. Each accessor returns the underlying viper value with the
 // correct type; callers should treat the empty/zero value as meaningful (e.g.
@@ -52,6 +67,16 @@ func EmptyRootfs() bool { return viper.GetBool(KeyEmptyRootfs) }
 
 // ImageSizeMB returns the requested disk image size in megabytes, or 0 for auto.
 func ImageSizeMB() int { return viper.GetInt(KeyImageSizeMB) }
+
+// Flavor returns the base-distro flavor for the build, defaulting to "arch"
+// so existing configs (which never set the key) keep targeting Arch.
+func Flavor() string {
+	v := viper.GetString(KeyFlavor)
+	if v == "" {
+		return "arch"
+	}
+	return v
+}
 
 // Config holds the application configuration
 type Config struct {
