@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOTFS_DEFAULT="/home/tiel/.local/var/peacock/image-build-chroot/x86_64/rootfs"
+ROOTFS_DEFAULT="${HOME}/.local/var/peacock/image-build-chroot/x86_64/rootfs"
 ROOTFS="${PEACOCK_ROOTFS:-$ROOTFS_DEFAULT}"
 
 MOUNTED_TARGETS=()
@@ -36,10 +36,10 @@ set_rootfs_from_arg() {
 
 find_qemu_arm_static() {
   local candidates=(
-    "/home/tiel/.local/var/peacock/image-build-chroot/x86_64/usr/bin/qemu-arm-static"
-    "/home/tiel/.local/var/peacock/build-chroot/x86_64/usr/bin/qemu-arm-static"
-    "/home/tiel/.local/var/peacock/build-chroot/armv7/usr/bin/qemu-arm-static"
-    "/home/tiel/.local/var/pmbootstrap/chroot_buildroot_armv7/usr/bin/qemu-arm-static"
+    "${HOME}/.local/var/peacock/image-build-chroot/x86_64/usr/bin/qemu-arm-static"
+    "${HOME}/.local/var/peacock/build-chroot/x86_64/usr/bin/qemu-arm-static"
+    "${HOME}/.local/var/peacock/build-chroot/armv7/usr/bin/qemu-arm-static"
+    "${HOME}/.local/var/pmbootstrap/chroot_buildroot_armv7/usr/bin/qemu-arm-static"
   )
   local c
   for c in "${candidates[@]}"; do
