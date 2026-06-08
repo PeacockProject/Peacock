@@ -37,6 +37,16 @@ type Device struct {
 	} `toml:"boot"`
 }
 
+// Install captures the [install] table introduced in Phase 1 of the
+// meta-distro migration. All fields are optional; absent in TOML means
+// zero-value here, and ResolvedLayout / ResolvedPrefix on Package fill
+// the gaps with sensible defaults.
+type Install struct {
+	Layout string   `toml:"layout"`
+	Prefix string   `toml:"prefix"`
+	Files  []string `toml:"files"`
+}
+
 // Package represents a package.toml metdata
 type Package struct {
 	Package struct {
@@ -45,6 +55,8 @@ type Package struct {
 		Description string   `toml:"description"`
 		Provides    []string `toml:"provides"`
 		Depends     []string `toml:"depends"`
+		Flavor      []string `toml:"flavor"`
+		Runtime     string   `toml:"runtime"`
 	} `toml:"package"`
 
 	Build struct {
@@ -60,7 +72,73 @@ type Package struct {
 		Checksum            string   `toml:"checksum"`
 	} `toml:"build"`
 
+	Install Install `toml:"install"`
+
+	// Provides / Conflicts are optional capability tables. The TOML
+	// shape is `capability = "version-or-glob"`. Absent in source =
+	// nil map here; existing callers that don't read these are
+	// unaffected.
+	Provides  map[string]string `toml:"provides"`
+	Conflicts map[string]string `toml:"conflicts"`
+
 	ManifestDir string // Directory containing package.toml, not loaded from TOML
+}
+
+// ResolvedLayout returns the install layout (system | peacock | app |
+// compat). Defaults to "system" so the 51 existing ports that don't yet
+// carry an [install] table behave as before.
+func (p *Package) ResolvedLayout() string {
+	if p == nil {
+		return "system"
+	}
+	if p.Install.Layout != "" {
+		return p.Install.Layout
+	}
+	return "system"
+}
+
+// ResolvedPrefix returns the on-disk overlay root for the package. If
+// the manifest sets [install].prefix explicitly we use it verbatim;
+// otherwise we derive a sensible default from the layout per the
+// meta-distro plan.
+func (p *Package) ResolvedPrefix() string {
+	if p == nil {
+		return "/usr"
+	}
+	if p.Install.Prefix != "" {
+		return p.Install.Prefix
+	}
+	switch p.ResolvedLayout() {
+	case "system":
+		return "/usr"
+	case "peacock":
+		return "/peacock"
+	case "app":
+		return "/apps/" + p.Package.Name
+	case "compat":
+		rt := p.Package.Runtime
+		if rt == "" {
+			rt = "unknown"
+		}
+		return "/compat/" + rt
+	default:
+		return "/usr"
+	}
+}
+
+// SupportsFlavor reports whether this port participates in builds for
+// the given base-distro flavor. A manifest that omits `flavor` lists
+// all flavors implicitly.
+func (p *Package) SupportsFlavor(name string) bool {
+	if p == nil || len(p.Package.Flavor) == 0 {
+		return true
+	}
+	for _, f := range p.Package.Flavor {
+		if f == name {
+			return true
+		}
+	}
+	return false
 }
 
 // LoadPackage loads a package.toml
