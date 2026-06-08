@@ -16,17 +16,30 @@
 //   - Arch Linux:     sudo pacman -S debootstrap qemu-user-static-binfmt
 //                     (qemu-user-static-bin is also available via AUR)
 //
-// This commit lands the configuration scaffolding only: Suite constants,
-// Config struct, arch translation (archToDpkg), and the sources.list
-// renderer (GenerateConfigContent / GenerateConfig). Bootstrap, Setup,
-// and Install follow in subsequent commits.
+// Implementation outline:
+//
+//   - Bootstrap runs `debootstrap --foreign --variant=minbase --arch=<dpkg>`
+//     for the requested suite, copies the matching qemu-user-static binary
+//     into <rootDir>/usr/bin/, then runs `chroot <rootDir>
+//     /debootstrap/debootstrap --second-stage`. If the chroot already has a
+//     populated /var/lib/dpkg/status the foreign+second-stage pair is
+//     skipped silently. Bootstrap then writes /etc/apt/sources.list (via
+//     Setup) and, if `packages` is non-empty, runs Install for those
+//     packages. (Setup + Install land in a follow-up commit.)
+//
+// All shelled-out commands go through runner.RunCmd so logging and signal
+// propagation match the rest of the CLI.
 package apt
 
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+
+	"peacock/internal/runner"
 )
 
 // Suite is the Debian release codename targeted by Bootstrap.
@@ -136,11 +149,149 @@ func GenerateConfig(target string, cfg Config) error {
 	return os.WriteFile(confPath, []byte(conf), 0644)
 }
 
-// Bootstrap / Setup / Install land in subsequent commits. flavor.go
-// still calls apt.Bootstrap; keep the symbol around with the old stub
-// behavior so this commit doesn't break the build.
+// qemuStaticBinaryForArch returns the qemu-user-static binary name that
+// must be present on the host PATH for foreign-arch second-stage. Empty
+// string for native builds where no qemu hop is needed.
+func qemuStaticBinaryForArch(dpkgArch string) string {
+	host := runtime.GOARCH
+	// Native: no qemu needed.
+	switch {
+	case dpkgArch == "amd64" && host == "amd64":
+		return ""
+	case dpkgArch == "arm64" && host == "arm64":
+		return ""
+	case dpkgArch == "armhf" && host == "arm":
+		return ""
+	}
+	switch dpkgArch {
+	case "arm64":
+		return "qemu-aarch64-static"
+	case "armhf":
+		return "qemu-arm-static"
+	case "amd64":
+		return "qemu-x86_64-static"
+	default:
+		return ""
+	}
+}
+
+// checkHostPrereqs verifies debootstrap (and a matching qemu-user-static
+// for foreign builds) is on PATH. Returns a clear, actionable error if
+// not.
+func checkHostPrereqs(cfg Config) error {
+	if _, err := exec.LookPath("debootstrap"); err != nil {
+		return fmt.Errorf("apt bootstrap requires `debootstrap` on PATH.\n" +
+			"  Debian/Ubuntu: sudo apt install debootstrap qemu-user-static\n" +
+			"  Arch Linux:    sudo pacman -S debootstrap qemu-user-static-binfmt\n" +
+			"  Arch (AUR):    yay -S qemu-user-static-bin")
+	}
+	qemu := qemuStaticBinaryForArch(cfg.Arch)
+	if qemu == "" {
+		return nil
+	}
+	if _, err := exec.LookPath(qemu); err != nil {
+		return fmt.Errorf("apt bootstrap requires `%s` on PATH for foreign-arch builds.\n"+
+			"  Debian/Ubuntu: sudo apt install qemu-user-static\n"+
+			"  Arch Linux:    sudo pacman -S qemu-user-static-binfmt\n"+
+			"  Arch (AUR):    yay -S qemu-user-static-bin", qemu)
+	}
+	return nil
+}
+
+// alreadyBootstrapped reports whether the chroot at root already looks
+// like a finished debootstrap second-stage (i.e. has a non-empty dpkg
+// status file). Used to make Bootstrap idempotent.
+func alreadyBootstrapped(root string) bool {
+	st, err := os.Stat(filepath.Join(root, "var", "lib", "dpkg", "status"))
+	if err != nil {
+		return false
+	}
+	return st.Size() > 0
+}
+
+// runSudo executes `sudo <args...>` through runner.RunCmd. extraEnv is
+// appended to the inherited environment when set.
+func runSudo(extraEnv []string, args ...string) error {
+	cmd := exec.Command("sudo", args...)
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
+	return runner.RunCmd(cmd)
+}
+
+// Bootstrap fills <root> with a Debian minbase using debootstrap, copies
+// qemu-user-static for foreign-arch second-stage, and runs the second
+// stage. Setup + Install are stubbed out here and land in the next
+// commit; for now Bootstrap only covers the debootstrap two-stage.
+//
+// Signature mirrors pacman.Bootstrap(root, packages) so the dispatch in
+// cmd/peacock/flavor.go can call either side uniformly. cfg defaults
+// match a bookworm-on-arm64 build, which matches the oppo-a16 target.
 func Bootstrap(root string, packages []string) error {
-	_ = root
+	// Build a default Config that targets bookworm on arm64. Real
+	// callers (build.go via flavor.go) should switch to
+	// BootstrapWithConfig once the device arch is known.
 	_ = packages
-	return fmt.Errorf("apt.Bootstrap: not yet implemented (lands in follow-up commit)")
+	cfg := Config{Suite: DefaultSuite, Arch: "arm64", Mirror: DefaultMirror}
+	return BootstrapWithConfig(root, cfg, packages)
+}
+
+// BootstrapWithConfig is the explicit form. Bootstrap delegates here.
+func BootstrapWithConfig(root string, cfg Config, packages []string) error {
+	if cfg.Arch == "" {
+		return fmt.Errorf("apt.Bootstrap: cfg.Arch is required (use ArchToDpkg)")
+	}
+	if err := checkHostPrereqs(cfg); err != nil {
+		return err
+	}
+
+	logf := func(format string, args ...interface{}) {
+		fmt.Fprintf(runner.LogWriter(), format, args...)
+	}
+
+	if alreadyBootstrapped(root) {
+		logf("info: internal/apt: %s already debootstrapped (dpkg status present), skipping foreign+second-stage\n", root)
+	} else {
+		if err := os.MkdirAll(root, 0755); err != nil {
+			return fmt.Errorf("apt.Bootstrap: mkdir %s: %w", root, err)
+		}
+
+		suite := string(cfg.suite())
+		mirror := cfg.mirror()
+		logf("info: internal/apt: debootstrap --foreign --arch=%s %s -> %s\n", cfg.Arch, suite, root)
+		if err := runSudo(nil,
+			"debootstrap",
+			"--foreign",
+			"--variant=minbase",
+			"--arch="+cfg.Arch,
+			suite, root, mirror,
+		); err != nil {
+			return fmt.Errorf("apt.Bootstrap: debootstrap --foreign: %w", err)
+		}
+
+		// Copy qemu-user-static into the chroot for second-stage if we
+		// need it. Native builds skip this.
+		qemu := qemuStaticBinaryForArch(cfg.Arch)
+		if qemu != "" {
+			src, err := exec.LookPath(qemu)
+			if err != nil {
+				return fmt.Errorf("apt.Bootstrap: %s not found on PATH (this should have been caught by checkHostPrereqs): %w", qemu, err)
+			}
+			dst := filepath.Join(root, "usr", "bin", qemu)
+			logf("info: internal/apt: cp %s -> %s\n", src, dst)
+			if err := runSudo(nil, "install", "-m", "0755", src, dst); err != nil {
+				return fmt.Errorf("apt.Bootstrap: copy %s into chroot: %w", qemu, err)
+			}
+		}
+
+		logf("info: internal/apt: chroot %s /debootstrap/debootstrap --second-stage\n", root)
+		if err := runSudo(nil, "chroot", root, "/debootstrap/debootstrap", "--second-stage"); err != nil {
+			return fmt.Errorf("apt.Bootstrap: debootstrap --second-stage: %w", err)
+		}
+	}
+
+	// Setup + Install land in the next commit. For now the bootstrap
+	// stops after second-stage and leaves /etc/apt/sources.list untouched.
+	_ = packages
+	return nil
 }
