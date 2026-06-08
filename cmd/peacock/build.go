@@ -23,7 +23,6 @@ import (
 	"peacock/internal/config"
 	"peacock/internal/image"
 	"peacock/internal/manifest"
-	"peacock/internal/mkinitfs"
 	"peacock/internal/runner"
 	"peacock/internal/userland"
 
@@ -516,12 +515,17 @@ This process involves:
 		// still goes out with whatever we managed to produce.
 		utilLinuxBuildDir := buildPortForInitramfs(b, "util-linux", dev.Device.Architecture, workDir, useQemuFlag, crossCompileFlag)
 		lvm2BuildDir := buildPortForInitramfs(b, "lvm2", dev.Device.Architecture, workDir, useQemuFlag, crossCompileFlag)
-		// peacock-initramfs-tools ships init.sh.in, init-wrapper.go.in, and
-		// subparts-mount.sh into /usr/lib/peacock/. When this port is built,
-		// mkinitfs prefers its staged copies over the in-tree
-		// assets/initramfs/ fallbacks. Empty (build failed / port skipped)
-		// falls back to the in-tree assets — same shape as util-linux/lvm2.
-		initramfsToolsBuildDir := buildPortForInitramfs(b, "peacock-initramfs-tools", dev.Device.Architecture, workDir, useQemuFlag, crossCompileFlag)
+
+		// Build the peacock-mkinitfs port so its binary is available to
+		// invoke below. Empty return means the port build failed; we then
+		// fall back to a $PATH lookup (works on dev machines with the
+		// system-installed peacock-mkinitfs).
+		mkinitfsBuildDir := buildPortForInitramfs(b, "peacock-mkinitfs", dev.Device.Architecture, workDir, useQemuFlag, crossCompileFlag)
+		mkinitfsBin := locatePeacockMkinitfs(mkinitfsBuildDir)
+		if mkinitfsBin == "" {
+			fmt.Println("Error: peacock-mkinitfs binary not found (port build dir empty and not on PATH). Install the peacock-mkinitfs port or `go install github.com/PeacockProject/peacock-mkinitfs/cmd/peacock-mkinitfs@latest`.")
+			fatal()
+		}
 
 		// Define root partition label for init script
 		rootLabel := "ROOT"
@@ -535,23 +539,36 @@ This process involves:
 			}
 		}
 
-		initCfg := mkinitfs.InitConfig{
-			InitSystem:        initSystem,
-			RootLabel:         rootLabel,
-			BusyboxPath:       busyboxPath,
-			Resize2fsPath:     resize2fsPath,
-			SplashPath:        splashPath,
-			RefresherPath:     refresherPath,
-			Architecture:      dev.Device.Architecture,
-			DeviceName:        deviceName,
-			UtilLinuxBuildDir:      utilLinuxBuildDir,
-			Lvm2BuildDir:           lvm2BuildDir,
-			InitramfsToolsBuildDir: initramfsToolsBuildDir,
-		}
-
 		initramfsPath := filepath.Join(workDir, "initramfs.cpio.gz")
-		if err := mkinitfs.Build(initramfsPath, initCfg); err != nil {
-			fmt.Printf("Error generating initramfs: %v\n", err)
+		mkinitfsArgs := []string{
+			"build",
+			"--device", deviceName,
+			"--arch", dev.Device.Architecture,
+			"--init", initSystem,
+			"--root-label", rootLabel,
+			"--busybox", busyboxPath,
+			"--output", initramfsPath,
+		}
+		if resize2fsPath != "" {
+			mkinitfsArgs = append(mkinitfsArgs, "--resize2fs", resize2fsPath)
+		}
+		if splashPath != "" {
+			mkinitfsArgs = append(mkinitfsArgs, "--splash", splashPath)
+		}
+		if refresherPath != "" {
+			mkinitfsArgs = append(mkinitfsArgs, "--refresher", refresherPath)
+		}
+		if utilLinuxBuildDir != "" {
+			mkinitfsArgs = append(mkinitfsArgs, "--util-linux", utilLinuxBuildDir)
+		}
+		if lvm2BuildDir != "" {
+			mkinitfsArgs = append(mkinitfsArgs, "--lvm2", lvm2BuildDir)
+		}
+		mkinitfsCmd := exec.Command(mkinitfsBin, mkinitfsArgs...)
+		mkinitfsCmd.Stdout = runner.LogWriter()
+		mkinitfsCmd.Stderr = runner.LogWriter()
+		if err := runner.RunCmd(mkinitfsCmd); err != nil {
+			fmt.Printf("Error generating initramfs via %s: %v\n", mkinitfsBin, err)
 			fatal()
 		}
 		fmt.Printf("Initramfs generated at: %s\n", initramfsPath)
@@ -1497,6 +1514,34 @@ func findCachedPackageArtifact(b *builder.Builder, pkg *manifest.Package, target
 		return ""
 	}
 	return artifactPath
+}
+
+// locatePeacockMkinitfs returns the absolute path to the peacock-mkinitfs
+// binary, preferring (in order):
+//
+//  1. <portBuildDir>/usr/bin/peacock-mkinitfs    — fresh build from the port.
+//  2. <portBuildDir>/stage/usr/bin/peacock-mkinitfs — staged install layout.
+//  3. <portBuildDir>/peacock-mkinitfs            — top-level Makefile output.
+//  4. exec.LookPath("peacock-mkinitfs")          — system install / dev shell.
+//
+// Returns "" when nothing resolves; the caller should treat that as fatal.
+func locatePeacockMkinitfs(portBuildDir string) string {
+	if portBuildDir != "" {
+		candidates := []string{
+			filepath.Join(portBuildDir, "usr", "bin", "peacock-mkinitfs"),
+			filepath.Join(portBuildDir, "stage", "usr", "bin", "peacock-mkinitfs"),
+			filepath.Join(portBuildDir, "peacock-mkinitfs"),
+		}
+		for _, c := range candidates {
+			if fileExistsFile(c) {
+				return c
+			}
+		}
+	}
+	if p, err := exec.LookPath("peacock-mkinitfs"); err == nil {
+		return p
+	}
+	return ""
 }
 
 // buildPortForInitramfs loads a port package from peacock-ports/base/<name>
