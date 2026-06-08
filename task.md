@@ -47,7 +47,7 @@
 
 ## Assets
 
-- [ ] Commit `assets/conspiracy.png` so the initramfs can include it without relying
+- [x] Commit `assets/conspiracy.png` so the initramfs can include it without relying
   on a path that varies by checkout. Lookup order is already
   `conspiracy.png`, `assets/conspiracy.png`, `prp/assets/conspiracy.png` in
   `internal/mkinitfs/mkinitfs.go:1554-1557`; the canonical location going forward
