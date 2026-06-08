@@ -290,8 +290,54 @@ func BootstrapWithConfig(root string, cfg Config, packages []string) error {
 		}
 	}
 
-	// Setup + Install land in the next commit. For now the bootstrap
-	// stops after second-stage and leaves /etc/apt/sources.list untouched.
-	_ = packages
+	if err := Setup(root, cfg); err != nil {
+		return fmt.Errorf("apt.Bootstrap: setup: %w", err)
+	}
+
+	if len(packages) > 0 {
+		if err := Install(root, packages); err != nil {
+			return fmt.Errorf("apt.Bootstrap: install initial packages: %w", err)
+		}
+	}
+	return nil
+}
+
+// Setup writes /etc/apt/sources.list inside root and runs apt-get update.
+// Mirrors pacman.Setup's role.
+func Setup(root string, cfg Config) error {
+	if err := GenerateConfig(root, cfg); err != nil {
+		return fmt.Errorf("apt.Setup: write sources.list: %w", err)
+	}
+	if err := runSudo(
+		[]string{"DEBIAN_FRONTEND=noninteractive"},
+		"chroot", root, "apt-get", "update",
+	); err != nil {
+		return fmt.Errorf("apt.Setup: apt-get update: %w", err)
+	}
+	return nil
+}
+
+// Install runs `apt-get install -y --no-install-recommends <packages>`
+// inside root. Alias-table resolution lands in a follow-up commit; for
+// now packages are passed straight through.
+func Install(root string, packages []string) error {
+	if len(packages) == 0 {
+		return nil
+	}
+	args := []string{
+		"chroot", root,
+		"apt-get", "install",
+		"-y", "--no-install-recommends",
+	}
+	args = append(args, packages...)
+	if err := runSudo([]string{"DEBIAN_FRONTEND=noninteractive"}, args...); err != nil {
+		// Mirror pacman.Install's single-retry policy after a fresh
+		// metadata refresh — flaky mirrors are the same problem here.
+		fmt.Fprintf(runner.LogWriter(), "apt install failed, refreshing metadata and retrying once...\n")
+		_ = runSudo([]string{"DEBIAN_FRONTEND=noninteractive"}, "chroot", root, "apt-get", "update")
+		if err2 := runSudo([]string{"DEBIAN_FRONTEND=noninteractive"}, args...); err2 != nil {
+			return fmt.Errorf("apt.Install: %w", err2)
+		}
+	}
 	return nil
 }
