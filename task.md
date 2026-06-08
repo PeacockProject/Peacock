@@ -61,32 +61,34 @@
 
 ## Flavor bootstrap
 
-- [/] Bootstrap alpine flavor: real apk path.
-  `internal/apk/apk.go` implements `Bootstrap` / `Setup` / `Install`
-  for real: `apk add --root <chroot> --initdb --arch <apk-arch>
-  --no-cache --update-cache --repository <mirror>/<version>/main
-  alpine-base` fills the chroot, `/etc/apk/repositories` is generated
-  (v3.20 + main/community by default), `apk update --root <chroot>`
-  primes the cache, then `apk add --root <chroot> --no-cache <pkgs>`
-  installs the initial set. `Install` routes packages through the
-  alpine alias table at `peacock-ports/flavors/alpine/aliases.toml`
-  (loaded inline in internal/apk to avoid an import cycle with
-  internal/builder), so manifests that list Arch names like
-  `base-devel` / `python` / `ncurses` translate to `build-base` /
-  `python3` / `ncurses-dev`. Bootstrap is idempotent — presence of
-  `/etc/alpine-release` short-circuits it. Host prereqs check `apk`,
-  `apk.static`, `apk-tools-static` in that order and produce an
-  actionable error pointing at `apk add apk-tools-static` (Alpine),
-  `pacman -S apk-tools-static` (Arch AUR), or building apk-tools from
-  source on Debian. `cmd/peacock/flavor.go` builds the apk `Config`
-  from `manifest.Device.Architecture` via `ArchToApk`. The arch
-  flavor path is unchanged.
+- [/] Bootstrap debian flavor: real apt + debootstrap path.
+  `internal/apt/apt.go` now implements `Bootstrap` / `Setup` / `Install`
+  for real: `debootstrap --foreign --variant=minbase --arch=<dpkg>` fills
+  the chroot, qemu-user-static is copied in for foreign-arch second-stage,
+  `chroot <root> /debootstrap/debootstrap --second-stage` finishes the
+  fill, `/etc/apt/sources.list` is generated (bookworm/trixie/sid +
+  -updates + -security), `apt-get update` primes it, then
+  `apt-get install -y --no-install-recommends <pkgs>` runs the requested
+  initial packages. Host prereqs (`debootstrap`, `qemu-aarch64-static`
+  for foreign builds) are checked up front with an actionable error
+  pointing at `apt install debootstrap qemu-user-static` (Debian/Ubuntu)
+  or `pacman -S debootstrap qemu-user-static-binfmt` (Arch). `Install`
+  routes packages through `builder.ResolveBuildDeps(.., "debian")` so
+  manifests that still list Arch names get rewritten via
+  `peacock-ports/flavors/debian/aliases.toml` before they hit apt.
+  `cmd/peacock/flavor.go` builds the apt `Config` from
+  `manifest.Device.Architecture` via `apt.ArchToDpkg`. Bootstrap is
+  idempotent: presence of a non-empty `/var/lib/dpkg/status` short-
+  circuits the foreign+second-stage pair. The arch flavor path is
+  unchanged.
 
-  Punted: signed-package verification beyond apk's default behavior.
-  apk validates signatures against the keys shipped in alpine-keys
-  (pulled by alpine-base) and we pass `--allow-untrusted` only on the
-  initial `--initdb` step where keys aren't installed yet. A separate
-  follow-up should audit the Bootstrap-time trust window.
+  Punted to a follow-up: secure-apt key handling. We rely on debootstrap
+  to install the keyring and a vanilla `apt-get update` to validate
+  signatures — works on hosts whose clocks are sane, but a separate task
+  should pin the keyring package + verify `/etc/apt/trusted.gpg.d/`
+  contents end-to-end.
+
+  Alpine track is being done in parallel and will land separately.
 
 ## Assets
 
