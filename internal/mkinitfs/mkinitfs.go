@@ -31,815 +31,89 @@ type InitConfig struct {
 	// provides sbin/dmsetup and libdevmapper. When set, the initramfs builder
 	// prefers this over host paths for the dmsetup binary + its lib search.
 	Lvm2BuildDir string
+	// InitramfsToolsBuildDir points at the staged peacock-initramfs-tools
+	// port build directory. When set, the initramfs builder prefers
+	// <dir>/usr/lib/peacock/init.sh.in (and the sibling init-wrapper.go.in,
+	// subparts-mount.sh) over the in-tree assets/initramfs/ fallback copies.
+	// Empty falls through to assets/initramfs/, then to legacy prp/ paths.
+	InitramfsToolsBuildDir string
 }
 
 // Compile-time toggle for S4 camera LED debug flashes in initramfs.
 // Keep disabled by default; set to true only when explicitly debugging boot stages.
 const enableS4CameraLED = false
 
-const initScriptTemplate = `#!/bin/busybox ash
-
-# Continue on errors - many commands will fail in early boot and that's OK
-set +e
-
-# Install busybox symlinks (CRITICAL for kernel to run this script!)
-/bin/busybox --install -s
-
-# Runtime toolchain from PRP sync (fdisk/partx/dmsetup) needs shared libs early.
-export LD_LIBRARY_PATH=/lib:/usr/lib:/sbin:/usr/sbin
-
-# Ensure essential mount points exist early
-mkdir -p /proc /sys /dev /run /tmp /etc /usr /lib
-
-# Optional persistent log sink (prefer CACHE partition), best-effort.
-BOOTLOG_MNT="/run/peacock-bootlog"
-BOOTLOG_DEV=""
-BOOTLOG_FILE=""
-bootlog_try_mount_dev() {
-    local dev="$1"
-    [ -n "$dev" ] || return 1
-    [ -b "$dev" ] || return 1
-    [ -n "$BOOTLOG_FILE" ] && return 0
-    /bin/busybox mkdir -p "$BOOTLOG_MNT" 2>/dev/null || true
-    /bin/busybox mount -t ext2 -o rw "$dev" "$BOOTLOG_MNT" >/dev/null 2>&1 || \
-        /bin/busybox mount -o rw "$dev" "$BOOTLOG_MNT" >/dev/null 2>&1 || return 1
-    BOOTLOG_DEV="$dev"
-    BOOTLOG_FILE="$BOOTLOG_MNT/peacock-initramfs.log"
-    echo "=== peacock initramfs boot $(date +%s) ===" >> "$BOOTLOG_FILE" 2>/dev/null || true
-    return 0
-}
-bootlog_try_label_or_fallback() {
-    [ -n "$BOOTLOG_FILE" ] && return 0
-    local dev=""
-    local uevent=""
-    local pn=""
-    local node=""
-    if /bin/busybox --list 2>/dev/null | /bin/busybox grep -qx timeout; then
-        # Prefer a dedicated persistent log partition label first.
-        /bin/busybox timeout 1 /bin/busybox findfs "LABEL=PRP_LOG" >/tmp/findfs.bootdev 2>/dev/null || true
-        dev="$(/bin/busybox cat /tmp/findfs.bootdev 2>/dev/null || true)"
-        bootlog_try_mount_dev "$dev" && return 0
-        /bin/busybox timeout 1 /bin/busybox findfs "LABEL=PRP_ROOTFS" >/tmp/findfs.bootdev 2>/dev/null || true
-        dev="$(/bin/busybox cat /tmp/findfs.bootdev 2>/dev/null || true)"
-        bootlog_try_mount_dev "$dev" && return 0
-        /bin/busybox timeout 1 /bin/busybox findfs "LABEL=CACHE" >/tmp/findfs.bootdev 2>/dev/null || true
-        dev="$(/bin/busybox cat /tmp/findfs.bootdev 2>/dev/null || true)"
-        bootlog_try_mount_dev "$dev" && return 0
-        /bin/busybox timeout 1 /bin/busybox findfs "LABEL=BOOT" >/tmp/findfs.bootdev 2>/dev/null || true
-        dev="$(/bin/busybox cat /tmp/findfs.bootdev 2>/dev/null || true)"
-        /bin/busybox rm -f /tmp/findfs.bootdev >/dev/null 2>&1 || true
-        bootlog_try_mount_dev "$dev" && return 0
-    fi
-    # Prefer Android by-name aliases when present.
-    for dev in /dev/block/by-name/cache /dev/block/platform/*/by-name/cache; do
-        [ -e "$dev" ] || continue
-        dev="$(/bin/busybox readlink -f "$dev" 2>/dev/null || echo "$dev")"
-        bootlog_try_mount_dev "$dev" && return 0
-    done
-    # Resolve by PARTNAME when by-name symlinks are not available.
-    for uevent in /sys/class/block/mmcblk0p*/uevent; do
-        [ -f "$uevent" ] || continue
-        pn="$(/bin/busybox sed -n 's/^PARTNAME=//p' "$uevent" 2>/dev/null || true)"
-        case "$pn" in
-            cache|CACHE)
-                node="${uevent%/uevent}"
-                node="${node##*/}"
-                dev="/dev/$node"
-                bootlog_try_mount_dev "$dev" && return 0
-                ;;
-        esac
-    done
-    # Intentionally no hardcoded device-node fallbacks here.
-    # Keep this path generic: labels, by-name aliases, and PARTNAME probes only.
-    return 1
-}
-bootlog_try_from_root() {
-    [ -n "$BOOTLOG_FILE" ] && return 0
-    local root="$1"
-    local dev=""
-    case "$root" in
-        *s1) dev="${root%s1}s0" ;;
-        *p2) dev="${root%p2}p1" ;;
-    esac
-    bootlog_try_mount_dev "$dev" && return 0
-    return 1
-}
-bootlog_close() {
-    # Never block handoff on debug log sink teardown.
-    if [ -n "$BOOTLOG_FILE" ]; then
-        echo "$(date +%s) PEACOCK: closing bootlog sink" >> "$BOOTLOG_FILE" 2>/dev/null || true
-    fi
-    if [ -n "$BOOTLOG_DEV" ]; then
-        (/bin/busybox umount -l "$BOOTLOG_MNT" >/dev/null 2>&1 || true) &
-    fi
-    BOOTLOG_DEV=""
-    BOOTLOG_FILE=""
-}
-
-# Logging function - writes to multiple places for debugging
-log() {
-    local msg="$1"
-    local line="$(date +%s) PEACOCK: $msg"
-    # Write to kernel log buffer (shows in /proc/last_kmsg)
-    echo "<6>PEACOCK: $msg" > /proc/kmsg 2>/dev/null || true
-    # Keep framebuffer untouched by default (console writes repaint text over splash).
-    if [ "${PEACOCK_INIT_CONSOLE_LOG:-0}" = "1" ]; then
-        echo "PEACOCK: $msg" > /dev/console 2>&1 || echo "PEACOCK: $msg" || true
-    fi
-    # Keep RAM log always.
-    echo "$line" >> /tmp/peacock-init.log 2>/dev/null || true
-    # Mirror to BOOT log sink when available.
-    [ -n "$BOOTLOG_FILE" ] && echo "$line" >> "$BOOTLOG_FILE" 2>/dev/null || true
-}
-
-# Helper function to show splash message with debugging
-splash() {
-    local msg="$1"
-    local y="${2:-1}"
-    local text_color="${PEACOCK_SPLASH_TEXT_COLOR:-FFFF00}"
-    log "SPLASH: $msg"
-    # Try framebuffer splash
-    if [ -x /bin/peacock-splash ]; then
-        local fbdev="${PEACOCK_FBDEV:-}"
-        if [ -z "$fbdev" ]; then
-            # Prefer primary panel fb0; fallback to fb1
-            if [ -c /dev/fb0 ]; then
-                fbdev="/dev/fb0"
-            elif [ -c /dev/graphics/fb0 ]; then
-                fbdev="/dev/graphics/fb0"
-            elif [ -c /dev/fb1 ]; then
-                fbdev="/dev/fb1"
-            elif [ -c /dev/graphics/fb1 ]; then
-                fbdev="/dev/graphics/fb1"
-            fi
-        fi
-        # Keep a resolved global FBDEV so later handoff flare can reuse it.
-        if [ -z "${FBDEV:-}" ] && [ -n "$fbdev" ]; then
-            FBDEV="$fbdev"
-        fi
-        if [ -n "$fbdev" ]; then
-            log "Using framebuffer device: $fbdev"
-        fi
-        log "Attempting framebuffer splash: $msg"
-        /bin/peacock-splash "$msg" "$y" "$fbdev" 000000 noclear logo "text=$text_color" 2>&1 | while read line; do log "peacock-splash: $line"; done || log "peacock-splash failed for: $msg"
-    else
-        log "peacock-splash not found or not executable"
-    fi
-}
-
-# LED Debug: Flash camera LED to indicate boot progress
-# Usage: flash_led <count> <delay_ms>
-{{if .EnableS4CameraLED}}
-flash_led() {
-    local count="${1:-1}"
-    local delay="${2:-200}"
-    local led="/sys/devices/platform/i2c-gpio.12/i2c-12/12-0066/max77693-led/leds/leds-sec1/brightness"
-    
-    # Check if LED exists
-    if [ ! -f "$led" ]; then
-        log "LED not found at $led"
-        return
-    fi
-    
-    log "Flashing LED $count times"
-    local i=0
-    while [ $i -lt $count ]; do
-        echo 63 > "$led" 2>/dev/null || true
-        /bin/busybox usleep ${delay}000 || /bin/busybox sleep 1
-        echo 0 > "$led" 2>/dev/null || true
-        /bin/busybox usleep ${delay}000 || /bin/busybox sleep 1
-        i=$((i + 1))
-    done
-}
-{{else}}
-flash_led() { :; }
-{{end}}
-
-# Mount special filesystems (idempotent; some kernels auto-mount devtmpfs)
-/bin/busybox mountpoint -q /proc 2>/dev/null || /bin/busybox mount -t proc proc /proc
-/bin/busybox mountpoint -q /sys 2>/dev/null || /bin/busybox mount -t sysfs sysfs /sys
-/bin/busybox mountpoint -q /dev 2>/dev/null || /bin/busybox mount -t devtmpfs dev /dev
-bootlog_try_label_or_fallback || true
-
-log "=== Peacock Initramfs Starting ==="
-
-# Test framebuffer devices early
-log "Checking framebuffer devices..."
-ls -la /dev/graphics/ 2>&1 | head -5 | while read line; do log "FB DEV: $line"; done || true
-ls -la /dev/fb* 2>&1 | while read line; do log "FB: $line"; done || true
-
-# Wait for fb0 to appear (up to 10s) like pmOS
-for i in 1 2 3 4 5 6 7 8 9 10; do
-    [ -e /dev/fb0 ] && break
-    /bin/busybox sleep 1
-done
-if [ ! -e /dev/fb0 ]; then
-    log "ERROR: /dev/fb0 did not appear after waiting 10 seconds"
-fi
-
-# Try to set framebuffer mode if unset
-if [ -e /sys/class/graphics/fb0/modes ] && [ -z "$(cat /sys/class/graphics/fb0/mode 2>/dev/null)" ]; then
-    fb_mode="$(head -n 1 /sys/class/graphics/fb0/modes 2>/dev/null)"
-    if [ -n "$fb_mode" ]; then
-        log "Setting framebuffer mode: $fb_mode"
-        echo "$fb_mode" > /sys/class/graphics/fb0/mode 2>/dev/null || log "Failed to set fb0 mode"
-    fi
-fi
-
-# Ensure fb0 is unblanked
-if [ -e /sys/class/graphics/fb0/blank ]; then
-    echo 0 > /sys/class/graphics/fb0/blank 2>/dev/null || true
-fi
-
-# Start MSM framebuffer refresher to keep panel alive
-REFRESHER_PID=""
-if [ -x /bin/msm-fb-refresher ]; then
-    log "Starting msm-fb-refresher --loop"
-    /bin/msm-fb-refresher --loop >/dev/null 2>&1 &
-    REFRESHER_PID="$!"
-fi
-
-# Flash 1x = init started AND filesystems mounted
-# (Must be after sysfs mount so LED device exists)
-flash_led 1 300
-
-# Check framebuffer again after mounting dev
-log "After mounting dev, checking framebuffer..."
-ls -la /dev/graphics/ 2>&1 | head -5 | while read line; do log "FB DEV: $line"; done || true
-ls -la /dev/fb* 2>&1 | while read line; do log "FB: $line"; done || true
-
-# Test direct framebuffer write if available
-if [ -c /dev/fb0 ] || [ -c /dev/graphics/fb0 ]; then
-    FB_DEV="/dev/fb0"
-    [ -c /dev/graphics/fb0 ] && FB_DEV="/dev/graphics/fb0"
-    log "Found framebuffer device: $FB_DEV"
-    # Just test if we can open it - actual write test would require knowing the format
-    if [ -w "$FB_DEV" ]; then
-        log "Framebuffer is writable"
-    else
-        log "Framebuffer not writable or permission denied"
-    fi
-else
-    log "No framebuffer device found yet"
-fi
-
-# Log kernel command line
-log "Kernel cmdline: $(cat /proc/cmdline 2>/dev/null || echo 'not available')"
-
-# Allow override of framebuffer device via cmdline: peacock.fb=/dev/fb1
-PEACOCK_FBDEV="$(cat /proc/cmdline 2>/dev/null | /bin/busybox sed -n 's/.*peacock.fb=\\([^ ]*\\).*/\\1/p')"
-FBDEV="$PEACOCK_FBDEV"
-if [ -z "$FBDEV" ]; then
-    if [ -c /dev/fb0 ]; then
-        FBDEV="/dev/fb0"
-    elif [ -c /dev/graphics/fb0 ]; then
-        FBDEV="/dev/graphics/fb0"
-    elif [ -c /dev/fb1 ]; then
-        FBDEV="/dev/fb1"
-    elif [ -c /dev/graphics/fb1 ]; then
-        FBDEV="/dev/graphics/fb1"
-    fi
-fi
-
-splash "Peacock Initramfs: Booting..." 1
-log "Holding splash for 3 seconds for visibility..."
-/bin/busybox sleep 3
-
-# Load modules (simplified)
-# for mod in /lib/modules/*/kernel/drivers/*; do insmod $mod; done
-
-# Mount Root (detect by label)
-splash "Mounting root by label {{.RootLabel}}..." 2
-mkdir -p /new_root
-ROOT_DEV=""
-find_root_by_label() {
-    # On some downstream kernels, plain findfs can block on bad block nodes.
-    # Bound runtime and continue with dynamic probing if lookup stalls.
-    if /bin/busybox --list 2>/dev/null | /bin/busybox grep -qx timeout; then
-        /bin/busybox timeout 2 /bin/busybox findfs "LABEL={{.RootLabel}}" >/tmp/findfs.rootdev 2>/dev/null || true
-        ROOT_DEV="$(/bin/busybox cat /tmp/findfs.rootdev 2>/dev/null || true)"
-        /bin/busybox rm -f /tmp/findfs.rootdev >/dev/null 2>&1 || true
-    else
-        # No timeout applet available: skip unbounded findfs to avoid boot hangs.
-        ROOT_DEV=""
-    fi
-    [ -n "$ROOT_DEV" ] && [ ! -b "$ROOT_DEV" ] && ROOT_DEV=""
-}
-
-# Try direct label lookup first, but never block boot if findfs stalls.
-splash "Root detect: label lookup..." 3
-find_root_by_label
-
-# Helpers for dynamic device discovery (no hardcoded partition numbers).
-CONTAINERS=""
-PROBE_DEVS=""
-LOOP_DEVICES=""
-append_unique() {
-    local var="$1"
-    local val="$2"
-    [ -n "$val" ] || return 0
-    [ -b "$val" ] || return 0
-    eval "case \" \${$var} \" in *\" $val \"*) : ;; *) $var=\"\${$var} $val\" ;; esac"
-}
-resolve_block_dev() {
-    local dev="$1"
-    local resolved="$dev"
-    local t=""
-    t="$(/bin/busybox readlink -f "$dev" 2>/dev/null || true)"
-    if [ -n "$t" ] && [ -b "$t" ]; then
-        resolved="$t"
-    fi
-    echo "$resolved"
-}
-add_container_candidates() {
-    local dev=""
-    local auto_userdata=""
-    # Prefer named userdata aliases when available.
-    for dev in /dev/block/by-name/userdata /dev/block/platform/*/by-name/userdata; do
-        [ -e "$dev" ] || continue
-        dev="$(resolve_block_dev "$dev")"
-        append_unique CONTAINERS "$dev"
-    done
-    # Fallback heuristic: choose largest mmc partition from /proc/partitions.
-    # This avoids probing every node with dd in early boot, which may stall on some kernels.
-    if [ -z "$CONTAINERS" ] && [ -r /proc/partitions ]; then
-        auto_userdata="$(
-            /bin/busybox awk '
-                $4 ~ /^mmcblk[0-9]+p[0-9]+$/ {
-                    if ($3 > max) { max=$3; node=$4 }
-                }
-                END {
-                    if (node != "") print "/dev/" node
-                }
-            ' /proc/partitions 2>/dev/null || true
-        )"
-        append_unique CONTAINERS "$auto_userdata"
-    fi
-}
-add_probe_candidates_from_container() {
-    local base_dev="$1"
-    local node=""
-    local cand=""
-    base_dev="$(resolve_block_dev "$base_dev")"
-    node="${base_dev##*/}"
-    for cand in \
-        "/dev/${node}p1" "/dev/${node}p2" "/dev/${node}s0" "/dev/${node}s1" \
-        "/dev/block/${node}p1" "/dev/block/${node}p2" "/dev/block/${node}s0" "/dev/block/${node}s1"; do
-        append_unique PROBE_DEVS "$cand"
-    done
-}
-has_busybox_applet() {
-    # Check whether the applet exists in this busybox build.
-    /bin/busybox --list 2>/dev/null | /bin/busybox grep -qx "$1"
-}
-attach_loop_partitions() {
-    local src="$1"
-    local loopdev=""
-    local node=""
-    local cand=""
-    local ptries=0
-    [ -b "$src" ] || return 1
-    has_busybox_applet losetup || return 1
-    loopdev="$(/bin/busybox losetup -f 2>/dev/null || true)"
-    [ -n "$loopdev" ] || return 1
-    [ -b "$loopdev" ] || return 1
-    /bin/busybox losetup -d "$loopdev" >/dev/null 2>&1 || true
-    /bin/busybox losetup -P "$loopdev" "$src" >/dev/null 2>&1 || return 1
-    LOOP_DEVICES="$LOOP_DEVICES $loopdev"
-    node="${loopdev##*/}"
-    if has_busybox_applet partprobe; then
-        /bin/busybox partprobe "$loopdev" >/dev/null 2>&1 || true
-    fi
-    if has_busybox_applet blockdev; then
-        /bin/busybox blockdev --rereadpt "$loopdev" >/dev/null 2>&1 || true
-    fi
-    while [ "$ptries" -lt 4 ]; do
-        /bin/busybox mdev -s >/dev/null 2>&1 || true
-        cand="$(ensure_block_node "${node}p1" 2>/dev/null || true)"
-        append_unique PROBE_DEVS "$cand"
-        append_unique PROBE_DEVS "/dev/block/${node}p1"
-        cand="$(ensure_block_node "${node}p2" 2>/dev/null || true)"
-        append_unique PROBE_DEVS "$cand"
-        append_unique PROBE_DEVS "/dev/block/${node}p2"
-        ptries=$((ptries + 1))
-        /bin/busybox sleep 1
-    done
-    log "loop partition mapping active: $loopdev -> $src"
-    return 0
-}
-
-ensure_block_node() {
-    local node_name="$1"
-    local devspec=""
-    local maj=""
-    local min=""
-    [ -n "$node_name" ] || return 1
-    [ -b "/dev/$node_name" ] && {
-        echo "/dev/$node_name"
-        return 0
-    }
-    devspec="$(/bin/busybox cat "/sys/class/block/$node_name/dev" 2>/dev/null || true)"
-    case "$devspec" in
-        *:*)
-            maj="${devspec%:*}"
-            min="${devspec#*:}"
-            /bin/busybox mknod "/dev/$node_name" b "$maj" "$min" 2>/dev/null || true
-            ;;
-    esac
-    [ -b "/dev/$node_name" ] && {
-        echo "/dev/$node_name"
-        return 0
-    }
-    return 1
-}
-
-refresh_nested_candidates() {
-    local userdata_dev="$1"
-    local tries=0
-    local node=""
-    local cand=""
-    local base_node=""
-    base_node="${userdata_dev##*/}"
-    while [ "$tries" -lt 4 ]; do
-        /bin/busybox mdev -s >/dev/null 2>&1 || true
-        for node in "${base_node}p1" "${base_node}p2" "${base_node}s0" "${base_node}s1"; do
-            cand="$(ensure_block_node "$node" 2>/dev/null || true)"
-            append_unique PROBE_DEVS "$cand"
-        done
-        tries=$((tries + 1))
-        /bin/busybox sleep 1
-    done
-}
-
-# Source the canonical sub-partition mount shell (installed in the cpio at
-# /usr/lib/peacock/subparts-mount.sh). Provides mount_subparts and helpers.
-if [ -r /usr/lib/peacock/subparts-mount.sh ]; then
-    . /usr/lib/peacock/subparts-mount.sh
-fi
-
-# If label lookup fails, dynamically discover userdata-like containers and ask kernel to expose subparts.
-if [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ]; then
-    splash "Root detect: container scan..." 3
-    add_container_candidates
-    if [ -n "$CONTAINERS" ]; then
-        log "findfs failed, probing GPT container devices:${CONTAINERS}"
-    else
-        log "findfs failed, no GPT container candidates discovered yet"
-    fi
-    for dev in $CONTAINERS; do
-        if has_busybox_applet partprobe; then
-            /bin/busybox partprobe "$dev" >/dev/null 2>&1 || true
-        fi
-        if has_busybox_applet blockdev; then
-            /bin/busybox blockdev --rereadpt "$dev" >/dev/null 2>&1 || true
-        fi
-        add_probe_candidates_from_container "$dev"
-        refresh_nested_candidates "$dev"
-        # Keep container scan non-invasive. Deep loop probing is deferred to subparts.
-    done
-    /bin/busybox mdev -s >/dev/null 2>&1 || true
-fi
-
-# Retry label lookup after dynamic rescans.
-if [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ]; then
-    splash "Root detect: label retry..." 3
-    for i in 1 2 3 4 5 6; do
-        find_root_by_label
-        [ -n "$ROOT_DEV" ] && [ -b "$ROOT_DEV" ] && break
-        /bin/busybox sleep 1
-    done
-fi
-
-
-
-# If still unresolved, perform userdata subpartition setup via the sourced helper.
-if [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ]; then
-    splash "Root detect: subparts..." 3
-    log "Entering subparts fallback"
-    if command -v setup_subparts_root_dev >/dev/null 2>&1 && setup_subparts_root_dev ""; then
-        log "subparts: using root candidate $ROOT_DEV"
-    else
-        log "subparts: fallback did not find a root candidate"
-    fi
-fi
-
-# Deep ext4 probe intentionally disabled to avoid device-specific I/O hangs.
-# If no candidate was found above, we fail fast to shell below for interactive debugging.
-if [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ]; then
-    splash "Root detect: no candidate" 3
-    log "No root candidate selected; skipping deep ext4 probe to avoid hangs"
-fi
-
-# Flash 3x = root device search complete
-flash_led 3 200
-
-if [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ]; then
-    log "Error: Could not find root device with label {{.RootLabel}}"
-    log "Available block devices:"
-    /bin/busybox ls -la /dev/block/ 2>/dev/null | while read line; do log "BLOCK: $line"; done || /bin/busybox ls -la /dev/ | /bin/busybox grep -E "mmcblk|sd" | while read line; do log "DEV: $line"; done || true
-    log "Dropping to shell..."
-    exec /bin/busybox sh
-fi
-
-splash "Found root device: $ROOT_DEV" 3
-bootlog_try_from_root "$ROOT_DEV" || true
-
-# Resize root filesystem to fill partition (if device is larger than image)
-# This is important when flashing to larger SD cards or eMMC
-# resize2fs can resize unmounted filesystems, so we do it before mounting
-splash "Resizing root filesystem..." 4
-if [ -f /new_root/.peacock_resized ]; then
-    log "Root filesystem already resized, skipping"
-else
-if [ -x /sbin/resize2fs ]; then
-    /sbin/resize2fs "$ROOT_DEV" 2>&1 || echo "Warning: resize2fs failed (may already be correct size), continuing..."
-elif command -v resize2fs >/dev/null 2>&1; then
-    resize2fs "$ROOT_DEV" 2>&1 || echo "Warning: resize2fs failed (may already be correct size), continuing..."
-elif /bin/busybox resize2fs "$ROOT_DEV" 2>/dev/null; then
-    echo "Resized using busybox resize2fs"
-else
-    echo "Warning: resize2fs not available, filesystem may not fill partition"
-fi
-    touch /new_root/.peacock_resized 2>/dev/null || true
-fi
-
-splash "Mounting root filesystem..." 5
-/bin/busybox mount -t ext4 "$ROOT_DEV" /new_root || \
-    /bin/busybox mount -t ext4 -o noload "$ROOT_DEV" /new_root || \
-    /bin/busybox mount -t ext2 "$ROOT_DEV" /new_root || \
-    /bin/busybox mount "$ROOT_DEV" /new_root
-mount_rc=$?
-
-# Flash 4x = root filesystem mounted successfully
-if [ $mount_rc -eq 0 ]; then
-    flash_led 4 200
-fi
-if [ $mount_rc -ne 0 ]; then
-    log "Error: Failed to mount $ROOT_DEV"
-    splash "Error: Failed to mount $ROOT_DEV" 6
-    # Try to copy log to rootfs before dropping to shell
-    if [ -d /new_root ]; then
-        cp /tmp/peacock-init.log /new_root/tmp/peacock-init.log 2>/dev/null || true
-    fi
-    exec /bin/busybox sh
-fi
-
-# Skip log copy before switch_root; some downstream kernels/filesystems can stall here.
-# We only keep in-RAM /tmp/peacock-init.log during early boot.
-log "Skipping pre-switch log copy"
-
-# Handover to real init
-log "Switching root to {{.InitSystem}}..."
-splash "Switching root to {{.InitSystem}}..." 7
-if [ -x /bin/peacock-splash ] && [ -n "$FBDEV" ]; then
-	/bin/peacock-splash "Switching root to {{.InitSystem}}..." 7 "$FBDEV" 000000 noclear logo textmode "text=${PEACOCK_SPLASH_TEXT_COLOR:-FFFF00}" 2>&1 | while read line; do log "peacock-splash: $line"; done || true
-fi
-/bin/busybox mkdir -p /new_root/var/log 2>/dev/null || true
-echo "attempt $(date +%s) init={{.InitSystem}}" >> /new_root/var/log/peacock-switch-root.status 2>/dev/null || true
-
-handoff_flare() {
-    [ -x /bin/peacock-splash ] || { log "handoff flare: splash binary missing"; return 0; }
-    if [ -z "$FBDEV" ]; then
-        if [ -c /dev/fb0 ]; then
-            FBDEV="/dev/fb0"
-        elif [ -c /dev/graphics/fb0 ]; then
-            FBDEV="/dev/graphics/fb0"
-        elif [ -c /dev/fb1 ]; then
-            FBDEV="/dev/fb1"
-        elif [ -c /dev/graphics/fb1 ]; then
-            FBDEV="/dev/graphics/fb1"
-        fi
-    fi
-    [ -n "$FBDEV" ] || { log "handoff flare: FBDEV missing"; return 0; }
-    local img=""
-    for cand in /etc/peacock/conspiracy.png /conspiracy.png; do
-        [ -f "$cand" ] || continue
-        img="$cand"
-        break
-    done
-    [ -n "$img" ] || { log "handoff flare: image missing"; return 0; }
-    log "handoff flare: glitch+image ($img)"
-    if /bin/busybox --list 2>/dev/null | /bin/busybox grep -qx timeout; then
-        /bin/busybox timeout 1 /bin/peacock-splash " " 0 "$FBDEV" 000000 noclear glitch "image=$img" 2>&1 | while read line; do log "peacock-splash: $line"; done || true
-    else
-        /bin/peacock-splash " " 0 "$FBDEV" 000000 noclear glitch "image=$img" 2>&1 | while read line; do log "peacock-splash: $line"; done || true
-    fi
-    /bin/busybox usleep 60000 2>/dev/null || true
-    # Avoid leaving the flare frame stuck if userspace display startup is delayed.
-    /bin/peacock-splash " " 0 "$FBDEV" 000000 2>&1 | while read line; do log "peacock-splash: $line"; done || true
-}
-
-handoff_flare
-
-# Flash 5x = about to switch_root
-flash_led 5 200
-
-stop_fb_refresher() {
-    # switch_root can fail on some stacks if a long-running process keeps the initramfs root busy.
-    # However, stopping the refresher too early can leave some panels black (warm reset),
-    # so we only stop it as a fallback after a failed handoff.
-    if [ -n "${REFRESHER_PID:-}" ]; then
-        log "Stopping msm-fb-refresher (pid=$REFRESHER_PID)"
-        kill "$REFRESHER_PID" 2>/dev/null || true
-        /bin/busybox usleep 200000 2>/dev/null || true
-        REFRESHER_PID=""
-    fi
-}
-echo "preclose $(date +%s)" >> /new_root/var/log/peacock-switch-root.status 2>/dev/null || true
-bootlog_close
-echo "postclose $(date +%s)" >> /new_root/var/log/peacock-switch-root.status 2>/dev/null || true
-
-if [ "{{.InitSystem}}" = "systemd" ]; then
-    /bin/busybox switch_root /new_root /usr/lib/systemd/systemd 2>/new_root/var/log/peacock-switch-root.err
-    rc=$?
-    stop_fb_refresher
-    /bin/busybox switch_root /new_root /usr/lib/systemd/systemd 2>>/new_root/var/log/peacock-switch-root.err || rc=$?
-    if [ -s /new_root/var/log/peacock-switch-root.err ]; then
-        /bin/busybox cat /new_root/var/log/peacock-switch-root.err | while read line; do log "switch_root stderr: $line"; done
-    fi
-    log "switch_root to systemd failed with rc=$rc"
-    echo "fail $(date +%s) systemd rc=$rc" >> /new_root/var/log/peacock-switch-root.status 2>/dev/null || true
-    splash "switch_root failed (systemd)" 8
-    flash_led 8 120
-    exec /bin/busybox sh
-elif [ "{{.InitSystem}}" = "openrc" ]; then
-    # Ensure OpenRC has an inittab; some rootfs builds may miss it.
-    if [ ! -f /new_root/etc/inittab ]; then
-        log "Creating fallback /etc/inittab for OpenRC"
-        /bin/busybox mkdir -p /new_root/etc 2>/dev/null || true
-        cat > /new_root/etc/inittab <<'EOF'
-::sysinit:/sbin/openrc sysinit
-::wait:/sbin/openrc boot
-::wait:/sbin/openrc default
-::ctrlaltdel:/sbin/openrc reboot
-::shutdown:/sbin/openrc shutdown
-tty1::respawn:/sbin/agetty -L 115200 tty1 vt100
-EOF
-    fi
-    # /dev is already provided by initramfs handoff. On kernels with
-    # CONFIG_DEVTMPFS_MOUNT, remounting in OpenRC can emit noisy EBUSY and
-    # occasionally destabilize early boot on some devices.
-    /bin/busybox mkdir -p /new_root/etc/conf.d 2>/dev/null || true
-    if ! /bin/busybox grep -q '^skip_mount_dev=' /new_root/etc/conf.d/devfs 2>/dev/null; then
-        echo 'skip_mount_dev=yes' >> /new_root/etc/conf.d/devfs
-    fi
-
-    log "handoff via switch_root to openrc (/sbin/init)"
-    log "handoff preflight: pid=$$ ppid=$PPID"
-    if [ "$$" -ne 1 ]; then
-        log "handoff preflight: warning pid is not 1; switch_root may be rejected"
-    fi
-    if /bin/busybox mountpoint -q /new_root 2>/dev/null; then
-        log "handoff preflight: /new_root is a mountpoint"
-    else
-        log "handoff preflight: /new_root is NOT a mountpoint"
-    fi
-    /bin/busybox awk '$2=="/new_root"{print "handoff preflight: mount "$0}' /proc/mounts 2>/dev/null | while read line; do log "$line"; done
-    preflight_mountpoint="no"
-    if /bin/busybox mountpoint -q /new_root 2>/dev/null; then
-        preflight_mountpoint="yes"
-    fi
-    preflight_mount_line="$(/bin/busybox awk '$2=="/new_root"{print $0; exit}' /proc/mounts 2>/dev/null || true)"
-    preflight_init="no"
-    [ -x /new_root/sbin/init ] && preflight_init="yes"
-    preflight_console="no"
-    [ -c /new_root/dev/console ] && preflight_console="yes"
-    echo "preflight $(date +%s) pid=$$ ppid=$PPID mnt=$preflight_mountpoint init=$preflight_init console=$preflight_console line=${preflight_mount_line:-none}" >> /new_root/var/log/peacock-switch-root.status 2>/dev/null || true
-    echo "handoff $(date +%s) switch_root-openrc-init" >> /new_root/var/log/peacock-switch-root.status 2>/dev/null || true
-    /bin/busybox mkdir -p /new_root/dev 2>/dev/null || true
-    # Ensure console node exists in new root even if devtmpfs move/reopen is flaky.
-    [ -c /new_root/dev/console ] || /bin/busybox mknod -m 600 /new_root/dev/console c 5 1 2>/dev/null || true
-    # Keep stderr on tmpfs to avoid failures opening a file on new root before handoff.
-    : > /tmp/peacock-switch-root.err
-    stop_fb_refresher
-    # Keep fallback path alive: if switch_root fails, continue to chroot handoff.
-    rc=0
-    /bin/busybox switch_root -c /dev/console /new_root /sbin/init 2>>/tmp/peacock-switch-root.err || rc=$?
-    if [ -s /tmp/peacock-switch-root.err ]; then
-        /bin/busybox cat /tmp/peacock-switch-root.err | while read line; do log "switch_root stderr: $line"; done
-        /bin/busybox cp /tmp/peacock-switch-root.err /new_root/var/log/peacock-switch-root.err 2>/dev/null || true
-    fi
-    log "switch_root to openrc failed with rc=$rc"
-    echo "fail $(date +%s) openrc rc=$rc" >> /new_root/var/log/peacock-switch-root.status 2>/dev/null || true
-    # Fallback for kernels/userspace combos where switch_root fails with no diagnostics:
-    # move critical pseudo-fs and exec init from chroot. This keeps PID1 and usually
-    # allows OpenRC to continue booting even when switch_root is rejected.
-    log "trying fallback handoff via chroot (/sbin/init)"
-    echo "fallback $(date +%s) chroot-openrc-init" >> /new_root/var/log/peacock-switch-root.status 2>/dev/null || true
-    /bin/busybox mkdir -p /new_root/proc /new_root/sys /new_root/dev /new_root/run 2>/dev/null || true
-    fallback_move_mount() {
-        local src="$1"
-        local dst="$2"
-        if /bin/busybox mountpoint -q "$src" 2>/dev/null; then
-            if /bin/busybox mount -o move "$src" "$dst" 2>>/tmp/peacock-switch-root.err; then
-                log "handoff fallback: moved $src -> $dst"
-            else
-                log "handoff fallback: move failed $src -> $dst"
-            fi
-        else
-            log "handoff fallback: source not a mountpoint: $src"
-        fi
-    }
-    fallback_move_mount /proc /new_root/proc
-    fallback_move_mount /sys /new_root/sys
-    fallback_move_mount /dev /new_root/dev
-    fallback_move_mount /run /new_root/run
-    [ -c /new_root/dev/console ] || /bin/busybox mknod -m 600 /new_root/dev/console c 5 1 2>/dev/null || true
-    if [ -s /tmp/peacock-switch-root.err ]; then
-        /bin/busybox cat /tmp/peacock-switch-root.err | while read line; do log "handoff fallback stderr: $line"; done
-        /bin/busybox cp /tmp/peacock-switch-root.err /new_root/var/log/peacock-switch-root.err 2>/dev/null || true
-    fi
-    echo "handoff $(date +%s) chroot-openrc-init" >> /new_root/var/log/peacock-switch-root.status 2>/dev/null || true
-    cd /new_root || true
-    exec /bin/busybox chroot /new_root /sbin/init
-    rc=$?
-    log "chroot handoff to openrc failed with rc=$rc"
-    echo "fail $(date +%s) chroot-openrc rc=$rc" >> /new_root/var/log/peacock-switch-root.status 2>/dev/null || true
-    splash "handoff failed (openrc)" 8
-    flash_led 8 120
-    exec /bin/busybox sh
-else
-    # Auto-detect fallback
-    if [ -x /new_root/usr/lib/systemd/systemd ]; then
-        /bin/busybox switch_root /new_root /usr/lib/systemd/systemd 2>/tmp/switch_root.err
-        rc=$?
-        if [ -s /tmp/switch_root.err ]; then
-            /bin/busybox cat /tmp/switch_root.err | while read line; do log "switch_root stderr: $line"; done
-        fi
-        log "switch_root autodetect systemd failed with rc=$rc"
-        splash "switch_root failed (autodetect systemd)" 8
-        flash_led 8 120
-        exec /bin/busybox sh
-    elif [ -x /new_root/sbin/init ]; then
-        /bin/busybox switch_root /new_root /sbin/init 2>/tmp/switch_root.err
-        rc=$?
-        if [ -s /tmp/switch_root.err ]; then
-            /bin/busybox cat /tmp/switch_root.err | while read line; do log "switch_root stderr: $line"; done
-        fi
-        log "switch_root autodetect openrc failed with rc=$rc"
-        splash "switch_root failed (autodetect openrc)" 8
-        flash_led 8 120
-        exec /bin/busybox sh
-    else
-        echo "No init found! Dropping to shell."
-        exec /bin/busybox sh
-    fi
-fi
-`
-
-const initWrapperSource = `package main
-
-import (
-	"os"
-	"syscall"
-	"unsafe"
-)
-
-func klog(msg string) {
-	if msg == "" {
-		return
+// initramfsToolsAssetCandidates returns the ordered list of candidate file
+// paths for an asset shipped by the peacock-initramfs-tools port. The lookup
+// order is:
+//
+//  1. The port's staged build dir (when InitramfsToolsBuildDir is set),
+//     under usr/lib/peacock/<asset> — this is the canonical location that
+//     pacman installs to.
+//  2. The in-tree assets/initramfs/<asset> — the fallback for fresh
+//     checkouts that haven't built the port yet.
+//  3. Legacy prp/initramfs/rootfs/usr/lib/prp/<asset> — kept so out-of-tree
+//     builds that still hold a PRP checkout next to the Peacock source
+//     keep working.
+//
+// Callers use findFirstExisting on the result.
+func initramfsToolsAssetCandidates(cfg InitConfig, asset string) []string {
+	var out []string
+	if cfg.InitramfsToolsBuildDir != "" {
+		out = append(out,
+			filepath.Join(cfg.InitramfsToolsBuildDir, "usr", "lib", "peacock", asset),
+			filepath.Join(cfg.InitramfsToolsBuildDir, "stage", "usr", "lib", "peacock", asset),
+		)
 	}
-	if f, err := os.OpenFile("/dev/kmsg", os.O_WRONLY, 0); err == nil {
-		_, _ = f.Write([]byte(msg))
-		_ = f.Close()
-		return
-	}
-	b := []byte(msg)
-	// SYSLOG_ACTION_WRITE = 2
-	_, _, _ = syscall.Syscall(syscall.SYS_SYSLOG, 2, uintptr(unsafe.Pointer(&b[0])), uintptr(len(b)))
+	out = append(out,
+		filepath.Join("assets", "initramfs", asset),
+		filepath.Join("prp", "initramfs", "rootfs", "usr", "lib", "prp", asset),
+	)
+	return out
 }
 
-func main() {
-	_ = os.MkdirAll("/dev", 0755)
-	_ = syscall.Mount("devtmpfs", "/dev", "devtmpfs", 0, "")
-	klog("PEACOCK: init wrapper start\n")
-	env := os.Environ()
-	tryExec := func(argv []string, label string) {
-		klog("PEACOCK: exec " + label + "\n")
-		_ = syscall.Exec(argv[0], argv, env)
+// loadInitTemplate reads the init script template from the first available
+// candidate (port build dir, in-tree assets, legacy prp tree).
+func loadInitTemplate(cfg InitConfig) (string, string, error) {
+	src := findFirstExisting(initramfsToolsAssetCandidates(cfg, "init.sh.in"))
+	if src == "" {
+		return "", "", fmt.Errorf("init.sh.in not found in port build dir, assets/initramfs/, or legacy prp tree")
 	}
-
-	// Prefer explicit busybox ash, then fall back to shell.
-	tryExec([]string{"/bin/busybox", "ash", "/init.sh"}, "/bin/busybox ash /init.sh")
-	tryExec([]string{"/bin/ash", "/init.sh"}, "/bin/ash /init.sh")
-	tryExec([]string{"/bin/sh", "/init.sh"}, "/bin/sh /init.sh")
-	tryExec([]string{"/bin/busybox", "sh"}, "/bin/busybox sh")
-
-	klog("PEACOCK: init wrapper exec failed\n")
-	os.Exit(1)
+	body, err := os.ReadFile(src)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to read init template %s: %w", src, err)
+	}
+	return string(body), src, nil
 }
-`
+
+// loadInitWrapperSource reads the /init wrapper Go source from the first
+// available candidate.
+func loadInitWrapperSource(cfg InitConfig) (string, string, error) {
+	src := findFirstExisting(initramfsToolsAssetCandidates(cfg, "init-wrapper.go.in"))
+	if src == "" {
+		return "", "", fmt.Errorf("init-wrapper.go.in not found in port build dir, assets/initramfs/, or legacy prp tree")
+	}
+	body, err := os.ReadFile(src)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to read init wrapper source %s: %w", src, err)
+	}
+	return string(body), src, nil
+}
 
 // GenerateInitScript writes the init script to the target path
 func GenerateInitScript(path string, cfg InitConfig) error {
-	tmpl, err := template.New("init").Parse(initScriptTemplate)
+	body, src, err := loadInitTemplate(cfg)
 	if err != nil {
-		return fmt.Errorf("failed to parse init template: %w", err)
+		return err
+	}
+	tmpl, err := template.New("init").Parse(body)
+	if err != nil {
+		return fmt.Errorf("failed to parse init template %s: %w", src, err)
 	}
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, cfg); err != nil {
-		return fmt.Errorf("failed to execute init template: %w", err)
+		return fmt.Errorf("failed to execute init template %s: %w", src, err)
 	}
 
 	if err := os.WriteFile(path, buf.Bytes(), 0755); err != nil {
@@ -849,7 +123,8 @@ func GenerateInitScript(path string, cfg InitConfig) error {
 	return nil
 }
 
-func buildInitWrapper(outPath string, arch string) error {
+func buildInitWrapper(outPath string, cfg InitConfig) error {
+	arch := cfg.Architecture
 	goarch := ""
 	goarm := ""
 	switch arch {
@@ -867,6 +142,11 @@ func buildInitWrapper(outPath string, arch string) error {
 		return fmt.Errorf("unsupported architecture for init wrapper: %s", arch)
 	}
 
+	wrapperSrc, _, err := loadInitWrapperSource(cfg)
+	if err != nil {
+		return err
+	}
+
 	tmpDir, err := os.MkdirTemp("", "peacock-init-wrapper-*")
 	if err != nil {
 		return err
@@ -874,7 +154,7 @@ func buildInitWrapper(outPath string, arch string) error {
 	defer os.RemoveAll(tmpDir)
 
 	srcPath := filepath.Join(tmpDir, "main.go")
-	if err := os.WriteFile(srcPath, []byte(initWrapperSource), 0644); err != nil {
+	if err := os.WriteFile(srcPath, []byte(wrapperSrc), 0644); err != nil {
 		return fmt.Errorf("failed to write init wrapper source: %w", err)
 	}
 
@@ -1269,12 +549,11 @@ func Build(output string, cfg InitConfig) error {
 	// cpio at /usr/lib/peacock/subparts-mount.sh. The embedded init script
 	// sources this file and calls into mount_subparts /
 	// setup_subparts_root_dev — there is no longer an inline fallback.
-	subpartsSrc := findFirstExisting([]string{
-		filepath.Join("assets", "initramfs", "subparts-mount.sh"),
-		// Legacy compat: vendored PRP tree (kept for out-of-tree builds that
-		// still hold a PRP checkout next to the Peacock source).
-		filepath.Join("prp", "initramfs", "rootfs", "usr", "lib", "prp", "subparts-mount.sh"),
-	})
+	//
+	// Lookup order mirrors initramfsToolsAssetCandidates: port build dir
+	// first (canonical install path once peacock-initramfs-tools is built),
+	// then in-tree assets/initramfs/, then legacy prp/ tree.
+	subpartsSrc := findFirstExisting(initramfsToolsAssetCandidates(cfg, "subparts-mount.sh"))
 	if subpartsSrc != "" {
 		subpartsDir := filepath.Join(tmpDir, "usr", "lib", "peacock")
 		if err := os.MkdirAll(subpartsDir, 0755); err != nil {
@@ -1312,7 +591,7 @@ func Build(output string, cfg InitConfig) error {
 
 	// 4b. Build binary /init wrapper so kernels without BINFMT_SCRIPT can boot
 	initPath := filepath.Join(tmpDir, "init")
-	if err := buildInitWrapper(initPath, cfg.Architecture); err != nil {
+	if err := buildInitWrapper(initPath, cfg); err != nil {
 		return err
 	}
 

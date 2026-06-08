@@ -516,6 +516,12 @@ This process involves:
 		// still goes out with whatever we managed to produce.
 		utilLinuxBuildDir := buildPortForInitramfs(b, "util-linux", dev.Device.Architecture, workDir, useQemuFlag, crossCompileFlag)
 		lvm2BuildDir := buildPortForInitramfs(b, "lvm2", dev.Device.Architecture, workDir, useQemuFlag, crossCompileFlag)
+		// peacock-initramfs-tools ships init.sh.in, init-wrapper.go.in, and
+		// subparts-mount.sh into /usr/lib/peacock/. When this port is built,
+		// mkinitfs prefers its staged copies over the in-tree
+		// assets/initramfs/ fallbacks. Empty (build failed / port skipped)
+		// falls back to the in-tree assets — same shape as util-linux/lvm2.
+		initramfsToolsBuildDir := buildPortForInitramfs(b, "peacock-initramfs-tools", dev.Device.Architecture, workDir, useQemuFlag, crossCompileFlag)
 
 		// Define root partition label for init script
 		rootLabel := "ROOT"
@@ -538,8 +544,9 @@ This process involves:
 			RefresherPath:     refresherPath,
 			Architecture:      dev.Device.Architecture,
 			DeviceName:        deviceName,
-			UtilLinuxBuildDir: utilLinuxBuildDir,
-			Lvm2BuildDir:      lvm2BuildDir,
+			UtilLinuxBuildDir:      utilLinuxBuildDir,
+			Lvm2BuildDir:           lvm2BuildDir,
+			InitramfsToolsBuildDir: initramfsToolsBuildDir,
 		}
 
 		initramfsPath := filepath.Join(workDir, "initramfs.cpio.gz")

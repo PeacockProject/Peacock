@@ -7,10 +7,43 @@
 
 ## Initramfs generation
 
-- [ ] Extract `internal/mkinitfs` into a standalone distro package (`peacock-initramfs`?).
-  Today it lives in-tree as 1.6k lines of Go assembling the cpio. Packaging it would
-  let the Peacock host tool stay focused on orchestration and let the initramfs be
-  versioned/installed via pacman like everything else in peacock-ports.
+- [/] Extract `internal/mkinitfs` into a standalone distro package
+  (`peacock-initramfs-tools`).
+  First-pass extraction landed: the ~750-line `initScriptTemplate` raw-string
+  and the ~40-line `initWrapperSource` raw-string have moved out of
+  `internal/mkinitfs/mkinitfs.go` into
+  `Peacock/assets/initramfs/{init.sh.in,init-wrapper.go.in}` and are
+  consumed via `os.ReadFile`. `mkinitfs.go` shrank from 1372 LOC to
+  651 LOC; only Go remains in there.
+  New port `peacock-ports/base/peacock-initramfs-tools/` ships the three
+  initramfs assets (`init.sh.in`, `init-wrapper.go.in`,
+  `subparts-mount.sh`) to `/usr/lib/peacock/`. `cmd/peacock/build.go` now
+  builds it via `buildPortForInitramfs` and plumbs the result through
+  `InitConfig.InitramfsToolsBuildDir`. Lookup order in `mkinitfs` is:
+  port build dir → `assets/initramfs/` → legacy `prp/initramfs/rootfs/`.
+  Substitution still uses Go's `text/template` (the existing
+  `{{.RootLabel}}` / `{{.InitSystem}}` / `{{if .EnableS4CameraLED}}`
+  syntax) — converting to `@PEACOCK_*@` sed placeholders was deferred
+  because `EnableS4CameraLED` needs a real `if/else` block, not a single
+  substitution.
+  Remaining work:
+    1. Keep `Peacock/assets/initramfs/*` and
+       `peacock-ports/base/peacock-initramfs-tools/*` in sync. Today
+       they're duplicated; a future cleanup could symlink, tarball, or
+       script the port's build to pull from `Peacock/assets/initramfs/`
+       at peacock-build time.
+    2. The OpenRC inittab heredoc nested inside `init.sh.in` (lines
+       around the `cat > /new_root/etc/inittab` block) is still inline
+       shell. Extracting it would require either a separate
+       `inittab.template` shipped by the port, or just leaving it as
+       generated config — low value, deferred.
+    3. The `{{if .EnableS4CameraLED}}` block is a debug-only branch; if
+       sed placeholders ever replace text/template, this needs to become
+       a separate sourced helper or stay in-file with a runtime
+       `PEACOCK_S4_LED=1` env switch.
+    4. Verify byte-similarity (not byte-equality, since the new
+       `init.sh.in` has a documentation header) of the rendered cpio on
+       a real device boot — see Constraints note below.
 - [x] Replace the `prp/vendor/<device>/rootfs-runtime` lookup in
   `internal/mkinitfs/mkinitfs.go` with a peacock-ports package build.
   `InitConfig` now carries `UtilLinuxBuildDir` + `Lvm2BuildDir`;
