@@ -139,12 +139,12 @@ This process involves:
 		}
 
 		// Validate the requested base-distro flavor before doing
-		// anything expensive. Phase 3 ships an arch implementation plus
-		// a real debian implementation (debootstrap + apt-get); alpine
-		// still bounces off the apk stub. Non-arch paths only cover the
-		// base-distro bootstrap step, with the rest of the pipeline
-		// downstream still pacman-shaped (tracked in task.md
-		// "Flavor bootstrap").
+		// anything expensive. Phase 3 ships an arch implementation, a
+		// real debian implementation (debootstrap + apt-get), and a
+		// real alpine implementation (apk add --initdb + apk update).
+		// Non-arch paths only cover the base-distro bootstrap step,
+		// with the rest of the pipeline downstream still pacman-shaped
+		// (tracked in task.md "Flavor bootstrap").
 		flavor := config.Flavor()
 		if !config.IsValidFlavor(flavor) {
 			fmt.Printf("invalid flavor %q (valid: %v)\n", flavor, config.ValidFlavors)
@@ -164,7 +164,7 @@ This process involves:
 
 		if flavor != "arch" {
 			// debian: real debootstrap --foreign + qemu second-stage.
-			// alpine: stub.
+			// alpine: real apk add --initdb path.
 			// Either way the rest of the build pipeline downstream is
 			// still pacman-shaped (`InstallPackagesToRootfs`, etc.) so a
 			// successful flavor bootstrap doesn't yet imply an end-to-end

@@ -173,9 +173,10 @@ var buildPackagesCmd = &cobra.Command{
 		}
 
 		if flavor != "arch" {
-			// debian: real debootstrap. alpine: stub. Arch is required to
-			// pick the dpkg / apk arch so we delay this until after the
-			// device manifest / --arch flag has resolved targetArch.
+			// debian: real debootstrap. alpine: real apk add --initdb.
+			// Arch is required to pick the dpkg / apk arch so we delay
+			// this until after the device manifest / --arch flag has
+			// resolved targetArch.
 			altRoot := filepath.Join(workDir, "flavor-root", flavor)
 			if err := bootstrapBaseChroot(ctx, flavor, altRoot, targetArch, nil); err != nil {
 				return fmt.Errorf("bootstrap for flavor %q: %w", flavor, err)
