@@ -28,6 +28,11 @@ type BuildOptions struct {
 	ExtraInclude []string
 	ExtraLib     []string
 	ExtraLdLib   []string
+	// Flavor selects the per-flavor build_deps alias table used to
+	// rewrite Arch package names into the equivalent debian / alpine
+	// names. Empty string means "arch" for back-compat with callers
+	// that haven't been flavor-ified yet.
+	Flavor string
 }
 
 func archRootfsURL(targetArch string) (string, error) {
@@ -651,7 +656,8 @@ func (b *Builder) BuildPackageInChroot(pkg *manifest.Package, targetArch string,
 		_ = os.WriteFile(filepath.Join(root, "etc", "resolv.conf"), data, 0644)
 	}
 
-	if err := b.installBuildDeps(root, pkg.Build.BuildDeps, masterRoot); err != nil {
+	resolvedDeps := ResolveBuildDeps(pkg.Build.BuildDeps, opts.Flavor)
+	if err := b.installBuildDeps(root, resolvedDeps, masterRoot); err != nil {
 		return "", fmt.Errorf("failed to install build deps: %w", err)
 	}
 

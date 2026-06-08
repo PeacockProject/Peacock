@@ -15,6 +15,7 @@ import (
 	"peacock/internal/runner"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 var (
@@ -142,6 +143,11 @@ var buildPackagesCmd = &cobra.Command{
 		if !config.IsValidFlavor(flavor) {
 			return fmt.Errorf("invalid flavor %q (valid: %v)", flavor, config.ValidFlavors)
 		}
+		// Make the resolved flavor visible to resolveBuildOptions /
+		// config.Flavor() callers further down the call graph. Safe
+		// to overwrite here because this RunE is the only writer in
+		// the build-packages flow.
+		viper.Set(config.KeyFlavor, flavor)
 		if flavor != "arch" {
 			if err := bootstrapBaseChroot(ctx, flavor, workDir, nil); err != nil {
 				return fmt.Errorf("bootstrap for flavor %q: %w", flavor, err)

@@ -1931,6 +1931,7 @@ func resolveBuildOptions(pkg *manifest.Package, targetArch string, useQemuFlag s
 	return builder.BuildOptions{
 		UseQemu:      useQemu,
 		CrossCompile: crossCompile,
+		Flavor:       config.Flavor(),
 	}, chrootArch, nil
 }
 
