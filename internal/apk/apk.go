@@ -292,10 +292,101 @@ func Setup(rootDir string, cfg Config) error {
 	return nil
 }
 
+// resolveAliases rewrites build_deps entries through the
+// peacock-ports/flavors/alpine/aliases.toml table. We duplicate a tiny
+// loader here rather than importing internal/builder to keep the
+// internal/apk → internal/builder edge from existing — builder already
+// imports several lower-level packages and pulling apk into its graph
+// would create a cycle once builder grows real apk-aware codepaths.
+//
+// Missing or unparsable table → identity passthrough with a one-shot
+// warning, same policy as internal/builder.ResolveBuildDeps.
+func resolveAliases(packages []string) []string {
+	if len(packages) == 0 {
+		return packages
+	}
+	path := filepath.Join("peacock-ports", "flavors", "alpine", "aliases.toml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(runner.LogWriter(), "warning: apk.resolveAliases: %s not found (using identity map): %v\n", path, err)
+		out := make([]string, len(packages))
+		copy(out, packages)
+		return out
+	}
+	table, err := parseAliasTable(data)
+	if err != nil {
+		fmt.Fprintf(runner.LogWriter(), "warning: apk.resolveAliases: %s parse error (using identity map): %v\n", path, err)
+		out := make([]string, len(packages))
+		copy(out, packages)
+		return out
+	}
+	out := make([]string, 0, len(packages))
+	for _, p := range packages {
+		if alias, ok := table[p]; ok && alias != "" {
+			out = append(out, alias)
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// parseAliasTable is a deliberately minimal TOML reader scoped to the
+// `[aliases]` section of flavors/<flavor>/aliases.toml. We avoid
+// pulling go-toml in here so internal/apk stays
+// dependency-light. Format reminder:
+//
+//	[aliases]
+//	"base-devel" = "build-base"
+//	"python" = "python3"
+//
+// Returns the alias map. Lines outside `[aliases]` and blank/comment
+// lines inside are ignored. Mirrors internal/builder.loadFlavorAliases
+// semantics — see the doc-comment on resolveAliases for why we
+// re-implement instead of import.
+func parseAliasTable(data []byte) (map[string]string, error) {
+	out := map[string]string{}
+	inAliases := false
+	for lineNum, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			inAliases = strings.TrimSpace(line[1:len(line)-1]) == "aliases"
+			continue
+		}
+		if !inAliases {
+			continue
+		}
+		eq := strings.IndexByte(line, '=')
+		if eq < 0 {
+			return nil, fmt.Errorf("line %d: missing '=': %q", lineNum+1, line)
+		}
+		k := strings.TrimSpace(line[:eq])
+		v := strings.TrimSpace(line[eq+1:])
+		k = trimQuotes(k)
+		v = trimQuotes(v)
+		out[k] = v
+	}
+	return out, nil
+}
+
+func trimQuotes(s string) string {
+	if len(s) >= 2 && (s[0] == '"' && s[len(s)-1] == '"') {
+		return s[1 : len(s)-1]
+	}
+	if len(s) >= 2 && (s[0] == '\'' && s[len(s)-1] == '\'') {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
 // Install adds packages into an existing Alpine root via
-// `apk add --root <rootDir> --no-cache`. Alias resolution (Arch →
-// Alpine name rewrites via peacock-ports/flavors/alpine/aliases.toml)
-// lands in a follow-up commit; for now packages pass through verbatim.
+// `apk add --root <rootDir> --no-cache`. Package names pass through
+// the alpine alias table first so manifests written against the Arch
+// canonical names (base-devel, python, ncurses, ...) translate to
+// Alpine's names (build-base, python3, ncurses-dev, ...).
 //
 // Idempotent: apk add on an already-installed package is a no-op.
 func Install(rootDir string, packages []string) error {
@@ -310,7 +401,8 @@ func Install(rootDir string, packages []string) error {
 		return fmt.Errorf("apk.Install: %w", err)
 	}
 
-	args := append([]string{apkBin, "add", "--root", rootDir, "--no-cache"}, packages...)
+	resolved := resolveAliases(packages)
+	args := append([]string{apkBin, "add", "--root", rootDir, "--no-cache"}, resolved...)
 	cmd := exec.Command("sudo", args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = runner.LogWriter()

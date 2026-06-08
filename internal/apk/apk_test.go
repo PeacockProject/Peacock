@@ -66,3 +66,53 @@ func TestGenerateConfigContentExplicit(t *testing.T) {
 		t.Fatalf("GenerateConfigContent explicit mismatch\n got: %q\nwant: %q", got, want)
 	}
 }
+
+func TestParseAliasTable(t *testing.T) {
+	t.Parallel()
+	in := []byte(`# alpine aliases
+[aliases]
+"base-devel" = "build-base"
+"python" = "python3"
+"perl" = "perl"
+ncurses = "ncurses-dev"
+`)
+	table, err := parseAliasTable(in)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cases := map[string]string{
+		"base-devel": "build-base",
+		"python":     "python3",
+		"perl":       "perl",
+		"ncurses":    "ncurses-dev",
+	}
+	for k, want := range cases {
+		got, ok := table[k]
+		if !ok {
+			t.Fatalf("alias %q missing from table", k)
+		}
+		if got != want {
+			t.Fatalf("alias %q = %q, want %q", k, got, want)
+		}
+	}
+}
+
+func TestFindAPKMissingErrorMentionsCandidates(t *testing.T) {
+	// We can't reliably hide apk binaries on every host, so the most
+	// useful invariant we can check without a sandbox is that the
+	// error string findAPK *would* return mentions all three candidate
+	// names + install hints. This guards regressions in the message.
+	candidates := []string{"apk", "apk.static", "apk-tools-static"}
+	err := errMissingAPK(candidates)
+	msg := err.Error()
+	for _, name := range candidates {
+		if !strings.Contains(msg, name) {
+			t.Fatalf("error message missing candidate %q: %s", name, msg)
+		}
+	}
+	for _, hint := range []string{"Alpine", "Arch", "Debian"} {
+		if !strings.Contains(msg, hint) {
+			t.Fatalf("error message missing distro hint %q: %s", hint, msg)
+		}
+	}
+}
