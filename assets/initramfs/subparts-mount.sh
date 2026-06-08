@@ -613,3 +613,21 @@ mount_subparts() {
   log "subpartition mount failed (see $logf)"
   return 1
 }
+
+# setup_subparts_root_dev: thin wrapper that runs mount_subparts, captures the
+# discovered root source device, unmounts the helper mountpoints, and exports
+# the result as ROOT_DEV for the caller. Used by the peacock initramfs init
+# script in place of the old inline setup_prp_like_subparts.
+setup_subparts_root_dev() {
+  local userdata_dev="${1:-}"
+  local discovered=""
+  mount_subparts "$userdata_dev" || return 1
+  discovered="$($BB awk -v m="$PEACOCK_ROOT_MNT" '$2==m{print $1; exit}' /proc/mounts 2>/dev/null || true)"
+  $BB umount "$PEACOCK_BOOT_MNT" >/dev/null 2>&1 || true
+  $BB umount "$PEACOCK_ROOT_MNT" >/dev/null 2>&1 || true
+  if [ -n "$discovered" ] && [ -b "$discovered" ]; then
+    ROOT_DEV="$discovered"
+    return 0
+  fi
+  return 1
+}

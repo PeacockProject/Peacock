@@ -21,15 +21,13 @@
   gone. The dmsetup lookup + lib search now prefer
   `Lvm2BuildDir/sbin/dmsetup` and `Lvm2BuildDir/{lib,usr/lib,stage/...}`
   with host paths as a final fallback.
-- [/] Install the canonical subparts-mount shell library into the initramfs.
+- [x] Install the canonical subparts-mount shell library into the initramfs.
   `mkinitfs.Build` now drops `assets/initramfs/subparts-mount.sh` (with
   legacy `prp/initramfs/rootfs/usr/lib/prp/subparts-mount.sh` fallback) at
-  `/usr/lib/peacock/subparts-mount.sh`, mode 0755. Remaining work: switch
-  the inline init shell to `. /usr/lib/peacock/subparts-mount.sh`, delete
-  the inline `setup_prp_like_subparts` function, and rename the
-  `PRP-subparts:` log prefix to `subparts:`. The inline function now
-  carries a note pointing at the canonical implementation pending that
-  follow-up.
+  `/usr/lib/peacock/subparts-mount.sh`, mode 0755. The embedded init now
+  sources that file and calls the `setup_subparts_root_dev` wrapper in
+  place of the deleted inline `setup_prp_like_subparts`; the
+  `PRP-subparts:` log prefix is gone.
 
 ## Bootloaders as ports
 

@@ -428,41 +428,6 @@ attach_loop_partitions() {
     return 0
 }
 
-find_free_loop() {
-    local skip="${1:-}"
-    local l=""
-    local sys=""
-    if has_busybox_applet losetup; then
-        l="$(/bin/busybox losetup -f 2>/dev/null || true)"
-        if [ -n "$l" ] && [ "$l" != "$skip" ] && [ -b "$l" ]; then
-            echo "$l"
-            return 0
-        fi
-    fi
-    for sys in /sys/class/block/loop*/loop/backing_file; do
-        [ -e "$sys" ] || continue
-        l="/dev/${sys%/loop/backing_file}"
-        l="${l##*/}"
-        l="/dev/$l"
-        [ -b "$l" ] || continue
-        [ "$l" = "$skip" ] && continue
-        if [ ! -s "$sys" ]; then
-            echo "$l"
-            return 0
-        fi
-    done
-    for l in /dev/loop0 /dev/loop1 /dev/loop2 /dev/loop3 /dev/loop4 /dev/loop5 /dev/loop6 /dev/loop7; do
-        [ -b "$l" ] || continue
-        [ "$l" = "$skip" ] && continue
-        sys="/sys/class/block/${l##*/}/loop/backing_file"
-        if [ ! -e "$sys" ] || [ ! -s "$sys" ]; then
-            echo "$l"
-            return 0
-        fi
-    done
-    return 1
-}
-
 ensure_block_node() {
     local node_name="$1"
     local devspec=""
@@ -506,311 +471,11 @@ refresh_nested_candidates() {
     done
 }
 
-validate_root_candidate() {
-    local dev="$1"
-    local probe_mnt="/run/peacock-root-probe"
-    local has_timeout=0
-    [ -b "$dev" ] || return 1
-    has_busybox_applet timeout && has_timeout=1
-    /bin/busybox mkdir -p "$probe_mnt" 2>/dev/null || true
-    if { [ "$has_timeout" -eq 1 ] && /bin/busybox timeout 2 /bin/busybox mount -t ext4 -o ro "$dev" "$probe_mnt" >/dev/null 2>&1; } || \
-       { [ "$has_timeout" -eq 0 ] && /bin/busybox mount -t ext4 -o ro "$dev" "$probe_mnt" >/dev/null 2>&1; } || \
-       { [ "$has_timeout" -eq 1 ] && /bin/busybox timeout 2 /bin/busybox mount -t ext4 -o ro,noload "$dev" "$probe_mnt" >/dev/null 2>&1; } || \
-       { [ "$has_timeout" -eq 0 ] && /bin/busybox mount -t ext4 -o ro,noload "$dev" "$probe_mnt" >/dev/null 2>&1; } || \
-       { [ "$has_timeout" -eq 1 ] && /bin/busybox timeout 2 /bin/busybox mount -t ext2 -o ro "$dev" "$probe_mnt" >/dev/null 2>&1; } || \
-       { [ "$has_timeout" -eq 0 ] && /bin/busybox mount -t ext2 -o ro "$dev" "$probe_mnt" >/dev/null 2>&1; }; then
-        /bin/busybox umount "$probe_mnt" >/dev/null 2>&1 || true
-        return 0
-    fi
-    return 1
-}
-
-resolve_userdata_dev() {
-    local dev=""
-    local uevent=""
-    local node=""
-    local auto_userdata=""
-    # Prefer explicit by-name aliases.
-    for dev in \
-        /dev/block/platform/*/by-name/USERDATA \
-        /dev/block/platform/*/by-name/userdata \
-        /dev/block/by-name/USERDATA \
-        /dev/block/by-name/userdata; do
-        [ -e "$dev" ] || continue
-        dev="$(resolve_block_dev "$dev")"
-        [ -b "$dev" ] && {
-            echo "$dev"
-            return 0
-        }
-    done
-    # Fallback by PARTNAME from sysfs.
-    for uevent in /sys/class/block/mmcblk0p*/uevent; do
-        [ -f "$uevent" ] || continue
-        if /bin/busybox grep -qi '^PARTNAME=userdata$' "$uevent" 2>/dev/null; then
-            node="${uevent%/uevent}"
-            node="${node##*/}"
-            dev="/dev/$node"
-            [ -b "$dev" ] && {
-                echo "$dev"
-                return 0
-            }
-        fi
-    done
-    # Last resort: largest mmc partition.
-    auto_userdata="$(
-        /bin/busybox awk '
-            $4 ~ /^mmcblk[0-9]+p[0-9]+$/ {
-                if ($3 > max) { max=$3; node=$4 }
-            }
-            END {
-                if (node != "") print "/dev/" node
-            }
-        ' /proc/partitions 2>/dev/null || true
-    )"
-    [ -b "$auto_userdata" ] && {
-        echo "$auto_userdata"
-        return 0
-    }
-    return 1
-}
-
-# NOTE: setup_prp_like_subparts is an inline copy of the canonical sub-partition
-# mount shell. The canonical implementation now ships in the cpio at
-# /usr/lib/peacock/subparts-mount.sh (vendored from PRP's
-# initramfs/rootfs/usr/lib/prp/subparts-mount.sh). This inline version stays as
-# a fallback for now; once init scripts are switched to source the file (and
-# the PRP-only branches that still rely on this code path are gone), this
-# function should be removed.
-setup_prp_like_subparts() {
-    local userdata_dev="${1:-}"
-    local boot_start=2048
-    local root_start=1050624
-    local boot_off=$((boot_start * 512))
-    local root_off=$((root_start * 512))
-    local probe_mnt="/run/peacock-root-probe"
-    local gpt_sig=""
-    local partx_cmd=""
-    local partx_line=""
-    local partx_root_start=""
-    local fdisk_cmd=""
-    local fdisk_line=""
-    local fdisk_root_start=""
-    local dmsetup_cmd=""
-    local dm_root_name="peacock_root_init"
-    local dm_root_dev=""
-    local total_sectors=""
-    local root_span_sectors=0
-    local sect_path=""
-    local cand=""
-    local mount_src=""
-    local main_loop=""
-    local main_p2=""
-    local root_loop=""
-    local loop_magic=""
-    local ptries=0
-    local has_timeout=0
-    local kernel_root_raw=""
-    local dm_err=""
-
-    [ -n "$userdata_dev" ] || userdata_dev="$(resolve_userdata_dev 2>/dev/null || true)"
-    [ -b "$userdata_dev" ] || return 1
-    has_busybox_applet timeout && has_timeout=1
-
-    gpt_sig="$(/bin/busybox dd if="$userdata_dev" bs=1 skip=512 count=8 2>/dev/null || true)"
-    [ "$gpt_sig" = "EFI PART" ] || {
-        log "PRP-subparts: $userdata_dev is not GPT container (sig=${gpt_sig:-none})"
-        return 1
-    }
-    log "PRP-subparts: probing $userdata_dev gpt_sig=$gpt_sig"
-
-    # Prefer dynamic p2 start from nested GPT via partx first.
-    for cand in /sbin/partx /usr/sbin/partx /usr/bin/partx /bin/partx; do
-        [ -x "$cand" ] || continue
-        partx_cmd="$cand"
-        break
-    done
-    if [ -n "$partx_cmd" ]; then
-        partx_line="$("$partx_cmd" -g -o START -nr 2 "$userdata_dev" 2>/dev/null | /bin/busybox head -n1 || true)"
-        case "$partx_line" in
-            ''|*[!0-9]*) : ;;
-            *) partx_root_start="$partx_line" ;;
-        esac
-    fi
-
-    # Fallback to fdisk when partx is unavailable or fails.
-    for cand in /sbin/fdisk /usr/sbin/fdisk /usr/bin/fdisk /bin/fdisk; do
-        [ -x "$cand" ] || continue
-        fdisk_cmd="$cand"
-        break
-    done
-    if [ -z "$fdisk_cmd" ] && /bin/busybox --list 2>/dev/null | /bin/busybox grep -qx fdisk; then
-        fdisk_cmd="/bin/busybox fdisk"
-    fi
-    if [ -n "$fdisk_cmd" ]; then
-        fdisk_line="$(
-            /bin/busybox sh -c "$fdisk_cmd -l '$userdata_dev' 2>/dev/null" | \
-            /bin/busybox awk -v d="$userdata_dev" '$1==d"p2"{print $2; exit}' || true
-        )"
-        case "$fdisk_line" in
-            ''|*[!0-9]*) : ;;
-            *) fdisk_root_start="$fdisk_line" ;;
-        esac
-    fi
-    if [ -n "$partx_root_start" ]; then
-        root_start="$partx_root_start"
-    elif [ -n "$fdisk_root_start" ]; then
-        root_start="$fdisk_root_start"
-    fi
-    root_off=$((root_start * 512))
-    sect_path="/sys/class/block/${userdata_dev##*/}/size"
-    if [ -r "$sect_path" ]; then
-        total_sectors="$(/bin/busybox cat "$sect_path" 2>/dev/null || true)"
-        case "$total_sectors" in
-            ''|*[!0-9]*) total_sectors="" ;;
-        esac
-    fi
-    if [ -n "$total_sectors" ] && [ "$total_sectors" -gt "$root_start" ]; then
-        root_span_sectors=$((total_sectors - root_start))
-    fi
-
-    if has_busybox_applet partprobe; then
-        /bin/busybox partprobe "$userdata_dev" >/dev/null 2>&1 || true
-    fi
-    if has_busybox_applet blockdev; then
-        /bin/busybox blockdev --rereadpt "$userdata_dev" >/dev/null 2>&1 || true
-    fi
-    refresh_nested_candidates "$userdata_dev"
-
-    # First try kernel-exposed nested nodes (p2/s1 aliases).
-    log "PRP-subparts: checking kernel-exposed candidates"
-    for cand in \
-        "${userdata_dev}s1" "${userdata_dev}p2" \
-        "/dev/${userdata_dev##*/}p2" "/dev/${userdata_dev##*/}s1" \
-        "/dev/block/${userdata_dev##*/}p2" "/dev/block/${userdata_dev##*/}s1"; do
-        [ -b "$cand" ] || continue
-        [ -n "$kernel_root_raw" ] || kernel_root_raw="$cand"
-        validate_root_candidate "$cand" || continue
-        ROOT_DEV="$cand"
-        log "PRP-subparts: using kernel-exposed root candidate $ROOT_DEV"
-        ln -snf "$ROOT_DEV" "${userdata_dev}s1" 2>/dev/null || true
-        return 0
-    done
-    if [ -n "$kernel_root_raw" ] && [ -b "$kernel_root_raw" ]; then
-        ROOT_DEV="$kernel_root_raw"
-        log "PRP-subparts: using kernel-exposed root candidate (unvalidated) $ROOT_DEV"
-        ln -snf "$ROOT_DEV" "${userdata_dev}s1" 2>/dev/null || true
-        return 0
-    fi
-
-    # Preferred fallback on this kernel: device-mapper linear root mapping.
-    /bin/busybox mkdir -p /dev/mapper 2>/dev/null || true
-    [ -c /dev/mapper/control ] || /bin/busybox mknod /dev/mapper/control c 10 236 2>/dev/null || true
-    for cand in /sbin/dmsetup /usr/sbin/dmsetup /usr/bin/dmsetup /bin/dmsetup; do
-        [ -x "$cand" ] || continue
-        dmsetup_cmd="$cand"
-        break
-    done
-    if [ -n "$dmsetup_cmd" ] && [ "$root_span_sectors" -gt 0 ]; then
-        log "PRP-subparts: trying dm-linear root map start=$root_start sectors=$root_span_sectors"
-        "$dmsetup_cmd" remove -f "$dm_root_name" >/dev/null 2>&1 || true
-        if echo "0 $root_span_sectors linear $userdata_dev $root_start" | "$dmsetup_cmd" create "$dm_root_name" >/tmp/peacock-dm-root.err 2>&1; then
-            "$dmsetup_cmd" mknodes >/dev/null 2>&1 || true
-            dm_root_dev="/dev/mapper/$dm_root_name"
-            if [ -b "$dm_root_dev" ]; then
-                ROOT_DEV="$dm_root_dev"
-                log "PRP-subparts: using dm-linear root candidate $ROOT_DEV"
-                ln -snf "$ROOT_DEV" "${userdata_dev}s1" 2>/dev/null || true
-                return 0
-            fi
-        else
-            dm_err="$(/bin/busybox head -n 1 /tmp/peacock-dm-root.err 2>/dev/null || true)"
-            log "PRP-subparts: dm-linear root create failed: $dm_err"
-        fi
-    fi
-
-    # Preferred fallback: map nested GPT via a main loop and use loopXp2.
-    if has_busybox_applet losetup; then
-        log "PRP-subparts: trying loop partition mapping"
-        main_loop="$(find_free_loop "" 2>/dev/null || true)"
-        if [ -n "$main_loop" ] && [ -b "$main_loop" ]; then
-            /bin/busybox losetup -d "$main_loop" >/dev/null 2>&1 || true
-            if { [ "$has_timeout" -eq 1 ] && /bin/busybox timeout 3 /bin/busybox losetup -P "$main_loop" "$userdata_dev" >/dev/null 2>&1; } || \
-               { [ "$has_timeout" -eq 0 ] && /bin/busybox losetup -P "$main_loop" "$userdata_dev" >/dev/null 2>&1; }; then
-                if has_busybox_applet partprobe; then
-                    /bin/busybox partprobe "$main_loop" >/dev/null 2>&1 || true
-                fi
-                if has_busybox_applet blockdev; then
-                    /bin/busybox blockdev --rereadpt "$main_loop" >/dev/null 2>&1 || true
-                fi
-                while [ "$ptries" -lt 4 ]; do
-                    /bin/busybox mdev -s >/dev/null 2>&1 || true
-                    main_p2="$(ensure_block_node "${main_loop##*/}p2" 2>/dev/null || true)"
-                    [ -n "$main_p2" ] && [ -b "$main_p2" ] && break
-                    ptries=$((ptries + 1))
-                    /bin/busybox sleep 1
-                done
-                if [ -n "$main_p2" ] && [ -b "$main_p2" ] && validate_root_candidate "$main_p2"; then
-                    ROOT_DEV="$main_p2"
-                    log "PRP-subparts: using loop-partition root candidate $ROOT_DEV"
-                    ln -snf "$ROOT_DEV" "${userdata_dev}s1" 2>/dev/null || true
-                    return 0
-                fi
-                if [ -n "$main_p2" ] && [ -b "$main_p2" ]; then
-                    ROOT_DEV="$main_p2"
-                    log "PRP-subparts: using loop-partition root candidate (unvalidated) $ROOT_DEV"
-                    ln -snf "$ROOT_DEV" "${userdata_dev}s1" 2>/dev/null || true
-                    return 0
-                fi
-            fi
-        fi
-    fi
-
-    # Fallback: explicit offset loop on userdata container.
-    if has_busybox_applet losetup; then
-        log "PRP-subparts: trying explicit root offset loop off=$root_off"
-        root_loop="$(find_free_loop "$main_loop" 2>/dev/null || true)"
-        if [ -n "$root_loop" ] && [ -b "$root_loop" ]; then
-            /bin/busybox losetup -d "$root_loop" >/dev/null 2>&1 || true
-            if /bin/busybox losetup -o "$root_off" "$root_loop" "$userdata_dev" >/dev/null 2>&1; then
-                loop_magic="$(
-                    /bin/busybox dd if="$root_loop" bs=1 skip=1080 count=2 2>/dev/null | \
-                    /bin/busybox hexdump -v -e '1/1 "%02x"' 2>/dev/null || true
-                )"
-                log "PRP-subparts: root loop offset probe off=$root_off magic=${loop_magic:-none}"
-                if [ "$loop_magic" = "53ef" ]; then
-                    ROOT_DEV="$root_loop"
-                    log "PRP-subparts: using loop-offset root candidate $ROOT_DEV (magic-ok)"
-                    ln -snf "$ROOT_DEV" "${userdata_dev}s1" 2>/dev/null || true
-                    return 0
-                fi
-                /bin/busybox losetup -d "$root_loop" >/dev/null 2>&1 || true
-            fi
-        fi
-    fi
-
-    # Last fallback: implicit mount loop+offset, then reuse discovered mount source.
-    /bin/busybox mkdir -p "$probe_mnt" 2>/dev/null || true
-    if { [ "$has_timeout" -eq 1 ] && /bin/busybox timeout 3 /bin/busybox mount -t ext4 -o ro,loop,offset="$root_off" "$userdata_dev" "$probe_mnt" >/dev/null 2>&1; } || \
-       { [ "$has_timeout" -eq 0 ] && /bin/busybox mount -t ext4 -o ro,loop,offset="$root_off" "$userdata_dev" "$probe_mnt" >/dev/null 2>&1; } || \
-       { [ "$has_timeout" -eq 1 ] && /bin/busybox timeout 3 /bin/busybox mount -t ext4 -o ro,noload,loop,offset="$root_off" "$userdata_dev" "$probe_mnt" >/dev/null 2>&1; } || \
-       { [ "$has_timeout" -eq 0 ] && /bin/busybox mount -t ext4 -o ro,noload,loop,offset="$root_off" "$userdata_dev" "$probe_mnt" >/dev/null 2>&1; } || \
-       { [ "$has_timeout" -eq 1 ] && /bin/busybox timeout 3 /bin/busybox mount -t ext2 -o ro,loop,offset="$root_off" "$userdata_dev" "$probe_mnt" >/dev/null 2>&1; } || \
-       { [ "$has_timeout" -eq 0 ] && /bin/busybox mount -t ext2 -o ro,loop,offset="$root_off" "$userdata_dev" "$probe_mnt" >/dev/null 2>&1; }; then
-        mount_src="$(
-            /bin/busybox awk -v m="$probe_mnt" '$2==m{print $1; exit}' /proc/mounts 2>/dev/null || true
-        )"
-        /bin/busybox umount "$probe_mnt" >/dev/null 2>&1 || true
-        if [ -n "$mount_src" ] && [ -b "$mount_src" ]; then
-            ROOT_DEV="$mount_src"
-            log "PRP-subparts: using loop-offset root candidate $ROOT_DEV (off=$root_off)"
-            ln -snf "$ROOT_DEV" "${userdata_dev}s1" 2>/dev/null || true
-            return 0
-        fi
-    fi
-
-    log "PRP-subparts: failed for $userdata_dev (p2_start=$root_start root_off=$root_off)"
-    return 1
-}
+# Source the canonical sub-partition mount shell (installed in the cpio at
+# /usr/lib/peacock/subparts-mount.sh). Provides mount_subparts and helpers.
+if [ -r /usr/lib/peacock/subparts-mount.sh ]; then
+    . /usr/lib/peacock/subparts-mount.sh
+fi
 
 # If label lookup fails, dynamically discover userdata-like containers and ask kernel to expose subparts.
 if [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ]; then
@@ -830,7 +495,7 @@ if [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ]; then
         fi
         add_probe_candidates_from_container "$dev"
         refresh_nested_candidates "$dev"
-        # Keep container scan non-invasive. Deep loop probing is deferred to PRP-subparts.
+        # Keep container scan non-invasive. Deep loop probing is deferred to subparts.
     done
     /bin/busybox mdev -s >/dev/null 2>&1 || true
 fi
@@ -847,14 +512,14 @@ fi
 
 
 
-# If still unresolved, perform PRP-style userdata subpartition setup.
+# If still unresolved, perform userdata subpartition setup via the sourced helper.
 if [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ]; then
-    splash "Root detect: PRP subparts..." 3
-    log "Entering PRP-subparts fallback"
-    if setup_prp_like_subparts ""; then
-        log "Using PRP-subparts root candidate: $ROOT_DEV"
+    splash "Root detect: subparts..." 3
+    log "Entering subparts fallback"
+    if command -v setup_subparts_root_dev >/dev/null 2>&1 && setup_subparts_root_dev ""; then
+        log "subparts: using root candidate $ROOT_DEV"
     else
-        log "PRP-subparts fallback did not find a root candidate"
+        log "subparts: fallback did not find a root candidate"
     fi
 fi
 
@@ -1601,9 +1266,9 @@ func Build(output string, cfg InitConfig) error {
 	}
 
 	// Install the canonical Peacock sub-partition mount shell library into the
-	// cpio at /usr/lib/peacock/subparts-mount.sh. The inline shell function
-	// in this file is still emitted for now, but the long-term plan is to
-	// replace it with `. /usr/lib/peacock/subparts-mount.sh` in the init script.
+	// cpio at /usr/lib/peacock/subparts-mount.sh. The embedded init script
+	// sources this file and calls into mount_subparts /
+	// setup_subparts_root_dev — there is no longer an inline fallback.
 	subpartsSrc := findFirstExisting([]string{
 		filepath.Join("assets", "initramfs", "subparts-mount.sh"),
 		// Legacy compat: vendored PRP tree (kept for out-of-tree builds that
@@ -1624,7 +1289,7 @@ func Build(output string, cfg InitConfig) error {
 			return fmt.Errorf("failed to write subparts-mount.sh: %w", err)
 		}
 	} else {
-		fmt.Printf("Warning: subparts-mount.sh not found in assets/initramfs/ or prp/initramfs/, using only inline subparts logic\n")
+		fmt.Printf("Warning: subparts-mount.sh not found in assets/initramfs/ or prp/initramfs/; the initramfs sub-partition fallback will be unavailable\n")
 	}
 
 	// Copy msm-fb-refresher binary (for MSM framebuffer refresh loop)
