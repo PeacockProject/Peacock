@@ -9,7 +9,6 @@ require (
 )
 
 require (
-	fyne.io/fyne/v2 v2.7.2 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
