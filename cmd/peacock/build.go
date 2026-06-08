@@ -20,6 +20,7 @@ import (
 
 	"peacock/internal/builder"
 	"peacock/internal/chroot"
+	"peacock/internal/config"
 	"peacock/internal/image"
 	"peacock/internal/manifest"
 	"peacock/internal/mkinitfs"
@@ -94,7 +95,7 @@ This process involves:
 
 			// Best-effort cleanup of peacock-owned mountpoints only.
 			// This avoids broad mount sweeps that can detach host mounts.
-			workDir := viper.GetString("work_dir")
+			workDir := config.WorkDir()
 			if workDir != "" {
 				fmt.Println("Cleaning up mounts...")
 				if err := unmountPeacockMounts(workDir); err != nil {
@@ -110,7 +111,7 @@ This process involves:
 			cancel()
 		}()
 
-		workDir := viper.GetString("work_dir")
+		workDir := config.WorkDir()
 		if workDir == "" {
 			fmt.Println("Work directory not set. Please run 'peacock init' first.")
 			os.Exit(1)
@@ -147,17 +148,17 @@ This process involves:
 
 		fmt.Printf("Building for device: %s\n", dev.Device.Name)
 
-		initSystem := viper.GetString("init_system")
+		initSystem := config.InitSystem()
 		if initSystem == "" {
 			initSystem = "systemd" // default
 		}
 		reader := bufio.NewReader(os.Stdin)
-		desktopChoice := viper.GetString("desktop")
-		displayManagerChoice := viper.GetString("display_manager")
-		extraPackages := viper.GetStringSlice("extra_packages")
-		userName := viper.GetString("user_name")
-		userPassword := viper.GetString("user_password")
-		emptyRootfs := viper.GetBool("empty_rootfs")
+		desktopChoice := config.Desktop()
+		displayManagerChoice := config.DisplayManager()
+		extraPackages := config.ExtraPackages()
+		userName := config.UserName()
+		userPassword := config.UserPassword()
+		emptyRootfs := config.EmptyRootfs()
 
 		if emptyRootfs {
 			fmt.Println("Empty-rootfs mode enabled: skipping rootfs package/user/desktop setup and producing a small debug image.")
@@ -234,22 +235,16 @@ This process involves:
 				return fmt.Errorf("error loading local dep manifest: %w", err)
 			}
 
-			depOpts, depChrootArch, err := resolveBuildOptions(depPkg, dev.Device.Architecture, useQemuFlag, crossCompileFlag)
+			// Compute the build-dir hint up front so kernel cache reuse can
+			// still find an in-tree zImage when only the .pkg.tar.gz is cached.
+			_, depChrootArch, err := resolveBuildOptions(depPkg, dev.Device.Architecture, useQemuFlag, crossCompileFlag)
 			if err != nil {
 				return fmt.Errorf("error resolving build options for %s: %w", dep, err)
 			}
 			buildChrootDir := filepath.Join(workDir, "build-chroot", depChrootArch)
-			useQemu := depOpts.UseQemu != nil && *depOpts.UseQemu
 			buildDirHint := filepath.Join(buildChrootDir, "build", fmt.Sprintf("%s-%s-%s", depPkg.Package.Name, depPkg.Package.Version, dev.Device.Architecture))
-			artifactPath := cachedArtifactPath(b.CacheDir, depPkg.Package.Name, depPkg.Package.Version, dev.Device.Architecture)
-			if artifactPath != "" {
-				expectedArch := pacmanArch(dev.Device.Architecture)
-				if !packageArchMatches(artifactPath, expectedArch) {
-					fmt.Printf("Cached package %s has mismatched arch; rebuilding\n", artifactPath)
-					artifactPath = ""
-				}
-			}
-			if artifactPath != "" {
+
+			if artifactPath := findCachedPackageArtifact(b, depPkg, dev.Device.Architecture); artifactPath != "" {
 				fmt.Printf("Using cached package %s at %s\n", dep, artifactPath)
 				localPackages = append(localPackages, artifactPath)
 				if !pkgInList(pkgs, dep) {
@@ -262,29 +257,9 @@ This process involves:
 				return nil
 			}
 
-			buildDepChrootRoot := filepath.Join(workDir, "build-dep-chroot", hostArchString())
-			if err := b.EnsureBuildChroot(buildChrootDir, depChrootArch, useQemu); err != nil {
-				return fmt.Errorf("error ensuring build chroot for %s: %w", dep, err)
-			}
-			if err := ensureBuildChrootBootstrap(b, buildChrootDir, depChrootArch); err != nil {
-				return fmt.Errorf("error bootstrapping build tools for %s: %w", dep, err)
-			}
-			extraPaths, err := prepareBuildDepPackages(b, depPkg, buildChrootDir, buildDepChrootRoot)
+			buildDir, artifact, err := buildPackageInChrootStep(b, depPkg, dev.Device.Architecture, workDir, useQemuFlag, crossCompileFlag)
 			if err != nil {
-				return fmt.Errorf("error preparing build dep packages for %s: %w", dep, err)
-			}
-			depOpts.ExtraPath = extraPaths.Bin
-			depOpts.ExtraInclude = extraPaths.Inc
-			depOpts.ExtraLib = extraPaths.Lib
-			depOpts.ExtraLdLib = extraPaths.LD
-			buildDir, err := b.BuildPackageInChroot(depPkg, dev.Device.Architecture, buildChrootDir, depOpts)
-			if err != nil {
-				return fmt.Errorf("error building dependency %s: %w", dep, err)
-			}
-
-			artifact, err := b.PackageArtifact(buildDir, depPkg, dev.Device.Architecture)
-			if err != nil {
-				return fmt.Errorf("error packaging dependency %s: %w", dep, err)
+				return fmt.Errorf("error processing dependency %s: %w", dep, err)
 			}
 
 			depBuildDirs[depPkg.Package.Name] = buildDir
@@ -298,19 +273,8 @@ This process involves:
 		}
 
 		for _, dep := range allDeps {
-			depManifest := ""
-			candidates := []string{
-				filepath.Join("peacock-ports", "device", dep, "package.toml"),
-				filepath.Join("peacock-ports", "base", dep, "package.toml"),
-			}
-			for _, c := range candidates {
-				if _, err := os.Stat(c); err == nil {
-					depManifest = c
-					break
-				}
-			}
-
-			if depManifest != "" {
+			depManifest, ok := localPackageManifestPath(dep)
+			if ok {
 				// Local Package
 				fmt.Printf("Found local dependency: %s. Building...\n", dep)
 				if err := buildLocalPackage(dep, depManifest); err != nil {
@@ -341,18 +305,8 @@ This process involves:
 			if _, ok := depPackagePaths[dep]; ok {
 				continue
 			}
-			depManifest := ""
-			candidates := []string{
-				filepath.Join("peacock-ports", "device", dep, "package.toml"),
-				filepath.Join("peacock-ports", "base", dep, "package.toml"),
-			}
-			for _, c := range candidates {
-				if _, err := os.Stat(c); err == nil {
-					depManifest = c
-					break
-				}
-			}
-			if depManifest == "" {
+			depManifest, ok := localPackageManifestPath(dep)
+			if !ok {
 				continue
 			}
 			fmt.Printf("Found local userland package: %s. Building...\n", dep)
@@ -1039,7 +993,7 @@ fi
 
 		// Create final disk image
 		fmt.Println("Creating disk image...")
-		imageSizeMB := viper.GetInt("image_size_mb")
+		imageSizeMB := config.ImageSizeMB()
 		if imageSizeMB <= 0 {
 			imageSizeMB = estimateImageSizeMB(rootfsPath, emptyRootfs)
 			fmt.Printf("Auto image size: %dMB\n", imageSizeMB)
@@ -1496,6 +1450,79 @@ func boolPtr(v bool) *bool {
 	return &v
 }
 
+// localPackageManifestPath searches peacock-ports/{device,base}/<name>/package.toml
+// and returns the first hit. Used to decide whether a dependency is locally built
+// or fetched from a remote pacman repo.
+func localPackageManifestPath(name string) (string, bool) {
+	candidates := []string{
+		filepath.Join("peacock-ports", "device", name, "package.toml"),
+		filepath.Join("peacock-ports", "base", name, "package.toml"),
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c, true
+		}
+	}
+	return "", false
+}
+
+// findCachedPackageArtifact returns a path to a cached .pkg.tar.gz for pkg+arch
+// when one exists and its embedded arch matches the expected pacman arch.
+// Returns "" when no usable cached artifact is found. Mismatched cache entries
+// are reported to stdout so the caller can rebuild transparently.
+func findCachedPackageArtifact(b *builder.Builder, pkg *manifest.Package, targetArch string) string {
+	artifactPath := cachedArtifactPath(b.CacheDir, pkg.Package.Name, pkg.Package.Version, targetArch)
+	if artifactPath == "" {
+		return ""
+	}
+	if !packageArchMatches(artifactPath, pacmanArch(targetArch)) {
+		fmt.Printf("Cached package %s has mismatched arch; rebuilding\n", artifactPath)
+		return ""
+	}
+	return artifactPath
+}
+
+// buildPackageInChrootStep performs the full chroot-build pipeline for a single
+// package: resolve build options, ensure+bootstrap a build chroot for the right
+// arch, stage build_dep_packages into it, run the build, and emit the final
+// .pkg.tar.gz. It does NOT consult the artifact cache — callers that want to
+// skip rebuilds should check findCachedPackageArtifact first. Returns the
+// in-chroot build directory and the produced artifact path.
+func buildPackageInChrootStep(b *builder.Builder, pkg *manifest.Package, targetArch, workDir, useQemuFlag, crossCompileFlag string) (string, string, error) {
+	opts, chrootArch, err := resolveBuildOptions(pkg, targetArch, useQemuFlag, crossCompileFlag)
+	if err != nil {
+		return "", "", fmt.Errorf("resolving build options: %w", err)
+	}
+	buildChrootDir := filepath.Join(workDir, "build-chroot", chrootArch)
+	buildDepChrootRoot := filepath.Join(workDir, "build-dep-chroot", hostArchString())
+	useQemu := opts.UseQemu != nil && *opts.UseQemu
+
+	if err := b.EnsureBuildChroot(buildChrootDir, chrootArch, useQemu); err != nil {
+		return "", "", fmt.Errorf("ensuring build chroot: %w", err)
+	}
+	if err := ensureBuildChrootBootstrap(b, buildChrootDir, chrootArch); err != nil {
+		return "", "", fmt.Errorf("bootstrapping build chroot: %w", err)
+	}
+	extraPaths, err := prepareBuildDepPackages(b, pkg, buildChrootDir, buildDepChrootRoot)
+	if err != nil {
+		return "", "", fmt.Errorf("preparing build_dep_packages: %w", err)
+	}
+	opts.ExtraPath = extraPaths.Bin
+	opts.ExtraInclude = extraPaths.Inc
+	opts.ExtraLib = extraPaths.Lib
+	opts.ExtraLdLib = extraPaths.LD
+
+	buildDir, err := b.BuildPackageInChroot(pkg, targetArch, buildChrootDir, opts)
+	if err != nil {
+		return "", "", fmt.Errorf("building package: %w", err)
+	}
+	artifactPath, err := b.PackageArtifact(buildDir, pkg, targetArch)
+	if err != nil {
+		return buildDir, "", fmt.Errorf("packaging artifact: %w", err)
+	}
+	return buildDir, artifactPath, nil
+}
+
 func prepareBuildDepPackages(b *builder.Builder, pkg *manifest.Package, chrootRoot string, buildDepChrootRoot string) (preparedBuildDeps, error) {
 	if len(pkg.Build.BuildDepPackages) == 0 {
 		return preparedBuildDeps{}, nil
@@ -1774,14 +1801,14 @@ func init() {
 	buildCmd.Flags().BoolVar(&emptyRootfsFlag, "empty-rootfs", false, "Create a small debug image with boot assets only and an empty labeled root partition")
 	buildCmd.Flags().StringVar(&useQemuFlag, "use-qemu", "auto", "Use qemu for foreign arch builds: auto|true|false")
 	buildCmd.Flags().StringVar(&crossCompileFlag, "cross-compile", "", "Cross compiler prefix (e.g. arm-none-eabi-)")
-	viper.BindPFlag("init_system", buildCmd.Flags().Lookup("init"))
-	viper.BindPFlag("desktop", buildCmd.Flags().Lookup("desktop"))
-	viper.BindPFlag("display_manager", buildCmd.Flags().Lookup("display-manager"))
-	viper.BindPFlag("extra_packages", buildCmd.Flags().Lookup("extra"))
-	viper.BindPFlag("user_name", buildCmd.Flags().Lookup("user"))
-	viper.BindPFlag("user_password", buildCmd.Flags().Lookup("password"))
-	viper.BindPFlag("image_size_mb", buildCmd.Flags().Lookup("image-size"))
-	viper.BindPFlag("empty_rootfs", buildCmd.Flags().Lookup("empty-rootfs"))
+	viper.BindPFlag(config.KeyInitSystem, buildCmd.Flags().Lookup("init"))
+	viper.BindPFlag(config.KeyDesktop, buildCmd.Flags().Lookup("desktop"))
+	viper.BindPFlag(config.KeyDisplayManager, buildCmd.Flags().Lookup("display-manager"))
+	viper.BindPFlag(config.KeyExtraPackages, buildCmd.Flags().Lookup("extra"))
+	viper.BindPFlag(config.KeyUserName, buildCmd.Flags().Lookup("user"))
+	viper.BindPFlag(config.KeyUserPassword, buildCmd.Flags().Lookup("password"))
+	viper.BindPFlag(config.KeyImageSizeMB, buildCmd.Flags().Lookup("image-size"))
+	viper.BindPFlag(config.KeyEmptyRootfs, buildCmd.Flags().Lookup("empty-rootfs"))
 	buildCmd.MarkFlagRequired("device")
 }
 

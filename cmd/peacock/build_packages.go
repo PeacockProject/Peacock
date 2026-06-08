@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"peacock/internal/builder"
+	"peacock/internal/config"
 	"peacock/internal/manifest"
 	"peacock/internal/runner"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 var (
@@ -40,19 +40,6 @@ func normalizeDepName(dep string) string {
 		dep = strings.TrimSpace(dep[:i])
 	}
 	return dep
-}
-
-func localPackageManifestPath(name string) (string, bool) {
-	candidates := []string{
-		filepath.Join("peacock-ports", "device", name, "package.toml"),
-		filepath.Join("peacock-ports", "base", name, "package.toml"),
-	}
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			return c, true
-		}
-	}
-	return "", false
 }
 
 func expandLocalPackageBuildOrder(roots []string, initSystem string, includeDeps bool) ([]string, error) {
@@ -142,7 +129,7 @@ var buildPackagesCmd = &cobra.Command{
 		defer cancel()
 		runner.SetContext(ctx)
 
-		workDir := viper.GetString("work_dir")
+		workDir := config.WorkDir()
 		if workDir == "" {
 			return fmt.Errorf("work directory not set; run 'peacock init' first")
 		}
@@ -189,7 +176,6 @@ var buildPackagesCmd = &cobra.Command{
 			return fmt.Errorf("failed to initialize builder: %w", err)
 		}
 
-		buildDepChrootRoot := filepath.Join(workDir, "build-dep-chroot", hostArchString())
 		artifacts := map[string]string{}
 
 		for _, name := range order {
@@ -203,45 +189,17 @@ var buildPackagesCmd = &cobra.Command{
 			}
 
 			if !buildPackagesRebuild {
-				artifactPath := cachedArtifactPath(b.CacheDir, pkg.Package.Name, pkg.Package.Version, targetArch)
-				if artifactPath != "" && packageArchMatches(artifactPath, pacmanArch(targetArch)) {
+				if artifactPath := findCachedPackageArtifact(b, pkg, targetArch); artifactPath != "" {
 					fmt.Printf("Using cached package %s at %s\n", name, artifactPath)
 					artifacts[name] = artifactPath
 					continue
 				}
 			}
 
-			opts, chrootArch, err := resolveBuildOptions(pkg, targetArch, buildPackagesUseQemu, buildPackagesCrossCompile)
-			if err != nil {
-				return fmt.Errorf("failed resolving build options for %s: %w", name, err)
-			}
-			buildChrootDir := filepath.Join(workDir, "build-chroot", chrootArch)
-			useQemu := opts.UseQemu != nil && *opts.UseQemu
-
-			if err := b.EnsureBuildChroot(buildChrootDir, chrootArch, useQemu); err != nil {
-				return fmt.Errorf("failed ensuring build chroot for %s: %w", name, err)
-			}
-			if err := ensureBuildChrootBootstrap(b, buildChrootDir, chrootArch); err != nil {
-				return fmt.Errorf("failed bootstrapping build chroot for %s: %w", name, err)
-			}
-
-			extraPaths, err := prepareBuildDepPackages(b, pkg, buildChrootDir, buildDepChrootRoot)
-			if err != nil {
-				return fmt.Errorf("failed preparing build_dep_packages for %s: %w", name, err)
-			}
-			opts.ExtraPath = extraPaths.Bin
-			opts.ExtraInclude = extraPaths.Inc
-			opts.ExtraLib = extraPaths.Lib
-			opts.ExtraLdLib = extraPaths.LD
-
 			fmt.Printf("Building %s...\n", name)
-			buildDir, err := b.BuildPackageInChroot(pkg, targetArch, buildChrootDir, opts)
+			_, artifactPath, err := buildPackageInChrootStep(b, pkg, targetArch, workDir, buildPackagesUseQemu, buildPackagesCrossCompile)
 			if err != nil {
-				return fmt.Errorf("failed building %s: %w", name, err)
-			}
-			artifactPath, err := b.PackageArtifact(buildDir, pkg, targetArch)
-			if err != nil {
-				return fmt.Errorf("failed packaging %s: %w", name, err)
+				return fmt.Errorf("failed processing %s: %w", name, err)
 			}
 			artifacts[name] = artifactPath
 			fmt.Printf("Built %s -> %s\n", name, artifactPath)
