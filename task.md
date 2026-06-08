@@ -28,15 +28,17 @@
 
 ## Bootloaders as ports
 
-- [ ] Add `peacock-ports/device/minkernel-<device>` packages that pull from
+- [/] Add `peacock-ports/device/minkernel-<device>` packages that pull from
   `PeacockProject/MinKernel`, build `make -C mk DEVICE=<dev> bootimg-nokernel`,
   and stage the resulting `mk-<device>-boot.img` for the Peacock image stage to
   flash. Avoids the embedded-mk-binaries problem in this repo entirely.
-- [ ] Add `peacock-ports/device/lk2nd-<device>` packages that pull from
+  Initial coverage: `oppo-a16`. More device variants will follow the same pattern.
+- [/] Add `peacock-ports/device/lk2nd-<device>` packages that pull from
   `PeacockProject/lk2nd_peacock` and build the right target (e.g.
   `make TOOLCHAIN_PREFIX=... msm8953 LK2ND_DEVICE=<dev>`) for qcom devices.
   Once these exist, mk and lk2nd are versioned/installed like any other
   device-firmware port instead of being out-of-tree clones.
+  Initial coverage: `xiaomi-daisy` (msm8953). More device variants will follow the same pattern.
 
 ## Assets
 
