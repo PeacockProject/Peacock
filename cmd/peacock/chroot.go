@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 
 	"peacock/internal/chroot"
+	"peacock/internal/config"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 // chrootCmd represents the chroot command
@@ -18,7 +18,7 @@ var chrootCmd = &cobra.Command{
 	Long: `Enter the chroot environment.
 This will mount necessary filesystems and drop you into a shell inside the work directory's chroot.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		workDir := viper.GetString("work_dir")
+		workDir := config.WorkDir()
 		if workDir == "" {
 			fmt.Println("Work directory not set. Please run 'peacock init' first.")
 			os.Exit(1)
