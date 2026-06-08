@@ -139,24 +139,18 @@ This process involves:
 		}
 
 		// Validate the requested base-distro flavor before doing
-		// anything expensive. Phase 3 only ships an arch implementation;
-		// debian / alpine bounce off the apt / apk stubs with a clear
-		// "not yet implemented" error.
+		// anything expensive. Phase 3 ships an arch implementation plus
+		// a real debian implementation (debootstrap + apt-get); alpine
+		// still bounces off the apk stub. Non-arch paths only cover the
+		// base-distro bootstrap step, with the rest of the pipeline
+		// downstream still pacman-shaped (tracked in task.md
+		// "Flavor bootstrap").
 		flavor := config.Flavor()
 		if !config.IsValidFlavor(flavor) {
 			fmt.Printf("invalid flavor %q (valid: %v)\n", flavor, config.ValidFlavors)
 			fatal()
 		}
 		fmt.Printf("Base-distro flavor: %s\n", flavor)
-		if flavor != "arch" {
-			// Fail fast at what is conceptually the bootstrap step.
-			// We don't have a target root mounted yet, so pass workDir
-			// as a placeholder — the stub never touches it.
-			if err := bootstrapBaseChroot(ctx, flavor, workDir, nil); err != nil {
-				fmt.Printf("Bootstrap for flavor %q failed: %v\n", flavor, err)
-				fatal()
-			}
-		}
 
 		// Load device profile from peacock-ports
 		devPath := filepath.Join("peacock-ports", "device", deviceName, "device.toml")
@@ -167,6 +161,21 @@ This process involves:
 		}
 
 		fmt.Printf("Building for device: %s\n", dev.Device.Name)
+
+		if flavor != "arch" {
+			// debian: real debootstrap --foreign + qemu second-stage.
+			// alpine: stub.
+			// Either way the rest of the build pipeline downstream is
+			// still pacman-shaped (`InstallPackagesToRootfs`, etc.) so a
+			// successful flavor bootstrap doesn't yet imply an end-to-end
+			// build — that lands in later phases when the rootfs install
+			// path also forks per flavor.
+			altRoot := filepath.Join(workDir, "flavor-root", flavor)
+			if err := bootstrapBaseChroot(ctx, flavor, altRoot, dev.Device.Architecture, nil); err != nil {
+				fmt.Printf("Bootstrap for flavor %q failed: %v\n", flavor, err)
+				fatal()
+			}
+		}
 
 		initSystem := config.InitSystem()
 		if initSystem == "" {

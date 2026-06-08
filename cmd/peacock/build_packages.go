@@ -148,11 +148,6 @@ var buildPackagesCmd = &cobra.Command{
 		// to overwrite here because this RunE is the only writer in
 		// the build-packages flow.
 		viper.Set(config.KeyFlavor, flavor)
-		if flavor != "arch" {
-			if err := bootstrapBaseChroot(ctx, flavor, workDir, nil); err != nil {
-				return fmt.Errorf("bootstrap for flavor %q: %w", flavor, err)
-			}
-		}
 
 		logDir := filepath.Join(workDir, "logs")
 		if err := os.MkdirAll(logDir, 0755); err == nil {
@@ -175,6 +170,16 @@ var buildPackagesCmd = &cobra.Command{
 				return fmt.Errorf("failed loading device manifest %s: %w", devPath, err)
 			}
 			targetArch = dev.Device.Architecture
+		}
+
+		if flavor != "arch" {
+			// debian: real debootstrap. alpine: stub. Arch is required to
+			// pick the dpkg / apk arch so we delay this until after the
+			// device manifest / --arch flag has resolved targetArch.
+			altRoot := filepath.Join(workDir, "flavor-root", flavor)
+			if err := bootstrapBaseChroot(ctx, flavor, altRoot, targetArch, nil); err != nil {
+				return fmt.Errorf("bootstrap for flavor %q: %w", flavor, err)
+			}
 		}
 
 		requested := append([]string{}, buildPackagesFromFlag...)
