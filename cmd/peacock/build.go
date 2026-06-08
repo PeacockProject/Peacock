@@ -21,6 +21,7 @@ import (
 	"peacock/internal/builder"
 	"peacock/internal/chroot"
 	"peacock/internal/config"
+	"peacock/internal/feather"
 	"peacock/internal/image"
 	"peacock/internal/manifest"
 	"peacock/internal/runner"
@@ -137,6 +138,26 @@ This process involves:
 			fatal()
 		}
 
+		// Validate the requested base-distro flavor before doing
+		// anything expensive. Phase 3 only ships an arch implementation;
+		// debian / alpine bounce off the apt / apk stubs with a clear
+		// "not yet implemented" error.
+		flavor := config.Flavor()
+		if !config.IsValidFlavor(flavor) {
+			fmt.Printf("invalid flavor %q (valid: %v)\n", flavor, config.ValidFlavors)
+			fatal()
+		}
+		fmt.Printf("Base-distro flavor: %s\n", flavor)
+		if flavor != "arch" {
+			// Fail fast at what is conceptually the bootstrap step.
+			// We don't have a target root mounted yet, so pass workDir
+			// as a placeholder — the stub never touches it.
+			if err := bootstrapBaseChroot(ctx, flavor, workDir, nil); err != nil {
+				fmt.Printf("Bootstrap for flavor %q failed: %v\n", flavor, err)
+				fatal()
+			}
+		}
+
 		// Load device profile from peacock-ports
 		devPath := filepath.Join("peacock-ports", "device", deviceName, "device.toml")
 		dev, err := manifest.LoadDevice(devPath)
@@ -232,6 +253,14 @@ This process involves:
 			depPkg, err := manifest.LoadPackage(depManifest)
 			if err != nil {
 				return fmt.Errorf("error loading local dep manifest: %w", err)
+			}
+
+			// Skip ports that explicitly opt out of this flavor.
+			// Manifests without a `flavor` key apply to all flavors and
+			// fall through normally.
+			if !depPkg.SupportsFlavor(flavor) {
+				fmt.Printf("Skipping %s: not built for flavor %q\n", dep, flavor)
+				return nil
 			}
 
 			// Compute the build-dir hint up front so kernel cache reuse can
@@ -1012,6 +1041,18 @@ fi
 					fatal()
 				}
 			}()
+		}
+
+		// Phase 3 placeholder for the future feather-install step. When
+		// phase 4 lands, this block will iterate the Peacock-platform
+		// ports flagged `layout = "peacock"` and shell out to
+		// feather.Install against rootfsPath. Until then we just check
+		// whether ftr is on PATH and log a skip-message; the Arch path
+		// keeps working unchanged.
+		if feather.Available() {
+			fmt.Println("Feather binary detected; phase 4 will overlay /peacock here.")
+		} else {
+			fmt.Println("skipping feather install step — phase 4 will land")
 		}
 
 		if kernelImagePath != "" && fileExistsFile(initramfsPath) {
@@ -1906,6 +1947,8 @@ func init() {
 	buildCmd.Flags().BoolVar(&emptyRootfsFlag, "empty-rootfs", false, "Create a small debug image with boot assets only and an empty labeled root partition")
 	buildCmd.Flags().StringVar(&useQemuFlag, "use-qemu", "auto", "Use qemu for foreign arch builds: auto|true|false")
 	buildCmd.Flags().StringVar(&crossCompileFlag, "cross-compile", "", "Cross compiler prefix (e.g. arm-none-eabi-)")
+	buildCmd.Flags().String("flavor", "arch", "Base-distro flavor: arch|debian|alpine")
+	viper.BindPFlag(config.KeyFlavor, buildCmd.Flags().Lookup("flavor"))
 	viper.BindPFlag(config.KeyInitSystem, buildCmd.Flags().Lookup("init"))
 	viper.BindPFlag(config.KeyDesktop, buildCmd.Flags().Lookup("desktop"))
 	viper.BindPFlag(config.KeyDisplayManager, buildCmd.Flags().Lookup("display-manager"))

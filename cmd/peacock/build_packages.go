@@ -21,6 +21,7 @@ var (
 	buildPackagesDevice       string
 	buildPackagesArch         string
 	buildPackagesInit         string
+	buildPackagesFlavor       string
 	buildPackagesUseQemu      string
 	buildPackagesCrossCompile string
 	buildPackagesFromFlag     []string
@@ -134,6 +135,19 @@ var buildPackagesCmd = &cobra.Command{
 			return fmt.Errorf("work directory not set; run 'peacock init' first")
 		}
 
+		flavor := strings.TrimSpace(buildPackagesFlavor)
+		if flavor == "" {
+			flavor = config.Flavor()
+		}
+		if !config.IsValidFlavor(flavor) {
+			return fmt.Errorf("invalid flavor %q (valid: %v)", flavor, config.ValidFlavors)
+		}
+		if flavor != "arch" {
+			if err := bootstrapBaseChroot(ctx, flavor, workDir, nil); err != nil {
+				return fmt.Errorf("bootstrap for flavor %q: %w", flavor, err)
+			}
+		}
+
 		logDir := filepath.Join(workDir, "logs")
 		if err := os.MkdirAll(logDir, 0755); err == nil {
 			logPath := filepath.Join(logDir, fmt.Sprintf("build-packages-%s.log", time.Now().Format("20060102-150405")))
@@ -188,6 +202,11 @@ var buildPackagesCmd = &cobra.Command{
 				return fmt.Errorf("failed loading package %s: %w", name, err)
 			}
 
+			if !pkg.SupportsFlavor(flavor) {
+				fmt.Printf("Skipping %s: not built for flavor %q\n", name, flavor)
+				continue
+			}
+
 			if !buildPackagesRebuild {
 				if artifactPath := findCachedPackageArtifact(b, pkg, targetArch); artifactPath != "" {
 					fmt.Printf("Using cached package %s at %s\n", name, artifactPath)
@@ -228,4 +247,5 @@ func init() {
 	buildPackagesCmd.Flags().BoolVar(&buildPackagesRebuild, "rebuild", false, "Force rebuild even if matching cached artifact exists")
 	buildPackagesCmd.Flags().StringVar(&buildPackagesUseQemu, "use-qemu", "auto", "Use qemu for foreign arch builds: auto|true|false")
 	buildPackagesCmd.Flags().StringVar(&buildPackagesCrossCompile, "cross-compile", "", "Cross compiler prefix (e.g. arm-none-eabi-)")
+	buildPackagesCmd.Flags().StringVar(&buildPackagesFlavor, "flavor", "arch", "Base-distro flavor: arch|debian|alpine")
 }
