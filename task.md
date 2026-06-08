@@ -90,6 +90,33 @@
 
   Alpine track is being done in parallel and will land separately.
 
+- [/] Bootstrap alpine flavor: real apk path.
+  `internal/apk/apk.go` implements `Bootstrap` / `Setup` / `Install`
+  for real: `apk add --root <chroot> --initdb --arch <apk-arch>
+  --no-cache --update-cache --repository <mirror>/<version>/main
+  alpine-base` fills the chroot, `/etc/apk/repositories` is generated
+  (v3.20 + main/community by default), `apk update --root <chroot>`
+  primes the cache, then `apk add --root <chroot> --no-cache <pkgs>`
+  installs the initial set. `Install` routes packages through the
+  alpine alias table at `peacock-ports/flavors/alpine/aliases.toml`
+  (loaded inline in internal/apk to avoid an import cycle with
+  internal/builder), so manifests that list Arch names like
+  `base-devel` / `python` / `ncurses` translate to `build-base` /
+  `python3` / `ncurses-dev`. Bootstrap is idempotent — presence of
+  `/etc/alpine-release` short-circuits it. Host prereqs check `apk`,
+  `apk.static`, `apk-tools-static` in that order and produce an
+  actionable error pointing at `apk add apk-tools-static` (Alpine),
+  `pacman -S apk-tools-static` (Arch AUR), or building apk-tools from
+  source on Debian. `cmd/peacock/flavor.go` builds the apk `Config`
+  from `manifest.Device.Architecture` via `ArchToApk`. The arch
+  flavor path is unchanged.
+
+  Punted: signed-package verification beyond apk's default behavior.
+  apk validates signatures against the keys shipped in alpine-keys
+  (pulled by alpine-base) and we pass `--allow-untrusted` only on the
+  initial `--initdb` step where keys aren't installed yet. A separate
+  follow-up should audit the Bootstrap-time trust window.
+
 ## Assets
 
 - [x] Commit `assets/conspiracy.png` so the initramfs can include it without relying
