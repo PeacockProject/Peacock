@@ -56,21 +56,49 @@ func SetContext(c context.Context) {
 	ctx = c
 }
 
+// wmu serializes writes to the configured log writer. os/exec spawns
+// one copy goroutine per non-*os.File output stream, so a command
+// whose stdout AND stderr target the same io.Writer races unless every
+// write takes this lock. The GUI's MultiWriter(logFile, eventEmitter)
+// is exactly that case.
+var wmu sync.Mutex
+
+type syncWriter struct{ w io.Writer }
+
+func (s syncWriter) Write(p []byte) (int, error) {
+	wmu.Lock()
+	defer wmu.Unlock()
+	return s.w.Write(p)
+}
+
+// lockedWriter returns the current log writer wrapped for concurrent
+// use. *os.File values (the default os.Stdout) are returned bare so
+// os/exec can hand the fd straight to the child process — no copy
+// goroutine, no race, no behavior change for the CLI.
+func lockedWriter() io.Writer {
+	w := LogWriter()
+	if f, ok := w.(*os.File); ok {
+		return f
+	}
+	return syncWriter{w: w}
+}
+
 // Run runs the command and streams stdout/stderr to the log writer.
 func Run(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
-	cmd.Stdout = LogWriter()
-	cmd.Stderr = LogWriter()
+	w := lockedWriter()
+	cmd.Stdout = w
+	cmd.Stderr = w
 	return runCmd(cmd)
 }
 
 // RunCmd runs the provided command, wiring stdout/stderr to the log writer.
 func RunCmd(cmd *exec.Cmd) error {
 	if cmd.Stdout == nil {
-		cmd.Stdout = LogWriter()
+		cmd.Stdout = lockedWriter()
 	}
 	if cmd.Stderr == nil {
-		cmd.Stderr = LogWriter()
+		cmd.Stderr = lockedWriter()
 	}
 	return runCmd(cmd)
 }
@@ -78,9 +106,9 @@ func RunCmd(cmd *exec.Cmd) error {
 // RunOutput runs a command and returns its stdout while logging it too.
 func RunOutput(cmd *exec.Cmd) (string, error) {
 	var buf bytes.Buffer
-	cmd.Stdout = io.MultiWriter(&buf, LogWriter())
+	cmd.Stdout = io.MultiWriter(&buf, lockedWriter())
 	if cmd.Stderr == nil {
-		cmd.Stderr = LogWriter()
+		cmd.Stderr = lockedWriter()
 	}
 	err := runCmd(cmd)
 	return buf.String(), err
