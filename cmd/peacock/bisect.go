@@ -30,6 +30,7 @@ import (
 	"peacock/internal/chroot"
 	"peacock/internal/config"
 	"peacock/internal/manifest"
+	"peacock/internal/pipeline"
 	"peacock/internal/runner"
 )
 
@@ -137,7 +138,7 @@ func loadLocalManifests(rootPort string) (map[string]*manifest.Package, error) {
 		if _, done := manifests[name]; done {
 			return nil
 		}
-		path, ok := localPackageManifestPath(name)
+		path, ok := pipeline.LocalPackageManifestPath(name)
 		if !ok {
 			// Not local; treat as satisfied leaf.
 			return nil
@@ -289,7 +290,7 @@ func tryBuild(b *builder.Builder, pkg *manifest.Package, targetArch, workDir, lo
 	old := runner.LogWriter()
 	runner.SetLogWriter(io.MultiWriter(old, f))
 	defer runner.SetLogWriter(old)
-	_, artifact, err := buildPackageInChrootStep(b, pkg, targetArch, workDir, buildPackagesUseQemu, buildPackagesCrossCompile)
+	_, artifact, err := pipeline.BuildPackageInChrootStep(b, pkg, targetArch, workDir, buildPackagesUseQemu, buildPackagesCrossCompile)
 	return artifact, err
 }
 

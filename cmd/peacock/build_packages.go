@@ -12,6 +12,7 @@ import (
 	"peacock/internal/builder"
 	"peacock/internal/config"
 	"peacock/internal/manifest"
+	"peacock/internal/pipeline"
 	"peacock/internal/runner"
 
 	"github.com/spf13/cobra"
@@ -58,7 +59,7 @@ func expandLocalPackageBuildOrder(roots []string, initSystem string, includeDeps
 			return nil
 		}
 
-		manifestPath, ok := localPackageManifestPath(name)
+		manifestPath, ok := pipeline.LocalPackageManifestPath(name)
 		if !ok {
 			return nil
 		}
@@ -95,7 +96,7 @@ func expandLocalPackageBuildOrder(roots []string, initSystem string, includeDeps
 	}
 
 	for _, root := range roots {
-		if _, ok := localPackageManifestPath(root); !ok {
+		if _, ok := pipeline.LocalPackageManifestPath(root); !ok {
 			return nil, fmt.Errorf("local package not found: %s", root)
 		}
 		if err := dfs(root); err != nil {
@@ -187,7 +188,7 @@ var buildPackagesCmd = &cobra.Command{
 			// this until after the device manifest / --arch flag has
 			// resolved targetArch.
 			altRoot := filepath.Join(workDir, "flavor-root", flavor)
-			if err := bootstrapBaseChroot(ctx, flavor, altRoot, targetArch, nil); err != nil {
+			if err := pipeline.BootstrapBaseChroot(ctx, flavor, altRoot, targetArch, nil); err != nil {
 				return fmt.Errorf("bootstrap for flavor %q: %w", flavor, err)
 			}
 		}
@@ -214,7 +215,7 @@ var buildPackagesCmd = &cobra.Command{
 		artifacts := map[string]string{}
 
 		for _, name := range order {
-			manifestPath, ok := localPackageManifestPath(name)
+			manifestPath, ok := pipeline.LocalPackageManifestPath(name)
 			if !ok {
 				return fmt.Errorf("local package not found: %s", name)
 			}
@@ -229,7 +230,7 @@ var buildPackagesCmd = &cobra.Command{
 			}
 
 			if !buildPackagesRebuild {
-				if artifactPath := findCachedPackageArtifact(b, pkg, targetArch); artifactPath != "" {
+				if artifactPath := pipeline.FindCachedPackageArtifact(b, pkg, targetArch); artifactPath != "" {
 					fmt.Printf("Using cached package %s at %s\n", name, artifactPath)
 					artifacts[name] = artifactPath
 					continue
@@ -237,7 +238,7 @@ var buildPackagesCmd = &cobra.Command{
 			}
 
 			fmt.Printf("Building %s...\n", name)
-			_, artifactPath, err := buildPackageInChrootStep(b, pkg, targetArch, workDir, buildPackagesUseQemu, buildPackagesCrossCompile)
+			_, artifactPath, err := pipeline.BuildPackageInChrootStep(b, pkg, targetArch, workDir, buildPackagesUseQemu, buildPackagesCrossCompile)
 			if err != nil {
 				return fmt.Errorf("failed processing %s: %w", name, err)
 			}
