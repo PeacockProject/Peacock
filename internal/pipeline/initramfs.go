@@ -56,7 +56,7 @@ func (r *Runner) runInitramfsPhase(
 		return "", fmt.Errorf("error resolving build options for busybox: %w", err)
 	}
 	bbChrootDir := filepath.Join(workDir, "build-chroot", bbChrootArch)
-	buildDepChrootRoot := filepath.Join(workDir, "build-dep-chroot", hostArchString())
+	buildDepChrootRoot := filepath.Join(workDir, "build-dep-chroot", builder.HostArchString())
 	bbUseQemu := bbOpts.UseQemu != nil && *bbOpts.UseQemu
 	if err := b.EnsureBuildChroot(bbChrootDir, bbChrootArch, bbUseQemu); err != nil {
 		return "", fmt.Errorf("error ensuring build chroot for busybox: %w", err)

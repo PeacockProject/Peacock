@@ -58,7 +58,9 @@ func qemuStaticName(targetArch string) string {
 	}
 }
 
-func hostArchString() string {
+// HostArchString returns the pacman-style architecture name for the host
+// (e.g. x86_64, aarch64).
+func HostArchString() string {
 	switch runtime.GOARCH {
 	case "amd64":
 		return "x86_64"
@@ -120,7 +122,7 @@ func (b *Builder) BuildPackageInChroot(pkg *manifest.Package, targetArch string,
 		useQemu = *opts.UseQemu
 	}
 
-	hostArch := hostArchString()
+	hostArch := HostArchString()
 	if !useQemu && opts.CrossCompile == "" && targetArch != hostArch {
 		return "", fmt.Errorf("cross-arch build requires qemu or cross compiler; set build.cross_compile or --cross-compile, or enable qemu")
 	}

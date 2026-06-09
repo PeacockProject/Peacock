@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -591,7 +590,7 @@ func BuildPackageInChrootStep(b *builder.Builder, pkg *manifest.Package, targetA
 		return "", "", fmt.Errorf("resolving build options: %w", err)
 	}
 	buildChrootDir := filepath.Join(workDir, "build-chroot", chrootArch)
-	buildDepChrootRoot := filepath.Join(workDir, "build-dep-chroot", hostArchString())
+	buildDepChrootRoot := filepath.Join(workDir, "build-dep-chroot", builder.HostArchString())
 	useQemu := opts.UseQemu != nil && *opts.UseQemu
 
 	if err := b.EnsureBuildChroot(buildChrootDir, chrootArch, useQemu); err != nil {
@@ -651,7 +650,7 @@ func prepareBuildDepPackages(b *builder.Builder, pkg *manifest.Package, chrootRo
 			return preparedBuildDeps{}, fmt.Errorf("failed to load build_dep_package %s: %w", depPkg, err)
 		}
 
-		hostArch := hostArchString()
+		hostArch := builder.HostArchString()
 		artifactPath := cachedArtifactPath(b.CacheDir, depManifest.Package.Name, depManifest.Package.Version, hostArch)
 		if artifactPath == "" {
 			buildDir, err := b.BuildPackageInChroot(depManifest, hostArch, buildDepChrootRoot, builder.BuildOptions{
@@ -716,7 +715,7 @@ func prepareBuildDepPackages(b *builder.Builder, pkg *manifest.Package, chrootRo
 }
 
 func ensureBuildDepBootstrap(b *builder.Builder, root string) error {
-	hostArch := hostArchString()
+	hostArch := builder.HostArchString()
 	if err := b.EnsureBuildChroot(root, hostArch, false); err != nil {
 		return fmt.Errorf("failed to ensure build-dep chroot: %w", err)
 	}
@@ -729,7 +728,7 @@ func ensureBuildDepBootstrap(b *builder.Builder, root string) error {
 }
 
 func ensureBuildChrootBootstrap(b *builder.Builder, root string, chrootArch string) error {
-	if chrootArch != hostArchString() {
+	if chrootArch != builder.HostArchString() {
 		return nil
 	}
 	if err := b.EnsureBuildChroot(root, chrootArch, false); err != nil {
@@ -794,19 +793,6 @@ func bootstrapPacmanPackages(root string, packages []string) error {
 	return nil
 }
 
-func hostArchString() string {
-	switch runtime.GOARCH {
-	case "amd64":
-		return "x86_64"
-	case "arm64":
-		return "aarch64"
-	case "arm":
-		return "armv7"
-	default:
-		return runtime.GOARCH
-	}
-}
-
 func parseUseQemu(flag string) (*bool, error) {
 	switch flag {
 	case "auto", "":
@@ -842,7 +828,7 @@ func resolveBuildOptions(pkg *manifest.Package, targetArch string, useQemuFlag s
 		if crossCompile != "" {
 			val := false
 			useQemu = &val
-		} else if targetArch != hostArchString() {
+		} else if targetArch != builder.HostArchString() {
 			val := true
 			useQemu = &val
 		} else {
@@ -853,7 +839,7 @@ func resolveBuildOptions(pkg *manifest.Package, targetArch string, useQemuFlag s
 
 	chrootArch := targetArch
 	if useQemu != nil && !*useQemu {
-		chrootArch = hostArchString()
+		chrootArch = builder.HostArchString()
 	}
 
 	return builder.BuildOptions{

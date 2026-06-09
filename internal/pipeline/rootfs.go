@@ -88,7 +88,7 @@ func (r *Runner) runRootfsPhase(
 		if res.kernelBuildDir == "" {
 			runner.Logln("Kernel not built in dependencies; building now...")
 			kernelChrootDir := filepath.Join(workDir, "build-chroot", kernelChrootArch)
-			buildDepChrootRoot := filepath.Join(workDir, "build-dep-chroot", hostArchString())
+			buildDepChrootRoot := filepath.Join(workDir, "build-dep-chroot", builder.HostArchString())
 			kernelUseQemu := kernelOpts.UseQemu != nil && *kernelOpts.UseQemu
 			if err := b.EnsureBuildChroot(kernelChrootDir, kernelChrootArch, kernelUseQemu); err != nil {
 				return nil, fmt.Errorf("error ensuring build chroot for kernel: %w", err)
