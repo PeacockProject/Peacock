@@ -20,39 +20,16 @@ package main
 // We could reuse internal/host's table-driven probe runner, but its
 // canonical table is loaded with builder-specific entries we don't
 // want. Easier to build a small installer-local probe list here.
+//
+// The JSON wire shapes (DoctorReport / DoctorSummary / ProbeResultDTO)
+// are shared with peacock-builder via internal/guidto, so the existing
+// "Check host" tile renders without any frontend changes.
 
 import (
 	"os/exec"
+
+	"peacock/internal/guidto"
 )
-
-// DoctorReport is the JSON-shaped result the React side consumes.
-// Same shape as the builder's DoctorReport so the existing "Check
-// host" tile renders without any frontend changes.
-type DoctorReport struct {
-	Summary DoctorSummary    `json:"summary"`
-	Results []ProbeResultDTO `json:"results"`
-}
-
-// DoctorSummary mirrors the builder's DoctorSummary verbatim.
-type DoctorSummary struct {
-	OK      int `json:"ok"`
-	Missing int `json:"missing"`
-	Broken  int `json:"broken"`
-	Skipped int `json:"skipped"`
-}
-
-// ProbeResultDTO matches the builder's per-probe JSON shape so the
-// React mock's section-header / icon / install-hint rendering is
-// identical between the two binaries.
-type ProbeResultDTO struct {
-	Group       string `json:"group"`
-	Name        string `json:"name"`
-	Path        string `json:"path,omitempty"`
-	Version     string `json:"version,omitempty"`
-	Status      string `json:"status"`
-	InstallHint string `json:"install_hint,omitempty"`
-	Why         string `json:"why,omitempty"`
-}
 
 // installerProbe is the local probe entry used to build the doctor
 // report. Tiny on purpose — we only need binary + group + hint.
@@ -101,11 +78,11 @@ var installerProbes = []installerProbe{
 // returns the JSON-shaped report. We don't take any args (unlike the
 // builder's flavor/device/useHostChroot triple) because the installer
 // doesn't have flavor / cross-arch dimensions to filter on.
-func (a *App) RunDoctor() (DoctorReport, error) {
-	results := make([]ProbeResultDTO, 0, len(installerProbes))
-	var summary DoctorSummary
+func (a *App) RunDoctor() (guidto.DoctorReport, error) {
+	results := make([]guidto.ProbeResultDTO, 0, len(installerProbes))
+	var summary guidto.DoctorSummary
 	for _, p := range installerProbes {
-		r := ProbeResultDTO{
+		r := guidto.ProbeResultDTO{
 			Group:       p.Group,
 			Name:        p.Name,
 			InstallHint: p.Hint,
@@ -131,5 +108,5 @@ func (a *App) RunDoctor() (DoctorReport, error) {
 		}
 		results = append(results, r)
 	}
-	return DoctorReport{Summary: summary, Results: results}, nil
+	return guidto.DoctorReport{Summary: summary, Results: results}, nil
 }

@@ -4,41 +4,14 @@ package main
 // so the GUI's "Check host" tile can show real results instead of
 // stub data. Read-only (no shellouts beyond what the probe table does
 // itself), safe to call from any goroutine, no Wails context needed.
+//
+// The JSON wire shapes (DoctorReport / DoctorSummary / ProbeResultDTO)
+// are shared with peacock-installer via internal/guidto.
 
 import (
+	"peacock/internal/guidto"
 	"peacock/internal/host"
 )
-
-// DoctorReport is the JSON-shaped result the React side consumes. We
-// re-export host.Result fields as a DTO so the JSON output stays stable
-// even if internal/host renames or reshuffles its struct tags.
-type DoctorReport struct {
-	Summary DoctorSummary     `json:"summary"`
-	Results []ProbeResultDTO  `json:"results"`
-}
-
-// DoctorSummary mirrors host.Summary in a JSON form the frontend can
-// destructure directly (`{ok, missing, broken}`).
-type DoctorSummary struct {
-	OK      int `json:"ok"`
-	Missing int `json:"missing"`
-	Broken  int `json:"broken"`
-	Skipped int `json:"skipped"`
-}
-
-// ProbeResultDTO is the per-probe JSON shape. Fields match the React
-// mock's expectations: group/name surface in section headers; status
-// drives the icon; install_hint is shown on hover/expand; why is the
-// secondary description; path + version round it out.
-type ProbeResultDTO struct {
-	Group       string `json:"group"`
-	Name        string `json:"name"`
-	Path        string `json:"path,omitempty"`
-	Version     string `json:"version,omitempty"`
-	Status      string `json:"status"`
-	InstallHint string `json:"install_hint,omitempty"`
-	Why         string `json:"why,omitempty"`
-}
 
 // RunDoctor runs the host probe table and returns a JSON-friendly
 // summary + per-probe results. Args mirror the cobra `peacock doctor`
@@ -51,7 +24,7 @@ type ProbeResultDTO struct {
 //     to the flavor (or "arch" if flavor is empty), which collapses
 //     flavor-bootstrap probes to Skipped and appends host-chroot
 //     probes.
-func (a *App) RunDoctor(flavor, device string, useHostChroot bool) (DoctorReport, error) {
+func (a *App) RunDoctor(flavor, device string, useHostChroot bool) (guidto.DoctorReport, error) {
 	opts := host.ProbeOpts{
 		Flavor:       flavor,
 		DeviceFamily: device,
@@ -67,9 +40,9 @@ func (a *App) RunDoctor(flavor, device string, useHostChroot bool) (DoctorReport
 	results := host.FilterAndRunWithHostChroot(opts)
 	summary := host.SummarizeResults(results)
 
-	dto := make([]ProbeResultDTO, 0, len(results))
+	dto := make([]guidto.ProbeResultDTO, 0, len(results))
 	for _, r := range results {
-		dto = append(dto, ProbeResultDTO{
+		dto = append(dto, guidto.ProbeResultDTO{
 			Group:       string(r.Group),
 			Name:        r.Name,
 			Path:        r.Path,
@@ -80,8 +53,8 @@ func (a *App) RunDoctor(flavor, device string, useHostChroot bool) (DoctorReport
 		})
 	}
 
-	return DoctorReport{
-		Summary: DoctorSummary{
+	return guidto.DoctorReport{
+		Summary: guidto.DoctorSummary{
 			OK:      summary.OK,
 			Missing: summary.Missing,
 			Broken:  summary.Broken,
