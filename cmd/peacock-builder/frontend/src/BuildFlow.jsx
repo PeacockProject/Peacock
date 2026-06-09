@@ -4,6 +4,7 @@ import { AppShell, PK, Btn, Head, SRow, Field, Seg, ModeChip, useMode, FULL, HEA
 import { RunScreen, BUILD_PHASES, buildScript, BuildDone } from "./Run.jsx";
 import { ListDevices } from "./api.js";
 import BaseStep from "./BaseStep.jsx";
+import DesktopStep from "./DesktopStep.jsx";
 
 const DEVICES_FALLBACK = [
   { id: "samsung-jflte", name: "Galaxy S4", code: "samsung-jflte", soc: "msm8960", arch: "armv7h", tag: "stable" },
@@ -121,22 +122,7 @@ export default function BuildFlow({ onHome, startDevice, appClass }) {
             arch={arch} setArch={setArch}
             buildMode={buildMode} setBuildMode={setBuildMode} />}
 
-          {step === 2 && <React.Fragment>
-            <Head c="STEP 03 / 06 · USERLAND" t="Desktop & login" s="Choose a graphical environment and the display manager that greets you. Pick None for a headless console image." />
-            <div className="mbody fade">
-              <div className="tiles" style={{ marginBottom: 22 }}>
-                {DESKTOPS.map(d => (
-                  <div key={d.id} className={"tile" + (desktop === d.id ? " on" : "")}
-                    onClick={() => { setDesktop(d.id); if (d.id === "none") setDm("none"); else if (dm === "none") setDm("sddm"); }}>
-                    <div className="check">✓</div>
-                    <div className="tn">{d.name}</div><div className="tm">{d.m}</div>
-                  </div>
-                ))}
-              </div>
-              <Field l="Display manager" sub={desktop === "none" ? "n/a · headless" : "greeter"}>
-                <Seg v={dm} set={setDm} opts={DMS} dis={desktop === "none" ? DMS.filter(x => x !== "none") : []} /></Field>
-            </div>
-          </React.Fragment>}
+          {step === 2 && <DesktopStep desktop={desktop} setDesktop={setDesktop} dm={dm} setDm={setDm} mode={mdMode} />}
 
           {step === 3 && <React.Fragment>
             <Head c="STEP 04 / 06 · PACKAGES" t="Extra packages" s="Anything beyond the base + desktop set. Type a name and press Enter, or tap a suggestion." />
