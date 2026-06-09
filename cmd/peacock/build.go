@@ -170,86 +170,9 @@ This process involves:
 			fmt.Printf("%v\n", err)
 			fatal()
 		}
-		imageChrootRoot := rootfsRes.imageChrootRoot
-		rootfsPath := rootfsRes.rootfsPath
-		kernelBuildDir := rootfsRes.kernelBuildDir
-		kernelImagePath := rootfsRes.kernelImagePath
-
-		imagePath := filepath.Join(workDir, fmt.Sprintf("%s.img", deviceName))
-
-		// 9. Create Boot Image (Android)
-		if kernelBuildDir != "" && dev.Boot.GenerateBootImg {
-			fmt.Println("Generating Android boot.img...")
-			bootImgPath := filepath.Join(workDir, "boot.img")
-
-			// Paths to artifacts in build dir
-			zImagePath := filepath.Join(kernelBuildDir, "zImage")
-			// TODO: DTB handling (cat zImage + dtb or separate?)
-			// S4 usually uses appended DTB for older kernels or separate for newer.
-			// We'll simplisticly assume zImage has what we need or just use it.
-			// For the prototype 'mkbootimg' function we wrote, it takes a ramdisk path.
-
-			// Get cmdline from device profile
-			cmdline := dev.Boot.Cmdline
-
-			// Parse hex addresses from device profile
-			parseHex := func(s string) (uint32, error) {
-				var val uint32
-				_, err := fmt.Sscanf(s, "0x%x", &val)
-				if err != nil {
-					_, err = fmt.Sscanf(s, "%x", &val)
-				}
-				return val, err
-			}
-
-			baseAddr, err := parseHex(dev.Boot.Android.Base)
-			if err != nil {
-				fmt.Printf("Error parsing base address %s: %v, using default 0x80200000\n", dev.Boot.Android.Base, err)
-				baseAddr = 0x80200000
-			}
-
-			kernelOffset, err := parseHex(dev.Boot.Android.KernelOffset)
-			if err != nil {
-				kernelOffset = 0x00008000 // default
-			}
-
-			ramdiskOffset, err := parseHex(dev.Boot.Android.RamdiskOffset)
-			if err != nil {
-				ramdiskOffset = 0x02000000 // default
-			}
-
-			secondOffset, err := parseHex(dev.Boot.Android.SecondOffset)
-			if err != nil {
-				secondOffset = 0x00f00000 // default
-			}
-
-			tagsOffset, err := parseHex(dev.Boot.Android.TagsOffset)
-			if err != nil {
-				tagsOffset = 0x00000100 // default
-			}
-
-			pageSize := uint32(dev.Boot.Android.PageSize)
-			if pageSize == 0 {
-				pageSize = 2048 // default
-			}
-
-			if err := image.CreateBootImage(bootImgPath, zImagePath, initramfsPath, cmdline, baseAddr, kernelOffset, ramdiskOffset, secondOffset, tagsOffset, pageSize); err != nil {
-				fmt.Printf("Error creating boot.img: %v\n", err)
-			} else {
-				fmt.Printf("Boot image created at: %s\n", bootImgPath)
-			}
-		}
-		_ = kernelImagePath
-
-		// Create final disk image
-		fmt.Println("Creating disk image...")
-		imageSizeMB := config.ImageSizeMB()
-		if imageSizeMB <= 0 {
-			imageSizeMB = estimateImageSizeMB(rootfsPath, emptyRootfs)
-			fmt.Printf("Auto image size: %dMB\n", imageSizeMB)
-		}
-		if err := b.CreateDiskImage(imageChrootRoot, rootfsPath, imagePath, imageSizeMB, dev.Quirks.LegacyRootfsExt4); err != nil {
-			fmt.Printf("Error creating disk image: %v\n", err)
+		imagePath, err := runImageAssemblyPhase(b, dev, rootfsRes.imageChrootRoot, rootfsRes.rootfsPath, rootfsRes.kernelBuildDir, initramfsPath, emptyRootfs, workDir)
+		if err != nil {
+			fmt.Printf("%v\n", err)
 			fatal()
 		}
 
