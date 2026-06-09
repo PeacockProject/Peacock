@@ -237,13 +237,31 @@ const UNLOCK_BRANDS = {
   },
 };
 
+/* Renders the matched brand's instructions only. The maintainer dropped
+ * the accordion-of-all-brands UI — showing four other brands' unlock guides
+ * is noise. PinePhone / x86 get the brand's friendly "nothing to do" copy
+ * via its `autoConfirm` entry. */
+function BrandInstructions({ info }) {
+  return (
+    <div className="ff-brand">
+      <div className="ff-brand-head">
+        <span className="ff-brand-pill">your phone</span>
+        <h2 className="ff-brand-title">{info.title}</h2>
+      </div>
+      <p className="ff-brand-blurb">{info.blurb}</p>
+      <ol className="ff-brand-steps">
+        {info.steps.map((s, i) => <li key={i}>{s}</li>)}
+      </ol>
+    </div>
+  );
+}
+
 function StepUnlock({ dev, build, onCancel, onBack, onNext }) {
   const ports = portsFor(dev);
   const brand = ports.brand;
   const info = UNLOCK_BRANDS[brand] || UNLOCK_BRANDS.oppo;
   /* PinePhone + x86 default-confirm since there's nothing for the user to actually do. */
   const [confirmed, setConfirmed] = React.useState(!!info.autoConfirm);
-  const [open, setOpen] = React.useState(brand);
   const ready = confirmed && build.done;
   /* the user can ALWAYS click Continue once both gates are met. If the
    * build is still going, show "Still building…" instead of disabling
@@ -263,28 +281,7 @@ function StepUnlock({ dev, build, onCancel, onBack, onNext }) {
             install: most makers add a waiting period. Start it now and let
             it run in the background while we build your image.
           </p>
-          {Object.entries(UNLOCK_BRANDS).map(([k, v]) => {
-            const expanded = k === open;
-            const isYou = k === brand;
-            return (
-              <div key={k} className={"ff-acc" + (expanded ? " open" : "") + (isYou ? " mine" : "")}>
-                <div className="ff-acc-head" onClick={() => setOpen(expanded ? null : k)}>
-                  <span className="ff-acc-brand">{k}</span>
-                  <span className="ff-acc-title">{v.title}</span>
-                  {isYou && <span className="ff-acc-pill">your phone</span>}
-                  <span className="ff-acc-chev">{expanded ? "−" : "+"}</span>
-                </div>
-                {expanded && (
-                  <div className="ff-acc-body">
-                    <p className="ff-acc-blurb">{v.blurb}</p>
-                    <ol className="ff-acc-steps">
-                      {v.steps.map((s, i) => <li key={i}>{s}</li>)}
-                    </ol>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+          <BrandInstructions info={info} />
           {!info.autoConfirm && (
             <label className={"ff-ack alone" + (confirmed ? " on" : "")}>
               <span className="ff-check" onClick={() => setConfirmed(c => !c)}>{confirmed ? "✓" : ""}</span>
