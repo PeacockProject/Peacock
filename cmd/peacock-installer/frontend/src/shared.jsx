@@ -1,1 +1,1 @@
-../../peacock-builder/frontend/src/shared.jsx
+../../../peacock-builder/frontend/src/shared.jsx

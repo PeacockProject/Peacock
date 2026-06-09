@@ -1,1 +1,1 @@
-../../peacock-builder/frontend/src/InstallFlow.jsx
+../../../peacock-builder/frontend/src/InstallFlow.jsx
