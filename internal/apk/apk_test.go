@@ -1,6 +1,7 @@
 package apk
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -93,6 +94,70 @@ ncurses = "ncurses-dev"
 		}
 		if got != want {
 			t.Fatalf("alias %q = %q, want %q", k, got, want)
+		}
+	}
+}
+
+// TestInstallRejectsEmptyPackages confirms Install nil/empty short-
+// circuits before the apk binary lookup so a hostile environment
+// (e.g. CI without apk-tools installed) never sees an spurious "no apk
+// binary" error from the no-op path.
+func TestInstallRejectsEmptyPackages(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+	}{
+		{"nil", nil},
+		{"empty", []string{}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if err := Install("/nonexistent-root-for-test", tc.in); err != nil {
+				t.Fatalf("Install with %s packages returned error: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// TestInstallLocalRejectsEmptyFiles is the sibling check for the local
+// .apk path.
+func TestInstallLocalRejectsEmptyFiles(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+	}{
+		{"nil", nil},
+		{"empty", []string{}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if err := InstallLocal("/nonexistent-root-for-test", tc.in); err != nil {
+				t.Fatalf("InstallLocal with %s packages returned error: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// TestCheckHostPrereqsMissingAPK stubs $PATH so none of `apk`,
+// `apk.static`, or `apk-tools-static` resolve. The error must surface
+// all three candidates so the user knows what to install regardless of
+// which package layout their host distro ships.
+func TestCheckHostPrereqsMissingAPK(t *testing.T) {
+	old := os.Getenv("PATH")
+	t.Cleanup(func() { os.Setenv("PATH", old) })
+	if err := os.Setenv("PATH", ""); err != nil {
+		t.Fatalf("setenv PATH=\"\": %v", err)
+	}
+	err := checkHostPrereqs()
+	if err == nil {
+		t.Fatalf("checkHostPrereqs with empty PATH should fail")
+	}
+	msg := err.Error()
+	for _, want := range []string{"apk", "apk.static", "apk-tools-static", "Alpine", "Arch", "Debian"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error missing %q substring; got: %s", want, msg)
 		}
 	}
 }
