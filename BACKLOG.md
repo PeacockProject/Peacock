@@ -142,19 +142,24 @@ on Linux; frontend is the adapted React mock at
 
 ### CI / automation
 
-- [ ] GitHub Actions on every repo. Minimum job set per repo:
-  - **Peacock**: `go build ./cmd/... ./internal/...`, `go vet`, `go test ./...`.
-  - **peacock-ports**: `python3 tools/phase1-verify.py`, TOML round-trip lint.
-  - **feather**: `make build && make test`, `clang-tidy src/*.c`, `file ftr | grep statically`.
-  - **peacock-mkinitfs**: `go build && go test`, embed-asset diff check.
-  - **MinKernel**: `make -C mk DEVICE=oppo-a16 bootimg-nokernel` smoke build.
-  - **lk2nd_peacock**: `make TOOLCHAIN_PREFIX=arm-none-eabi- lk2nd-msm8953` smoke build.
-  - **PRP**: shellcheck across `scripts/`, `initramfs/rootfs/`, `overlay/`.
-- [ ] Cross-repo coordination: when peacock-ports submodule moves, Peacock's CI
-      should refetch and revalidate.
-- [ ] `dependabot` or equivalent for Go module updates.
+GitHub Actions was attempted (workflows landed across all 6 repos) and reverted
+— maintainer opted out. Whatever CI we adopt next won't be GH Actions. Options
+to revisit if/when CI lands:
+
+- Self-hosted runner (Drone, Woodpecker, Forgejo Actions) — keeps secrets local,
+  no third-party minutes burned on private repos.
+- Pre-commit hooks instead of post-push CI — cheap, no infra.
+- Manual `make check` target wrapping `go build && go vet && go test &&
+  gofmt -l` etc., invoked before pushes.
+
+Still worth automating regardless of runner choice:
+
+- [ ] `make check` target across each repo (build + test + lint) that the
+      maintainer runs locally before pushing.
 - [ ] No automated linting today: `gofmt -l`, `clang-format -i`, `shellcheck`,
-      `taplo fmt` should run pre-commit + in CI.
+      `taplo fmt` should run pre-commit at minimum.
+- [ ] Cross-repo coordination: when peacock-ports submodule moves, Peacock
+      needs to refetch + revalidate (whatever runner does it).
 
 ### Reproducible builds
 
