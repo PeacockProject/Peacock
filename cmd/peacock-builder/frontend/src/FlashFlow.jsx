@@ -491,6 +491,42 @@ function PhasePill({ label, pct, state }) {
   );
 }
 
+/* ===== F5: done ========================================================= */
+
+function StepDone({ dev, onHome, onBuildAnother }) {
+  const name = (dev && dev.name) || "your phone";
+  return (
+    <div className="ff" data-step="done">
+      <div className="ff-done">
+        <div className="glow" />
+        <PK src={FULL} className="ff-done-pk pkgrad" />
+        <div className="ff-done-tag">PEACOCKOS INSTALLED</div>
+        <h1 className="ff-done-h1">
+          Welcome to PeacockOS, <em>{name}</em>.
+        </h1>
+        <p className="ff-done-body">
+          The hard part is over. {name} now runs PeacockOS.
+        </p>
+        <div className="ff-done-next">
+          <div className="ff-done-next-h">What happens next</div>
+          <ol>
+            <li><b>Unplug the USB cable</b> when the phone's screen turns on.</li>
+            <li><b>Wait 2 to 3 minutes</b> for the first boot. PeacockOS does some
+              one-time setup the first time it runs — this is normal.</li>
+            <li><b>If it's stuck on the splash for more than 10 minutes</b>, hold
+              the power button to force off, then check the troubleshooting page.</li>
+          </ol>
+        </div>
+        <div className="ff-done-acts">
+          <Btn variant="grad" ar="→" onClick={onHome}>Done</Btn>
+          <Btn variant="ghost" onClick={onBuildAnother}>Build another</Btn>
+          <Btn variant="subtle" onClick={onHome}>Show in folder</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ===== F1: data-loss warning ============================================ */
 function StepWarn({ dev, onCancel, onBack, onNext }) {
   const [ack1, setAck1] = React.useState(false);
@@ -613,8 +649,7 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appCl
         {sub === "unlock" && <StepUnlock dev={dev} build={build} onCancel={cancel} onBack={() => setSub("warn")} onNext={() => setSub("connect")} />}
         {sub === "connect" && <StepConnect dev={dev} build={build} onCancel={cancel} onBack={() => setSub("unlock")} onNext={() => setSub("flash")} />}
         {sub === "flash" && <StepFlash dev={dev} onCancel={cancel} onBack={() => setSub("connect")} onDone={() => setSub("done")} />}
-        {/* done lands in next commit */}
-        {sub === "done" && <div className="ff-tbd">step "done" — coming next commit</div>}
+        {sub === "done" && <StepDone dev={dev} onHome={onHome} onBuildAnother={onHome} />}
         <DiscardModal open={discardOpen} onKeep={keep} onDiscard={discard} />
       </div>
     </AppShell>

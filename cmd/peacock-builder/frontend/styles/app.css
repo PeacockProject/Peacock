@@ -613,3 +613,21 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 .ff-flash-log-wrap .y{color:#d6b15e;}
 .ff-flash-log-wrap .cur{color:#74a8e0;animation:bl 1s steps(2) infinite;}
 
+/* ===== F5: done screen ===== */
+.ff-done{height:100%;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;
+  overflow:auto;padding:36px 40px;}
+.ff-done .glow{position:absolute;inset:0;background:radial-gradient(48% 42% at 50% 38%,rgba(46,134,200,.16),transparent 70%),radial-gradient(40% 40% at 60% 60%,rgba(108,99,216,.12),transparent 72%),radial-gradient(34% 34% at 40% 60%,rgba(31,138,91,.12),transparent 72%);pointer-events:none;}
+.ff-done-pk{width:170px;height:200px;position:relative;margin-bottom:6px;
+  filter:drop-shadow(0 22px 44px rgba(46,134,200,.22));animation:popin .85s cubic-bezier(.2,.7,.2,1) both;}
+.ff-done-tag{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--soft);position:relative;}
+.ff-done-h1{font-family:var(--serif);font-size:46px;line-height:1.06;margin:10px 0 8px;position:relative;max-width:18ch;}
+.ff-done-h1 em{font-style:italic;background:var(--irid);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;}
+.ff-done-body{color:var(--ink2);font-size:15.5px;line-height:1.55;max-width:42ch;position:relative;margin:0 0 22px;}
+.ff-done-next{max-width:520px;width:100%;background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px 22px;
+  text-align:left;position:relative;margin:0 0 22px;box-shadow:0 16px 40px -28px rgba(46,134,200,.4);}
+.ff-done-next-h{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--soft);margin-bottom:8px;}
+.ff-done-next ol{font-size:14px;line-height:1.6;color:var(--ink2);padding-left:22px;margin:0;}
+.ff-done-next ol li{margin-bottom:8px;}
+.ff-done-next ol li b{color:var(--ink);}
+.ff-done-acts{display:flex;gap:12px;position:relative;flex-wrap:wrap;justify-content:center;}
+
