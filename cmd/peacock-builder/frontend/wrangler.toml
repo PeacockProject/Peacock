@@ -1,0 +1,9 @@
+name = "peacock-builder-preview"
+compatibility_date = "2025-01-15"
+
+# Static SPA — Cloudflare serves dist/ directly via the Workers Assets binding.
+# No Worker code needed for the mock build (everything's client-side React).
+# Run `npm run cf:deploy` from this directory to ship.
+[assets]
+directory = "./dist"
+not_found_handling = "single-page-application"
