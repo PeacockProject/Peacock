@@ -56,7 +56,6 @@ export default function BuildFlow({ onHome, startDevice, appClass }) {
   const [dm, setDm] = React.useState("sddm");
   const [pkgs, setPkgs] = React.useState(["firefox-esr", "mpv"]);
   const [running, setRunning] = React.useState(false);
-  const [bdone, setBdone] = React.useState(false);
   const [mdMode, toggleMode] = useMode();
 
   const pick = (d) => { setDev(d); setArch(d.arch); };
