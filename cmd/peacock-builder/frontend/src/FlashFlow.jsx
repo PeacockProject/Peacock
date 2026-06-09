@@ -77,30 +77,102 @@ function useBuildJob(dev, desktop, armed) {
 
 /* ===== F0: splash → top-bar morph =======================================
  *
- * The splash is a full-stage hero (peacock + one line). After ~1.7s it enters
+ * The splash is a full-stage hero (peacock + one line). After ~1.5s it enters
  * a "docking" state: a single coordinated CSS transition scales the peacock
  * down + translates it to the top-left, the label fades out, and the body
- * fades in behind it. Once the transform transition ends the driver advances
- * to F1 and the docked spot becomes the home for the persistent build banner
- * (added in the next commit).
+ * fades in behind it. After the docking transition (~720ms) the driver
+ * advances to F1 and the docked spot becomes the home for the persistent
+ * build banner.
  *
- * Technique: a single fixed-position layer with two states (`.docking`
- * applied after ~1.7s, transition runs ~700ms). transform + opacity only,
- * so it stays on the GPU and doesn't thrash layout. */
+ * State-machine driver: a deterministic setTimeout chain, NOT the CSS
+ * `transitionend` event. The previous implementation relied on
+ * `transitionend` on `propertyName === "transform"` to advance from F0 → F1,
+ * which was fragile — if the splash element unmounted, had pointer-events
+ * blocked, or the keyframe entry animation collided with the transition,
+ * the event never fired and the screen sat blank on "step 0 / 5". The CSS
+ * animation still runs visually; the timer is just the state driver.
+ *
+ * Timing budget (matches styles/app.css):
+ *   HOLD_MS   1500   visible centered splash
+ *   DOCK_MS    720   matches `.ff-splash-pk` transition:transform .72s
+ *   BUFFER_MS   80   safety pad before advancing to F1
+ *
+ * StrictMode safety: timer IDs live in a ref so the cleanup pass in the
+ * double-mount cycle doesn't leave a dangling timer that fires onDone
+ * twice. We also flip a hasFiredRef before calling onDone so the
+ * belt-and-suspenders `transitionend` early-out can't re-fire it. */
+const SPLASH_HOLD_MS = 1500;
+const SPLASH_DOCK_MS = 720;
+const SPLASH_BUFFER_MS = 80;
+
 function StepSplash({ onDone }) {
   const [docking, setDocking] = React.useState(false);
-  React.useEffect(() => {
-    const t = setTimeout(() => setDocking(true), 1700);
-    return () => clearTimeout(t);
+  const dockTimerRef = React.useRef(null);
+  const doneTimerRef = React.useRef(null);
+  const rafRef = React.useRef(null);
+  const firedRef = React.useRef(false);
+  /* Stash onDone in a ref so the schedule effect can have a stable [] deps
+   * list. Without this, the parent passes a fresh `() => setSub("warn")`
+   * closure each render — when we call setDocking(true) the effect would
+   * re-run, clear its own timers, and reschedule, looping forever. */
+  const onDoneRef = React.useRef(onDone);
+  React.useEffect(() => { onDoneRef.current = onDone; }, [onDone]);
+
+  const fireOnce = React.useCallback(() => {
+    if (firedRef.current) return;
+    firedRef.current = true;
+    onDoneRef.current && onDoneRef.current();
   }, []);
+
+  React.useEffect(() => {
+    /* Schedule docking after the hold period. Wrap setDocking(true) in a
+     * requestAnimationFrame so React's render of the centered state has
+     * committed to at least one paint frame before the `.docking` class is
+     * added — without this, the browser can batch the initial render and
+     * the class change into the same frame and skip the transition
+     * entirely (manifests as "splash disappears in 0ms"). */
+    dockTimerRef.current = setTimeout(() => {
+      rafRef.current = requestAnimationFrame(() => {
+        setDocking(true);
+      });
+    }, SPLASH_HOLD_MS);
+
+    /* Deterministic advance to F1: hold + dock + small buffer. The CSS
+     * transition is the visual; this timer drives the state machine. */
+    doneTimerRef.current = setTimeout(
+      fireOnce,
+      SPLASH_HOLD_MS + SPLASH_DOCK_MS + SPLASH_BUFFER_MS,
+    );
+
+    return () => {
+      if (dockTimerRef.current) clearTimeout(dockTimerRef.current);
+      if (doneTimerRef.current) clearTimeout(doneTimerRef.current);
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+    /* eslint-disable-next-line react-hooks/exhaustive-deps -- fireOnce is
+     * stable (empty deps via the ref shim above), and we explicitly want
+     * this effect to run exactly once at mount. */
+  }, []);
+
+  /* Belt-and-suspenders: if the peacock's transform transition does end
+   * cleanly we advance a hair early, but the timer is still the source of
+   * truth — fireOnce() is idempotent. */
+  const onTransitionEnd = (e) => {
+    if (!docking) return;
+    if (e.propertyName !== "transform") return;
+    if (!(e.target && e.target.classList && e.target.classList.contains("ff-splash-pk"))) return;
+    fireOnce();
+  };
+
   return (
-    <div className={"ff-splash" + (docking ? " docking" : "")}
-      onTransitionEnd={(e) => {
-        /* only react once, when the peacock layer finishes its move */
-        if (docking && e.propertyName === "transform" && e.target.classList.contains("ff-splash-pk")) {
-          onDone();
-        }
-      }}>
+    /* pointer-events:none so the splash overlay doesn't trap clicks on
+     * the wizard's Cancel chrome that sits underneath it. The splash has
+     * no interactive elements of its own. */
+    <div
+      className={"ff-splash" + (docking ? " docking" : "")}
+      style={{ pointerEvents: "none" }}
+      onTransitionEnd={onTransitionEnd}
+    >
       <div className="ff-splash-stage">
         <div className="ff-splash-aura" />
         <PK src={FULL} className="ff-splash-pk pkgrad" />
@@ -743,6 +815,10 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appCl
    * (which docks into the same spot), and F5 has its own celebratory layout. */
   const showBanner = sub === "warn" || sub === "unlock" || sub === "connect" || sub === "flash";
 
+  /* Step counter: F0 is a transient pre-step (splash + background build
+   * kickoff), not one of the 5 user-actionable substeps. Show just
+   * "Preparing" while in F0 so the status bar doesn't say "step 0 / 5". */
+  const stepNum = { warn: 1, unlock: 2, connect: 3, flash: 4, done: 5 }[sub];
   const status = (
     <React.Fragment>
       <span className="pd" /><span>{dev ? dev.code : "no device"}</span>
@@ -755,8 +831,12 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appCl
           sub === "connect" ? "Connect" :
           sub === "flash" ? "Flashing" : "Done"
         }</span>
-        <span className="sep">·</span>
-        <span>step {{ splash: 0, warn: 1, unlock: 2, connect: 3, flash: 4, done: 5 }[sub]} / 5</span>
+        {stepNum && (
+          <React.Fragment>
+            <span className="sep">·</span>
+            <span>step {stepNum} / 5</span>
+          </React.Fragment>
+        )}
       </span>
     </React.Fragment>
   );
