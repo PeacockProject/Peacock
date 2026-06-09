@@ -33,7 +33,6 @@ type buildSetup struct {
 	userName             string
 	userPassword         string
 	emptyRootfs          bool
-	reader               *bufio.Reader
 }
 
 // runBuildSetup performs phase 1. Any non-nil error is fatal; the caller
@@ -146,6 +145,5 @@ func runBuildSetup(ctx context.Context, workDir string) (*buildSetup, error) {
 		userName:             userName,
 		userPassword:         userPassword,
 		emptyRootfs:          emptyRootfs,
-		reader:               reader,
 	}, nil
 }

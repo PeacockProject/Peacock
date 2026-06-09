@@ -150,128 +150,16 @@ This process involves:
 		userName := setup.userName
 		userPassword := setup.userPassword
 		emptyRootfs := setup.emptyRootfs
-		reader := setup.reader
-		_ = reader
 
-		// Base packages should be defined in device/package.toml dependencies
-		pkgs := []string{}
-
-		// Dependency Resolution & Pre-Build
-		fmt.Println("Resolving dependencies...")
-		var localPackages []string // Paths to built packages (.pkg.tar.gz)
-		depBuildDirs := make(map[string]string)
-		depPackagePaths := make(map[string]string)
-		pkgInList := func(list []string, name string) bool {
-			for _, v := range list {
-				if v == name {
-					return true
-				}
-			}
-			return false
-		}
-
-		// Iterate dependencies and decide if local (Build + -U) or remote (-S)
-		allDeps := append([]string{}, pkg.Build.Dependencies...)
-		if initSystem == "openrc" {
-			allDeps = append(allDeps, pkg.Build.DependenciesOpenRC...)
-		} else {
-			allDeps = append(allDeps, pkg.Build.DependenciesSystemd...)
-		}
-
-		buildLocalPackage := func(dep string, depManifest string) error {
-			depPkg, err := manifest.LoadPackage(depManifest)
-			if err != nil {
-				return fmt.Errorf("error loading local dep manifest: %w", err)
-			}
-
-			// Skip ports that explicitly opt out of this flavor.
-			// Manifests without a `flavor` key apply to all flavors and
-			// fall through normally.
-			if !depPkg.SupportsFlavor(flavor) {
-				fmt.Printf("Skipping %s: not built for flavor %q\n", dep, flavor)
-				return nil
-			}
-
-			// Compute the build-dir hint up front so kernel cache reuse can
-			// still find an in-tree zImage when only the .pkg.tar.gz is cached.
-			_, depChrootArch, err := resolveBuildOptions(depPkg, dev.Device.Architecture, useQemuFlag, crossCompileFlag)
-			if err != nil {
-				return fmt.Errorf("error resolving build options for %s: %w", dep, err)
-			}
-			buildChrootDir := filepath.Join(workDir, "build-chroot", depChrootArch)
-			buildDirHint := filepath.Join(buildChrootDir, "build", fmt.Sprintf("%s-%s-%s", depPkg.Package.Name, depPkg.Package.Version, dev.Device.Architecture))
-
-			if artifactPath := findCachedPackageArtifact(b, depPkg, dev.Device.Architecture); artifactPath != "" {
-				fmt.Printf("Using cached package %s at %s\n", dep, artifactPath)
-				localPackages = append(localPackages, artifactPath)
-				if !pkgInList(pkgs, dep) {
-					pkgs = append(pkgs, dep)
-				}
-				depPackagePaths[depPkg.Package.Name] = artifactPath
-				if strings.HasPrefix(depPkg.Package.Name, "linux-") && fileExists(buildDirHint) && kernelArtifactExists(buildDirHint) {
-					depBuildDirs[depPkg.Package.Name] = buildDirHint
-				}
-				return nil
-			}
-
-			buildDir, artifact, err := buildPackageInChrootStep(b, depPkg, dev.Device.Architecture, workDir, useQemuFlag, crossCompileFlag)
-			if err != nil {
-				return fmt.Errorf("error processing dependency %s: %w", dep, err)
-			}
-
-			depBuildDirs[depPkg.Package.Name] = buildDir
-			fmt.Printf("Built and packaged %s at %s\n", dep, artifact)
-			localPackages = append(localPackages, artifact)
-			depPackagePaths[depPkg.Package.Name] = artifact
-			if !pkgInList(pkgs, dep) {
-				pkgs = append(pkgs, dep)
-			}
-			return nil
-		}
-
-		for _, dep := range allDeps {
-			depManifest, ok := localPackageManifestPath(dep)
-			if ok {
-				// Local Package
-				fmt.Printf("Found local dependency: %s. Building...\n", dep)
-				if err := buildLocalPackage(dep, depManifest); err != nil {
-					fmt.Printf("%v\n", err)
-					fatal()
-				}
-
-			} else {
-				// Remote Package
-				if !pkgInList(pkgs, dep) {
-					pkgs = append(pkgs, dep)
-				}
-			}
-		}
-
-		userlandPkgs, warnings, err := userland.ResolveSelections(desktopChoice, displayManagerChoice, initSystem, extraPackages)
+		pkgRes, err := runPackageOrchestration(b, pkg, dev, flavor, initSystem, desktopChoice, displayManagerChoice, extraPackages, workDir, useQemuFlag, crossCompileFlag)
 		if err != nil {
-			fmt.Printf("Userland selection error: %v\n", err)
-			fmt.Println(userland.DescribeChoices())
+			fmt.Printf("%v\n", err)
 			fatal()
 		}
-		for _, w := range warnings {
-			fmt.Printf("Warning: %s\n", w)
-		}
-		pkgs = append(pkgs, userlandPkgs...)
-
-		for _, dep := range userlandPkgs {
-			if _, ok := depPackagePaths[dep]; ok {
-				continue
-			}
-			depManifest, ok := localPackageManifestPath(dep)
-			if !ok {
-				continue
-			}
-			fmt.Printf("Found local userland package: %s. Building...\n", dep)
-			if err := buildLocalPackage(dep, depManifest); err != nil {
-				fmt.Printf("%v\n", err)
-				fatal()
-			}
-		}
+		pkgs := pkgRes.pkgs
+		localPackages := pkgRes.localPackages
+		depBuildDirs := pkgRes.depBuildDirs
+		depPackagePaths := pkgRes.depPackagePaths
 
 		// 7. Initramfs Generation
 		fmt.Println("Generating initramfs...")
