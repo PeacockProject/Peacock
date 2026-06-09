@@ -89,6 +89,33 @@ export function AppShell({ title, status, appClass, children }) {
   );
 }
 
+/* ---- basic/advanced mode toggle (persisted, used by wizard steps) ----
+ * useMode returns [mode, toggle, setMode]. Persisted to localStorage under
+ * "pb:mode". Default "basic" so newcomers get the hand-holding flow.
+ * Sibling step components consume `mode` as a prop. */
+export function useMode() {
+  const [mode, setMode] = React.useState(() => {
+    try { return localStorage.getItem("pb:mode") === "advanced" ? "advanced" : "basic"; }
+    catch { return "basic"; }
+  });
+  React.useEffect(() => {
+    try { localStorage.setItem("pb:mode", mode); } catch { /* ignore */ }
+  }, [mode]);
+  const toggle = React.useCallback(() => setMode(m => m === "advanced" ? "basic" : "advanced"), []);
+  return [mode, toggle, setMode];
+}
+
+/* Small pill chip used in the wizard top-right corner. */
+export function ModeChip({ mode, onClick }) {
+  const on = mode === "advanced";
+  return (
+    <div className={"modechip" + (on ? " on" : "")} onClick={onClick}
+      title={on ? "Showing every option" : "Show every option"}>
+      <span className="dot" />Advanced
+    </div>
+  );
+}
+
 /* keyboard shortcut hook */
 export function useKeys(map) {
   React.useEffect(() => {

@@ -88,6 +88,16 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 .rail .rfoot{margin-top:auto;padding:18px 26px;font-family:var(--mono);font-size:10.5px;color:var(--faint);position:relative;z-index:2;}
 
 .main{display:flex;flex-direction:column;min-height:0;position:relative;}
+
+/* basic/advanced mode toggle chip (top-right of every wizard step) */
+.modechip{position:absolute;top:18px;right:22px;z-index:5;display:inline-flex;align-items:center;gap:8px;
+  font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--soft);
+  background:rgba(255,255,255,.62);border:1px solid var(--line2);border-radius:999px;padding:6px 12px 6px 10px;
+  cursor:pointer;user-select:none;transition:color .14s,border-color .14s,background .14s,box-shadow .14s;}
+.modechip:hover{color:var(--ink2);border-color:var(--soft);background:#fff;}
+.modechip .dot{width:7px;height:7px;border-radius:50%;background:var(--line2);transition:background .14s,box-shadow .14s;}
+.modechip.on{color:var(--ink);border-color:transparent;background:#fff;box-shadow:0 0 0 1px var(--blue),0 6px 16px -10px rgba(46,134,200,.5);}
+.modechip.on .dot{background:var(--blue);box-shadow:0 0 0 3px rgba(46,134,200,.18);}
 .mhead{padding:34px 46px 0;}
 .mcount{font-family:var(--mono);font-size:11px;letter-spacing:.16em;color:var(--soft);text-transform:uppercase;}
 .mtitle{font-family:var(--serif);font-size:50px;line-height:.98;margin:7px 0 6px;letter-spacing:-.005em;}

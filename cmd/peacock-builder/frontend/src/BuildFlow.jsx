@@ -1,6 +1,6 @@
 /* BuildFlow.jsx — Build an image wizard */
 import React from "react";
-import { AppShell, PK, Btn, Head, SRow, Field, Seg, FULL, HEAD } from "./shared.jsx";
+import { AppShell, PK, Btn, Head, SRow, Field, Seg, ModeChip, useMode, FULL, HEAD } from "./shared.jsx";
 import { RunScreen, BUILD_PHASES, buildScript, BuildDone } from "./Run.jsx";
 import { ListDevices } from "./api.js";
 
@@ -47,6 +47,7 @@ export default function BuildFlow({ onHome, startDevice, appClass }) {
   const [pkgs, setPkgs] = React.useState(["firefox-esr", "mpv"]);
   const [running, setRunning] = React.useState(false);
   const [bdone, setBdone] = React.useState(false);
+  const [mdMode, toggleMode] = useMode();
 
   const pick = (d) => { setDev(d); setArch(d.arch); };
   const go = (n) => { setStep(n); };
@@ -97,6 +98,7 @@ export default function BuildFlow({ onHome, startDevice, appClass }) {
           <div className="rfoot">~/.local/var/peacock</div>
         </div>
         <div className="main">
+          <ModeChip mode={mdMode} onClick={toggleMode} />
           <div key={step} className="mflow">
           {step === 0 && <React.Fragment>
             <Head c="STEP 01 / 06 · TARGET" t="Choose a device" s="Pick the device this image will be flashed to. Architecture and bootloader are set from its profile." />
