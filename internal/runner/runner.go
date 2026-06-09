@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -32,6 +33,19 @@ func LogWriter() io.Writer {
 	mu.Lock()
 	defer mu.Unlock()
 	return logWriter
+}
+
+// Logf writes formatted user-facing progress output to the current
+// log writer. Behaves like fmt.Printf when no writer override is set
+// (the default writer is os.Stdout).
+func Logf(format string, args ...interface{}) {
+	fmt.Fprintf(LogWriter(), format, args...)
+}
+
+// Logln writes user-facing progress output to the current log writer.
+// Behaves like fmt.Println when no writer override is set.
+func Logln(args ...interface{}) {
+	fmt.Fprintln(LogWriter(), args...)
 }
 
 // SetContext sets the context used for command execution.
