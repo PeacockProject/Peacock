@@ -192,7 +192,6 @@ func (b *Builder) EnsureBuildChroot(root string, chrootArch string, useQemu bool
 		}
 		defer chroot.UnmountWithSudo(root)
 
-
 		// Enable mirrors in master chroot and disable space check
 		mirrorlistPath := filepath.Join(root, "etc", "pacman.d", "mirrorlist")
 		if err := runner.RunCmd(exec.Command("sudo", "sed", "-i", "s/^#Server/Server/", mirrorlistPath)); err != nil {
@@ -201,7 +200,7 @@ func (b *Builder) EnsureBuildChroot(root string, chrootArch string, useQemu bool
 
 		confPath := filepath.Join(root, "etc", "pacman.conf")
 		if err := runner.RunCmd(exec.Command("sudo", "sed", "-i", "s/^CheckSpace/#CheckSpace/", confPath)); err != nil {
-            runner.Logf("Warning: failed to disable CheckSpace: %v\n", err)
+			runner.Logf("Warning: failed to disable CheckSpace: %v\n", err)
 		}
 
 		// Create /etc/mtab symlink in Master so pacman can check free space/mounts properly
@@ -211,10 +210,10 @@ func (b *Builder) EnsureBuildChroot(root string, chrootArch string, useQemu bool
 
 		// Initialize keys inside
 		if err := runner.RunCmd(exec.Command("sudo", "chroot", root, "pacman-key", "--init")); err != nil {
-             // Continue? Keys might fail but let's try populate
+			// Continue? Keys might fail but let's try populate
 		}
 		if err := runner.RunCmd(exec.Command("sudo", "chroot", root, "pacman-key", "--populate", "archlinux")); err != nil {
-             // Ignore population error if keys aren't perfect, we can use --noconfirm
+			// Ignore population error if keys aren't perfect, we can use --noconfirm
 		}
 
 		// Install packages inside
@@ -229,88 +228,88 @@ func (b *Builder) EnsureBuildChroot(root string, chrootArch string, useQemu bool
 			return fmt.Errorf("failed to install packages in master chroot: %w", err)
 		}
 
-	// Register binfmt handlers by reading config files and writing to /proc
-	// The qemu-user-static-binfmt package provides config files in /usr/lib/binfmt.d/
-	// Format: :name:type:offset:magic:mask:interpreter:flags (one per line)
-	runner.Logln("Registering QEMU binfmt handlers...")
-	binfmtDir := filepath.Join(root, "usr", "lib", "binfmt.d")
-	entries, err = os.ReadDir(binfmtDir)
-	if err != nil {
-		runner.Logf("Warning: could not read binfmt.d directory: %v\n", err)
-	} else {
-		for _, entry := range entries {
-			if !strings.HasPrefix(entry.Name(), "qemu-") || !strings.HasSuffix(entry.Name(), ".conf") {
-				continue
-			}
-			confPath := filepath.Join(binfmtDir, entry.Name())
-			runner.Logf("Processing %s...\n", entry.Name())
+		// Register binfmt handlers by reading config files and writing to /proc
+		// The qemu-user-static-binfmt package provides config files in /usr/lib/binfmt.d/
+		// Format: :name:type:offset:magic:mask:interpreter:flags (one per line)
+		runner.Logln("Registering QEMU binfmt handlers...")
+		binfmtDir := filepath.Join(root, "usr", "lib", "binfmt.d")
+		entries, err = os.ReadDir(binfmtDir)
+		if err != nil {
+			runner.Logf("Warning: could not read binfmt.d directory: %v\n", err)
+		} else {
+			for _, entry := range entries {
+				if !strings.HasPrefix(entry.Name(), "qemu-") || !strings.HasSuffix(entry.Name(), ".conf") {
+					continue
+				}
+				confPath := filepath.Join(binfmtDir, entry.Name())
+				runner.Logf("Processing %s...\n", entry.Name())
 
-			// Read and parse the conf file
-			data, err := os.ReadFile(confPath)
-			if err != nil {
-				runner.Logf("Warning: could not read %s: %v\n", entry.Name(), err)
-				continue
-			}
-
-			// Process each line
-			lines := strings.Split(string(data), "\n")
-			for _, line := range lines {
-				line = strings.TrimSpace(line)
-				// Skip empty lines and comments
-				if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+				// Read and parse the conf file
+				data, err := os.ReadFile(confPath)
+				if err != nil {
+					runner.Logf("Warning: could not read %s: %v\n", entry.Name(), err)
 					continue
 				}
 
-				// Each line should be a binfmt_misc registration string
-				// Format: :name:type:offset:magic:mask:interpreter:flags
-				if !strings.HasPrefix(line, ":") {
-					continue
-				}
-
-				// Parse and modify interpreter path to use absolute path to our static QEMU in master chroot
-				parts := strings.Split(line, ":")
-				if len(parts) >= 7 {
-					interpreterName := filepath.Base(parts[6])
-					absStaticPath := filepath.Join(root, "usr", "bin", interpreterName)
-
-					if _, err := os.Stat(absStaticPath); err == nil {
-						parts[6] = absStaticPath
-					} else {
-						// Fallback: try host's non-static one
-						parts[6] = strings.Replace(parts[6], "-static", "", 1)
+				// Process each line
+				lines := strings.Split(string(data), "\n")
+				for _, line := range lines {
+					line = strings.TrimSpace(line)
+					// Skip empty lines and comments
+					if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+						continue
 					}
 
-					// Ensure the F flag is present
-					if len(parts) >= 8 {
-						if !strings.Contains(parts[7], "F") {
-							parts[7] = parts[7] + "F"
+					// Each line should be a binfmt_misc registration string
+					// Format: :name:type:offset:magic:mask:interpreter:flags
+					if !strings.HasPrefix(line, ":") {
+						continue
+					}
+
+					// Parse and modify interpreter path to use absolute path to our static QEMU in master chroot
+					parts := strings.Split(line, ":")
+					if len(parts) >= 7 {
+						interpreterName := filepath.Base(parts[6])
+						absStaticPath := filepath.Join(root, "usr", "bin", interpreterName)
+
+						if _, err := os.Stat(absStaticPath); err == nil {
+							parts[6] = absStaticPath
+						} else {
+							// Fallback: try host's non-static one
+							parts[6] = strings.Replace(parts[6], "-static", "", 1)
+						}
+
+						// Ensure the F flag is present
+						if len(parts) >= 8 {
+							if !strings.Contains(parts[7], "F") {
+								parts[7] = parts[7] + "F"
+							}
+						} else {
+							parts = append(parts, "F")
+						}
+
+						line = strings.Join(parts, ":")
+					}
+
+					// Write to /proc/sys/fs/binfmt_misc/register
+					registerCmd := exec.Command("sudo", "sh", "-c", fmt.Sprintf("echo '%s' > /proc/sys/fs/binfmt_misc/register", line))
+					registerCmd.Stdout = runner.LogWriter()
+					registerCmd.Stderr = runner.LogWriter()
+					if err := runner.RunCmd(registerCmd); err != nil {
+						// Ignore errors - entry might already be registered
+						if len(parts) > 1 {
+							runner.Logf("Note: registration of %s skipped (might already exist or error occurred)\n", parts[1])
 						}
 					} else {
-						parts = append(parts, "F")
-					}
-
-					line = strings.Join(parts, ":")
-				}
-
-				// Write to /proc/sys/fs/binfmt_misc/register
-				registerCmd := exec.Command("sudo", "sh", "-c", fmt.Sprintf("echo '%s' > /proc/sys/fs/binfmt_misc/register", line))
-				registerCmd.Stdout = runner.LogWriter()
-				registerCmd.Stderr = runner.LogWriter()
-				if err := runner.RunCmd(registerCmd); err != nil {
-					// Ignore errors - entry might already be registered
-					if len(parts) > 1 {
-						runner.Logf("Note: registration of %s skipped (might already exist or error occurred)\n", parts[1])
-					}
-				} else {
-					if len(parts) > 6 {
-						runner.Logf("Registered: %s (using %s)\n", parts[1], parts[6])
+						if len(parts) > 6 {
+							runner.Logf("Registered: %s (using %s)\n", parts[1], parts[6])
+						}
 					}
 				}
 			}
 		}
-	}
 
-	return nil
+		return nil
 	}
 
 	// Case: ARM / Target Chroot

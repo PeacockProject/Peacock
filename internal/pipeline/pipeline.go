@@ -11,15 +11,15 @@
 //
 // Layout:
 //
-//   pipeline.go    — Runner, RunnerOpts, NewRunner, (*Runner).Run
-//   cleanup.go     — Cleanup struct that tracks mountpoints / loops
-//   helpers.go     — package-level helpers (also consumed by cmd/peacock
-//                    bisect + build-packages subcommands)
-//   setup.go       — phase 1 (device + flavor + Builder bootstrap)
-//   packages.go    — phase 2 (dependency walk + chroot builds)
-//   initramfs.go   — phase 3 (busybox / splash / mkinitfs)
-//   rootfs.go      — phase 4 (kernel + image-build chroot + rootfs)
-//   image.go       — phase 5 (boot.img + disk image)
+//	pipeline.go    — Runner, RunnerOpts, NewRunner, (*Runner).Run
+//	cleanup.go     — Cleanup struct that tracks mountpoints / loops
+//	helpers.go     — package-level helpers (also consumed by cmd/peacock
+//	                 bisect + build-packages subcommands)
+//	setup.go       — phase 1 (device + flavor + Builder bootstrap)
+//	packages.go    — phase 2 (dependency walk + chroot builds)
+//	initramfs.go   — phase 3 (busybox / splash / mkinitfs)
+//	rootfs.go      — phase 4 (kernel + image-build chroot + rootfs)
+//	image.go       — phase 5 (boot.img + disk image)
 package pipeline
 
 import (

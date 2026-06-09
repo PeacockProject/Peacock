@@ -28,12 +28,12 @@ This will ask for a working directory and create the initial configuration.`,
 		if workDir == "" {
 			workDir = defaultWorkDir
 		}
-        
-        workDir, err := filepath.Abs(workDir)
-        if err != nil {
-             fmt.Printf("Error resolving path: %v\n", err)
-             os.Exit(1)
-        }
+
+		workDir, err := filepath.Abs(workDir)
+		if err != nil {
+			fmt.Printf("Error resolving path: %v\n", err)
+			os.Exit(1)
+		}
 
 		// Save to config
 		cfg := &config.Config{
@@ -53,7 +53,7 @@ This will ask for a working directory and create the initial configuration.`,
 
 		fmt.Printf("Configuration saved to %s\n", configPath)
 		fmt.Printf("Work directory set to: %s\n", workDir)
-		
+
 		// Create the work directory
 		if err := os.MkdirAll(workDir, 0755); err != nil {
 			fmt.Printf("Error creating work directory: %v\n", err)

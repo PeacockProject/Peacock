@@ -179,4 +179,3 @@ func newInstallID() (string, error) {
 	}
 	return hex.EncodeToString(b[:]), nil
 }
-

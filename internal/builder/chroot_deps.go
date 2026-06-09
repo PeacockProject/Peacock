@@ -46,8 +46,12 @@ func (b *Builder) installBuildDeps(root string, deps []string, execRoot string) 
 
 		// Mount cache
 		cacheMount := filepath.Join(mountPoint, "var", "cache", "pacman", "pkg")
-		if err := runner.RunCmd(exec.Command("sudo", "mkdir", "-p", cacheMount)); err != nil {return err}
-		if err := runner.RunCmd(exec.Command("sudo", "mount", "--bind", b.CacheDir, cacheMount)); err != nil {return err}
+		if err := runner.RunCmd(exec.Command("sudo", "mkdir", "-p", cacheMount)); err != nil {
+			return err
+		}
+		if err := runner.RunCmd(exec.Command("sudo", "mount", "--bind", b.CacheDir, cacheMount)); err != nil {
+			return err
+		}
 		defer runner.RunCmd(exec.Command("sudo", "umount", cacheMount))
 
 		targetPath = "/mnt/deps-target"
@@ -70,8 +74,12 @@ func (b *Builder) installBuildDeps(root string, deps []string, execRoot string) 
 
 		// Copy tmpConf to root/tmp/pacman-deps.conf
 		innerConfPath := filepath.Join(root, "tmp", "pacman-deps.conf")
-		if err := runner.RunCmd(exec.Command("sudo", "mkdir", "-p", filepath.Dir(innerConfPath))); err != nil {return err}
-		if err := copyFileWithSudo(tmpConf, innerConfPath); err != nil {return err}
+		if err := runner.RunCmd(exec.Command("sudo", "mkdir", "-p", filepath.Dir(innerConfPath))); err != nil {
+			return err
+		}
+		if err := copyFileWithSudo(tmpConf, innerConfPath); err != nil {
+			return err
+		}
 
 		// Inside chroot, path is /mnt/deps-target/tmp/pacman-deps.conf
 		// Pass explicit cachedir
@@ -86,7 +94,9 @@ func (b *Builder) installBuildDeps(root string, deps []string, execRoot string) 
 	defer cleanup()
 
 	cacheMount := filepath.Join(root, "var", "cache", "pacman", "pkg")
-	if err := os.MkdirAll(cacheMount, 0755); err != nil {return err}
+	if err := os.MkdirAll(cacheMount, 0755); err != nil {
+		return err
+	}
 
 	// Using pacman to install build deps
 	// Pass explicit cachedir (per-chroot cache)

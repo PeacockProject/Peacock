@@ -130,4 +130,3 @@ func (a *App) ListDevices() ([]DeviceMeta, error) {
 	sort.Slice(out, func(i, j int) bool { return out[i].Code < out[j].Code })
 	return out, nil
 }
-

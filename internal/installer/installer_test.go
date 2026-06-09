@@ -180,13 +180,13 @@ func TestPartitionNode(t *testing.T) {
 
 func TestPartitionToDisk(t *testing.T) {
 	cases := map[string]string{
-		"/dev/sda1":        "/dev/sda",
-		"/dev/sdb12":       "/dev/sdb",
-		"/dev/nvme0n1p1":   "/dev/nvme0n1",
-		"/dev/nvme0n1p12":  "/dev/nvme0n1",
-		"/dev/mmcblk0p1":   "/dev/mmcblk0",
-		"/dev/sda":         "/dev/sda",
-		"/not/a/dev/sda1":  "",
+		"/dev/sda1":       "/dev/sda",
+		"/dev/sdb12":      "/dev/sdb",
+		"/dev/nvme0n1p1":  "/dev/nvme0n1",
+		"/dev/nvme0n1p12": "/dev/nvme0n1",
+		"/dev/mmcblk0p1":  "/dev/mmcblk0",
+		"/dev/sda":        "/dev/sda",
+		"/not/a/dev/sda1": "",
 	}
 	for in, want := range cases {
 		got := partitionToDisk(in)

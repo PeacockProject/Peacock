@@ -31,8 +31,8 @@ func TestIsValidFlavor(t *testing.T) {
 		{"alpine", true},
 		{"foo", false},
 		{"", false},
-		{"ARCH", false},   // case-sensitive on purpose
-		{"arch ", false},  // exact match only
+		{"ARCH", false},    // case-sensitive on purpose
+		{"arch ", false},   // exact match only
 		{"archive", false}, // not a prefix match
 	}
 	for _, tc := range cases {

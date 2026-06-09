@@ -23,15 +23,15 @@ This will mount necessary filesystems and drop you into a shell inside the work 
 			fmt.Println("Work directory not set. Please run 'peacock init' first.")
 			os.Exit(1)
 		}
-        
-        // Assume default chroot location for now: workDir/chroot
-        // In reality we might have separate chroots for architectures.
-        // For this step, let's assume a "native" chroot or just "chroot".
-        target := filepath.Join(workDir, "chroot")
+
+		// Assume default chroot location for now: workDir/chroot
+		// In reality we might have separate chroots for architectures.
+		// For this step, let's assume a "native" chroot or just "chroot".
+		target := filepath.Join(workDir, "chroot")
 
 		if _, err := os.Stat(target); os.IsNotExist(err) {
 			fmt.Printf("Chroot directory %s does not exist.\n", target)
-            os.Exit(1)
+			os.Exit(1)
 		}
 
 		fmt.Printf("Mounting special filesystems in %s...\n", target)
@@ -39,18 +39,18 @@ This will mount necessary filesystems and drop you into a shell inside the work 
 			fmt.Printf("Error mounting: %v\n", err)
 			os.Exit(1)
 		}
-        
-        // Ensure unmount on exit
-        defer func() {
-            fmt.Println("Unmounting...")
-            chroot.Unmount(target)
-        }()
+
+		// Ensure unmount on exit
+		defer func() {
+			fmt.Println("Unmounting...")
+			chroot.Unmount(target)
+		}()
 
 		fmt.Println("Entering chroot...")
-        if err := chroot.Enter(target, args); err != nil {
-            fmt.Printf("Error running in chroot: %v\n", err)
-            // Do not exit with 1 here immediately, let defer unmount happen.
-        }
+		if err := chroot.Enter(target, args); err != nil {
+			fmt.Printf("Error running in chroot: %v\n", err)
+			// Do not exit with 1 here immediately, let defer unmount happen.
+		}
 	},
 }
 

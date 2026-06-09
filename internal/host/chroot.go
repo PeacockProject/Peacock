@@ -1,7 +1,7 @@
 // Package host's chroot.go scaffolds the pmbootstrap-style
 // chroot-per-target build strategy. The shape is:
 //
-//   ~/.local/var/peacock/host-chroots/<flavor>/
+//	~/.local/var/peacock/host-chroots/<flavor>/
 //
 // When the user opts into `--use-host-chroot <flavor>` (or sets
 // PEACOCK_HOST_CHROOT=<flavor>), Peacock first ensures this directory
@@ -48,9 +48,9 @@ func IsSupportedHostChrootFlavor(flavor string) bool {
 // the implementation will need to fetch the directory listing and pick
 // the newest. For now these constants stand as documentation.
 const (
-	ArchBootstrapURL   = "https://archive.archlinux.org/iso/latest/archlinux-bootstrap-x86_64.tar.gz"
-	DebianRootfsURL    = "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.tar.xz"
-	AlpineMinirootURL  = "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.0-x86_64.tar.gz"
+	ArchBootstrapURL  = "https://archive.archlinux.org/iso/latest/archlinux-bootstrap-x86_64.tar.gz"
+	DebianRootfsURL   = "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.tar.xz"
+	AlpineMinirootURL = "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.0-x86_64.tar.gz"
 )
 
 // TarballURL returns the canonical bootstrap tarball URL for a flavor.

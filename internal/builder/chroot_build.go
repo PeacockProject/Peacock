@@ -108,9 +108,6 @@ func copyFileWithSudo(src, dst string) error {
 	return runner.RunCmd(cpCmd)
 }
 
-
-
-
 // BuildPackageInChroot downloads and builds a package inside the given chroot.
 func (b *Builder) BuildPackageInChroot(pkg *manifest.Package, targetArch string, root string, opts BuildOptions) (string, error) {
 	if pkg.Build.Source == "" && pkg.Build.Script == "" {
@@ -135,7 +132,7 @@ func (b *Builder) BuildPackageInChroot(pkg *manifest.Package, targetArch string,
 	if err := b.EnsureBuildChroot(root, chrootArch, useQemu); err != nil {
 		return "", err
 	}
-	
+
 	masterRoot := ""
 	// If EnsureBuildChroot created a nested environment, we know master is at ../x86_64
 	if useQemu && ((hostArch == "amd64" && chrootArch != "x86_64") || (hostArch == "arm64" && chrootArch != "aarch64")) {
@@ -281,10 +278,10 @@ func (b *Builder) BuildPackageInChroot(pkg *manifest.Package, targetArch string,
 			return "", err
 		}
 		cmdArgs := []string{"/bin/sh", "-c", fmt.Sprintf("cd %s && . ./peacock-env.sh && /bin/sh ./peacock-build.sh", buildDirInChroot)}
-		
+
 		if masterRoot != "" {
 			// Nested execution: Host -> Master -> Target -> Command
-			
+
 			// 1. Mount Target into Master
 			mountPoint := filepath.Join(masterRoot, "mnt", "build-execution")
 			if err := runner.RunCmd(exec.Command("sudo", "mkdir", "-p", mountPoint)); err != nil {
@@ -294,27 +291,27 @@ func (b *Builder) BuildPackageInChroot(pkg *manifest.Package, targetArch string,
 				return "", fmt.Errorf("failed to mount target for execution: %w", err)
 			}
 			defer runner.RunCmd(exec.Command("sudo", "umount", mountPoint))
-			
+
 			// 2. Construct nested command
 			// chroot master chroot /mnt/build-execution ...
-			
+
 			// We need to be careful with quoting. cmdArgs[0] is /bin/sh, [1] is -c, [2] is script
 			// cmdArgs is actually: /bin/sh -c "cd ... && ..."
-			
+
 			// Target chroot cmd: chroot /mnt/build-execution /bin/sh -c "..."
 			// Master chroot cmd: chroot masterRoot chroot /mnt/build-execution /bin/sh -c "..."
-			
+
 			// We construct the "inner" chroot command as a string to pass to master shell?
 			// Or just chain args?
 			// sudo chroot masterRoot chroot /mnt/build-execution /bin/sh -c "..." works if passed as args to exec.
-			
+
 			nestedArgs := []string{"chroot", masterRoot, "chroot", "/mnt/build-execution"}
 			nestedArgs = append(nestedArgs, cmdArgs...)
-			
+
 			nestedCmd := exec.Command("sudo", nestedArgs...)
 			nestedCmd.Stdout = runner.LogWriter()
 			nestedCmd.Stderr = runner.LogWriter()
-			
+
 			if err := runner.RunCmd(nestedCmd); err != nil {
 				return "", fmt.Errorf("nested build script failed: %w", err)
 			}

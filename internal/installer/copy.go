@@ -120,7 +120,7 @@ func CopyLiveRootfs(ctx context.Context, opts CopyOptions, progress chan<- Progr
 // parseRsyncProgress extracts the percent value from a rsync --info=progress2
 // line. The format looks like:
 //
-//	    832,512  62%   12.34MB/s    0:00:15 (xfr#42, to-chk=12/96)
+//	832,512  62%   12.34MB/s    0:00:15 (xfr#42, to-chk=12/96)
 //
 // We grab the first token ending in '%'. Returns (0,false) when no percent
 // is present.

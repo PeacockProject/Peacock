@@ -7,14 +7,14 @@
 //
 //   - debootstrap          (initial chroot fill)
 //   - qemu-<arch>-static   (for foreign-arch second-stage on x86_64 hosts;
-//                           the binary name is derived from the target arch,
-//                           e.g. qemu-aarch64-static for arm64)
+//     the binary name is derived from the target arch,
+//     e.g. qemu-aarch64-static for arm64)
 //
 // Install instructions per host:
 //
 //   - Debian/Ubuntu:  sudo apt install debootstrap qemu-user-static
 //   - Arch Linux:     sudo pacman -S debootstrap qemu-user-static-binfmt
-//                     (qemu-user-static-bin is also available via AUR)
+//     (qemu-user-static-bin is also available via AUR)
 //
 // Implementation outline:
 //
