@@ -12,6 +12,7 @@ import (
 
 	"peacock/internal/builder"
 	"peacock/internal/manifest"
+	"peacock/internal/runner"
 	"peacock/internal/userland"
 )
 
@@ -46,7 +47,7 @@ func (r *Runner) runPackageOrchestration(
 	}
 
 	// Dependency Resolution & Pre-Build
-	fmt.Println("Resolving dependencies...")
+	runner.Logln("Resolving dependencies...")
 	pkgInList := func(list []string, name string) bool {
 		for _, v := range list {
 			if v == name {
@@ -71,7 +72,7 @@ func (r *Runner) runPackageOrchestration(
 		}
 
 		if !depPkg.SupportsFlavor(flavor) {
-			fmt.Printf("Skipping %s: not built for flavor %q\n", dep, flavor)
+			runner.Logf("Skipping %s: not built for flavor %q\n", dep, flavor)
 			return nil
 		}
 
@@ -83,7 +84,7 @@ func (r *Runner) runPackageOrchestration(
 		buildDirHint := filepath.Join(buildChrootDir, "build", fmt.Sprintf("%s-%s-%s", depPkg.Package.Name, depPkg.Package.Version, dev.Device.Architecture))
 
 		if artifactPath := FindCachedPackageArtifact(b, depPkg, dev.Device.Architecture); artifactPath != "" {
-			fmt.Printf("Using cached package %s at %s\n", dep, artifactPath)
+			runner.Logf("Using cached package %s at %s\n", dep, artifactPath)
 			res.localPackages = append(res.localPackages, artifactPath)
 			if !pkgInList(res.pkgs, dep) {
 				res.pkgs = append(res.pkgs, dep)
@@ -101,7 +102,7 @@ func (r *Runner) runPackageOrchestration(
 		}
 
 		res.depBuildDirs[depPkg.Package.Name] = buildDir
-		fmt.Printf("Built and packaged %s at %s\n", dep, artifact)
+		runner.Logf("Built and packaged %s at %s\n", dep, artifact)
 		res.localPackages = append(res.localPackages, artifact)
 		res.depPackagePaths[depPkg.Package.Name] = artifact
 		if !pkgInList(res.pkgs, dep) {
@@ -113,7 +114,7 @@ func (r *Runner) runPackageOrchestration(
 	for _, dep := range allDeps {
 		depManifest, ok := LocalPackageManifestPath(dep)
 		if ok {
-			fmt.Printf("Found local dependency: %s. Building...\n", dep)
+			runner.Logf("Found local dependency: %s. Building...\n", dep)
 			if err := buildLocalPackage(dep, depManifest); err != nil {
 				return nil, err
 			}
@@ -126,11 +127,11 @@ func (r *Runner) runPackageOrchestration(
 
 	userlandPkgs, warnings, err := userland.ResolveSelections(desktopChoice, displayManagerChoice, initSystem, extraPackages)
 	if err != nil {
-		fmt.Println(userland.DescribeChoices())
+		runner.Logln(userland.DescribeChoices())
 		return nil, fmt.Errorf("userland selection error: %w", err)
 	}
 	for _, w := range warnings {
-		fmt.Printf("Warning: %s\n", w)
+		runner.Logf("Warning: %s\n", w)
 	}
 	res.pkgs = append(res.pkgs, userlandPkgs...)
 
@@ -142,7 +143,7 @@ func (r *Runner) runPackageOrchestration(
 		if !ok {
 			continue
 		}
-		fmt.Printf("Found local userland package: %s. Building...\n", dep)
+		runner.Logf("Found local userland package: %s. Building...\n", dep)
 		if err := buildLocalPackage(dep, depManifest); err != nil {
 			return nil, err
 		}

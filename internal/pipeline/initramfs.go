@@ -30,10 +30,10 @@ func (r *Runner) runInitramfsPhase(
 	useQemuFlag := r.opts.UseQemu
 	crossCompileFlag := r.opts.CrossCompile
 	deviceName := r.opts.Device
-	fmt.Println("Generating initramfs...")
+	runner.Logln("Generating initramfs...")
 
 	// Build Busybox (Generic)
-	fmt.Println("Building/Fetching Busybox...")
+	runner.Logln("Building/Fetching Busybox...")
 	bbManifest := filepath.Join("peacock-ports", "base", "busybox", "package.toml")
 	bbPkg, err := manifest.LoadPackage(bbManifest)
 	if err != nil {
@@ -48,7 +48,7 @@ func (r *Runner) runInitramfsPhase(
 			return "", fmt.Errorf("error extracting busybox from cached package: %w", err)
 		}
 		busyboxBuildDir = extractedDir
-		fmt.Printf("Reusing busybox extracted from cached package at %s\n", busyboxBuildDir)
+		runner.Logf("Reusing busybox extracted from cached package at %s\n", busyboxBuildDir)
 	}
 
 	bbOpts, bbChrootArch, err := resolveBuildOptions(bbPkg, dev.Device.Architecture, useQemuFlag, crossCompileFlag)
@@ -89,7 +89,7 @@ func (r *Runner) runInitramfsPhase(
 	}
 
 	// Build peacock-splash (for framebuffer splash screen)
-	fmt.Println("Building/Fetching peacock-splash...")
+	runner.Logln("Building/Fetching peacock-splash...")
 	splashManifest := filepath.Join("peacock-ports", "base", "peacock-splash", "package.toml")
 	splashPkg, err := manifest.LoadPackage(splashManifest)
 	if err != nil {
@@ -109,7 +109,7 @@ func (r *Runner) runInitramfsPhase(
 				candidate := filepath.Join(tmpExtract, "usr", "bin", "peacock-splash")
 				if _, err := os.Stat(candidate); err == nil {
 					splashBuildDir = tmpExtract
-					fmt.Printf("Using cached peacock-splash package\n")
+					runner.Logf("Using cached peacock-splash package\n")
 				}
 			}
 		}
@@ -152,7 +152,7 @@ func (r *Runner) runInitramfsPhase(
 		if _, err := os.Stat(altPath); err == nil {
 			splashPath = altPath
 		} else {
-			fmt.Printf("Warning: peacock-splash binary not found, initramfs will continue without splash\n")
+			runner.Logf("Warning: peacock-splash binary not found, initramfs will continue without splash\n")
 			splashPath = ""
 		}
 	}
@@ -175,7 +175,7 @@ func (r *Runner) runInitramfsPhase(
 			if pkgPath, ok := depPackagePaths["msm-fb-refresher"]; ok {
 				extractedDir, err := extractRefresherFromPackage(pkgPath, workDir)
 				if err != nil {
-					fmt.Printf("Warning: failed to extract msm-fb-refresher: %v\n", err)
+					runner.Logf("Warning: failed to extract msm-fb-refresher: %v\n", err)
 				} else {
 					candidate := filepath.Join(extractedDir, "usr", "bin", "msm-fb-refresher")
 					if fileExistsFile(candidate) {
@@ -190,10 +190,10 @@ func (r *Runner) runInitramfsPhase(
 			}
 		}
 		if refresherPath == "" {
-			fmt.Printf("Warning: msm-fb-refresher binary not found, initramfs will continue without refresher\n")
+			runner.Logf("Warning: msm-fb-refresher binary not found, initramfs will continue without refresher\n")
 		}
 	} else {
-		fmt.Printf("Info: skipping msm-fb-refresher for device %s\n", deviceName)
+		runner.Logf("Info: skipping msm-fb-refresher for device %s\n", deviceName)
 	}
 
 	// Build util-linux + lvm2 ports for initramfs runtime tooling.
@@ -250,7 +250,7 @@ func (r *Runner) runInitramfsPhase(
 	if err := runner.RunCmd(mkinitfsCmd); err != nil {
 		return "", fmt.Errorf("error generating initramfs via %s: %w", mkinitfsBin, err)
 	}
-	fmt.Printf("Initramfs generated at: %s\n", initramfsPath)
+	runner.Logf("Initramfs generated at: %s\n", initramfsPath)
 
 	return initramfsPath, nil
 }

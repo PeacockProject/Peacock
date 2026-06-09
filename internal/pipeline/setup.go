@@ -19,6 +19,7 @@ import (
 	"peacock/internal/builder"
 	"peacock/internal/config"
 	"peacock/internal/manifest"
+	"peacock/internal/runner"
 )
 
 // buildSetup is the bag of values phase 1 produces. The downstream
@@ -61,7 +62,7 @@ func (r *Runner) runBuildSetup(ctx context.Context, workDir string) (*buildSetup
 	if !config.IsValidFlavor(flavor) {
 		return nil, fmt.Errorf("invalid flavor %q (valid: %v)", flavor, config.ValidFlavors)
 	}
-	fmt.Printf("Base-distro flavor: %s\n", flavor)
+	runner.Logf("Base-distro flavor: %s\n", flavor)
 
 	// Load device profile from peacock-ports
 	devPath := filepath.Join("peacock-ports", "device", deviceName, "device.toml")
@@ -70,7 +71,7 @@ func (r *Runner) runBuildSetup(ctx context.Context, workDir string) (*buildSetup
 		return nil, fmt.Errorf("error loading device manifest %s: %w", devPath, err)
 	}
 
-	fmt.Printf("Building for device: %s\n", dev.Device.Name)
+	runner.Logf("Building for device: %s\n", dev.Device.Name)
 
 	if flavor != "arch" {
 		altRoot := filepath.Join(workDir, "flavor-root", flavor)
@@ -91,7 +92,7 @@ func (r *Runner) runBuildSetup(ctx context.Context, workDir string) (*buildSetup
 	emptyRootfs := config.EmptyRootfs()
 
 	if emptyRootfs {
-		fmt.Println("Empty-rootfs mode enabled: skipping rootfs package/user/desktop setup and producing a small debug image.")
+		runner.Logln("Empty-rootfs mode enabled: skipping rootfs package/user/desktop setup and producing a small debug image.")
 		desktopChoice = "none"
 		displayManagerChoice = "none"
 		extraPackages = nil

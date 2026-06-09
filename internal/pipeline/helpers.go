@@ -502,7 +502,7 @@ func FindCachedPackageArtifact(b *builder.Builder, pkg *manifest.Package, target
 		return ""
 	}
 	if !packageArchMatches(artifactPath, pacmanArch(targetArch)) {
-		fmt.Printf("Cached package %s has mismatched arch; rebuilding\n", artifactPath)
+		runner.Logf("Cached package %s has mismatched arch; rebuilding\n", artifactPath)
 		return ""
 	}
 	return artifactPath
@@ -548,7 +548,7 @@ func buildPortForInitramfs(b *builder.Builder, name, targetArch, workDir, useQem
 	manifestPath := filepath.Join("peacock-ports", "base", name, "package.toml")
 	pkg, err := manifest.LoadPackage(manifestPath)
 	if err != nil {
-		fmt.Printf("Warning: skipping %s for initramfs (manifest load failed): %v\n", name, err)
+		runner.Logf("Warning: skipping %s for initramfs (manifest load failed): %v\n", name, err)
 		return ""
 	}
 
@@ -556,7 +556,7 @@ func buildPortForInitramfs(b *builder.Builder, name, targetArch, workDir, useQem
 	// without re-running the full pipeline when only the .pkg.tar.gz is cached.
 	_, chrootArch, err := resolveBuildOptions(pkg, targetArch, useQemuFlag, crossCompileFlag)
 	if err != nil {
-		fmt.Printf("Warning: skipping %s for initramfs (resolveBuildOptions failed): %v\n", name, err)
+		runner.Logf("Warning: skipping %s for initramfs (resolveBuildOptions failed): %v\n", name, err)
 		return ""
 	}
 	buildChrootDir := filepath.Join(workDir, "build-chroot", chrootArch)
@@ -564,16 +564,16 @@ func buildPortForInitramfs(b *builder.Builder, name, targetArch, workDir, useQem
 
 	if artifactPath := FindCachedPackageArtifact(b, pkg, targetArch); artifactPath != "" {
 		if fileExists(buildDirHint) {
-			fmt.Printf("Reusing cached %s build dir at %s\n", name, buildDirHint)
+			runner.Logf("Reusing cached %s build dir at %s\n", name, buildDirHint)
 			return buildDirHint
 		}
-		fmt.Printf("Cached %s package present but build dir missing; rebuilding for initramfs\n", name)
+		runner.Logf("Cached %s package present but build dir missing; rebuilding for initramfs\n", name)
 	}
 
-	fmt.Printf("Building %s for initramfs...\n", name)
+	runner.Logf("Building %s for initramfs...\n", name)
 	buildDir, _, err := BuildPackageInChrootStep(b, pkg, targetArch, workDir, useQemuFlag, crossCompileFlag)
 	if err != nil {
-		fmt.Printf("Warning: skipping %s for initramfs (build failed): %v\n", name, err)
+		runner.Logf("Warning: skipping %s for initramfs (build failed): %v\n", name, err)
 		return ""
 	}
 	return buildDir

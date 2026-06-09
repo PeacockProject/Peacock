@@ -12,6 +12,7 @@ import (
 	"peacock/internal/config"
 	"peacock/internal/image"
 	"peacock/internal/manifest"
+	"peacock/internal/runner"
 )
 
 // runImageAssemblyPhase performs phase 5 and writes the final per-device
@@ -31,7 +32,7 @@ func (r *Runner) runImageAssemblyPhase(
 	imagePath := filepath.Join(workDir, fmt.Sprintf("%s.img", deviceName))
 
 	if kernelBuildDir != "" && dev.Boot.GenerateBootImg {
-		fmt.Println("Generating Android boot.img...")
+		runner.Logln("Generating Android boot.img...")
 		bootImgPath := filepath.Join(workDir, "boot.img")
 
 		zImagePath := filepath.Join(kernelBuildDir, "zImage")
@@ -48,7 +49,7 @@ func (r *Runner) runImageAssemblyPhase(
 
 		baseAddr, err := parseHex(dev.Boot.Android.Base)
 		if err != nil {
-			fmt.Printf("Error parsing base address %s: %v, using default 0x80200000\n", dev.Boot.Android.Base, err)
+			runner.Logf("Error parsing base address %s: %v, using default 0x80200000\n", dev.Boot.Android.Base, err)
 			baseAddr = 0x80200000
 		}
 
@@ -78,17 +79,17 @@ func (r *Runner) runImageAssemblyPhase(
 		}
 
 		if err := image.CreateBootImage(bootImgPath, zImagePath, initramfsPath, cmdline, baseAddr, kernelOffset, ramdiskOffset, secondOffset, tagsOffset, pageSize); err != nil {
-			fmt.Printf("Error creating boot.img: %v\n", err)
+			runner.Logf("Error creating boot.img: %v\n", err)
 		} else {
-			fmt.Printf("Boot image created at: %s\n", bootImgPath)
+			runner.Logf("Boot image created at: %s\n", bootImgPath)
 		}
 	}
 
-	fmt.Println("Creating disk image...")
+	runner.Logln("Creating disk image...")
 	imageSizeMB := config.ImageSizeMB()
 	if imageSizeMB <= 0 {
 		imageSizeMB = estimateImageSizeMB(rootfsPath, emptyRootfs)
-		fmt.Printf("Auto image size: %dMB\n", imageSizeMB)
+		runner.Logf("Auto image size: %dMB\n", imageSizeMB)
 	}
 	if err := b.CreateDiskImage(imageChrootRoot, rootfsPath, imagePath, imageSizeMB, dev.Quirks.LegacyRootfsExt4); err != nil {
 		return "", fmt.Errorf("error creating disk image: %w", err)

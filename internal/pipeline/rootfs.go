@@ -58,11 +58,11 @@ func (r *Runner) runRootfsPhase(
 	res := &rootfsPhaseResult{}
 
 	// 8. Build Kernel
-	fmt.Println("Building/Fetching Kernel...")
+	runner.Logln("Building/Fetching Kernel...")
 	kernelManifest := filepath.Join("peacock-ports", "device", "linux-"+deviceName, "package.toml")
 	kernelPkg, err := manifest.LoadPackage(kernelManifest)
 	if err != nil {
-		fmt.Printf("Kernel manifest not found: %v. Skipping boot.img\n", err)
+		runner.Logf("Kernel manifest not found: %v. Skipping boot.img\n", err)
 	} else {
 		kernelOpts, kernelChrootArch, err := resolveBuildOptions(kernelPkg, dev.Device.Architecture, useQemuFlag, crossCompileFlag)
 		if err != nil {
@@ -72,7 +72,7 @@ func (r *Runner) runRootfsPhase(
 			zImagePath := filepath.Join(cachedDir, "zImage")
 			if fileExistsFile(zImagePath) {
 				res.kernelBuildDir = cachedDir
-				fmt.Printf("Reusing kernel build from dependencies at %s\n", res.kernelBuildDir)
+				runner.Logf("Reusing kernel build from dependencies at %s\n", res.kernelBuildDir)
 			}
 		}
 		if res.kernelBuildDir == "" {
@@ -82,11 +82,11 @@ func (r *Runner) runRootfsPhase(
 					return nil, fmt.Errorf("error extracting kernel from cached package: %w", err)
 				}
 				res.kernelBuildDir = extractedDir
-				fmt.Printf("Reusing kernel extracted from cached package at %s\n", res.kernelBuildDir)
+				runner.Logf("Reusing kernel extracted from cached package at %s\n", res.kernelBuildDir)
 			}
 		}
 		if res.kernelBuildDir == "" {
-			fmt.Println("Kernel not built in dependencies; building now...")
+			runner.Logln("Kernel not built in dependencies; building now...")
 			kernelChrootDir := filepath.Join(workDir, "build-chroot", kernelChrootArch)
 			buildDepChrootRoot := filepath.Join(workDir, "build-dep-chroot", hostArchString())
 			kernelUseQemu := kernelOpts.UseQemu != nil && *kernelOpts.UseQemu
@@ -111,15 +111,15 @@ func (r *Runner) runRootfsPhase(
 		}
 		res.kernelImagePath = filepath.Join(res.kernelBuildDir, "zImage")
 		if !fileExistsFile(res.kernelImagePath) {
-			fmt.Printf("Warning: kernel image not found at %s\n", res.kernelImagePath)
+			runner.Logf("Warning: kernel image not found at %s\n", res.kernelImagePath)
 			res.kernelImagePath = ""
 		}
 	}
 
 	// 9. Create Image using dedicated image-build-chroot
-	fmt.Println("=== Phase 2: Image Assembly ===")
+	runner.Logln("=== Phase 2: Image Assembly ===")
 
-	fmt.Println("Setting up image build environment...")
+	runner.Logln("Setting up image build environment...")
 	imageChrootRoot, err := b.EnsureImageBuildChroot()
 	if err != nil {
 		return nil, fmt.Errorf("error preparing image build chroot: %w", err)
@@ -131,14 +131,14 @@ func (r *Runner) runRootfsPhase(
 	rootfsPath := filepath.Join(imageChrootRoot, "rootfs")
 	res.rootfsPath = rootfsPath
 	if err := unmountRootfsSubmounts(rootfsPath); err != nil {
-		fmt.Printf("Warning: failed to unmount stale rootfs submounts: %v\n", err)
+		runner.Logf("Warning: failed to unmount stale rootfs submounts: %v\n", err)
 	}
 	_ = chroot.UnmountPathWithSudo(rootfsPath)
 	if err := execCommand("sudo", "rm", "-rf", "--one-file-system", rootfsPath); err != nil {
-		fmt.Printf("Warning: failed to clean rootfs: %v\n", err)
+		runner.Logf("Warning: failed to clean rootfs: %v\n", err)
 	}
 	if err := execCommand("sudo", "mkdir", "-p", rootfsPath); err != nil {
-		fmt.Printf("Warning: failed to create rootfs: %v\n", err)
+		runner.Logf("Warning: failed to create rootfs: %v\n", err)
 	}
 
 	// Determine packages to install
@@ -149,12 +149,12 @@ func (r *Runner) runRootfsPhase(
 			for _, pkgPath := range localPackages {
 				dst := filepath.Join(cacheDir, filepath.Base(pkgPath))
 				if err := execCommand("cp", "-f", pkgPath, dst); err != nil {
-					fmt.Printf("Warning: failed to copy package %s to cache: %v\n", pkgPath, err)
+					runner.Logf("Warning: failed to copy package %s to cache: %v\n", pkgPath, err)
 				}
 			}
 		}
 
-		fmt.Println("Installing packages to rootfs...")
+		runner.Logln("Installing packages to rootfs...")
 		if err := b.InstallPackagesToRootfs(imageChrootRoot, rootfsPath, allPackages, dev.Device.Architecture); err != nil {
 			return nil, fmt.Errorf("error installing packages to rootfs: %w", err)
 		}
@@ -164,7 +164,7 @@ func (r *Runner) runRootfsPhase(
 			}
 		}
 	} else {
-		fmt.Println("Skipping package installation into rootfs (empty-rootfs mode)")
+		runner.Logln("Skipping package installation into rootfs (empty-rootfs mode)")
 	}
 	if initSystem == "openrc" && !emptyRootfs {
 		rcConfPath := filepath.Join(rootfsPath, "etc", "rc.conf")
@@ -326,10 +326,10 @@ EOF
 	if res.kernelBuildDir != "" {
 		modulesTarPath := filepath.Join(res.kernelBuildDir, "modules.tar.gz")
 		if fileExistsFile(modulesTarPath) {
-			fmt.Println("Extracting kernel modules to rootfs...")
+			runner.Logln("Extracting kernel modules to rootfs...")
 			extractCmd := exec.Command("sudo", "tar", "-xzf", modulesTarPath, "-C", rootfsPath)
 			if err := runner.RunCmd(extractCmd); err != nil {
-				fmt.Printf("Warning: failed to extract kernel modules: %v\n", err)
+				runner.Logf("Warning: failed to extract kernel modules: %v\n", err)
 			}
 		}
 	}
@@ -387,7 +387,7 @@ fi
 		func() {
 			defer chroot.UnmountWithSudo(rootfsPath)
 			if err := execCommand("sudo", "chroot", rootfsPath, "sh", "-lc", "command -v mkinitcpio >/dev/null 2>&1"); err != nil {
-				fmt.Println("Warning: mkinitcpio not found in rootfs; skipping rootfs initramfs regeneration")
+				runner.Logln("Warning: mkinitcpio not found in rootfs; skipping rootfs initramfs regeneration")
 				return
 			}
 			if err := execCommand("sudo", "chroot", rootfsPath, "mkinitcpio", "-P"); err != nil {
@@ -402,19 +402,19 @@ fi
 
 	// Phase 3 placeholder for the future feather-install step.
 	if feather.Available() {
-		fmt.Println("Feather binary detected; phase 4 will overlay /peacock here.")
+		runner.Logln("Feather binary detected; phase 4 will overlay /peacock here.")
 	} else {
-		fmt.Println("skipping feather install step — phase 4 will land")
+		runner.Logln("skipping feather install step — phase 4 will land")
 	}
 
 	if res.kernelImagePath != "" && fileExistsFile(initramfsPath) {
 		dtbPath := discoverKernelDTB(res.kernelBuildDir, deviceName)
-		fmt.Println("Staging extlinux boot assets into rootfs /boot...")
+		runner.Logln("Staging extlinux boot assets into rootfs /boot...")
 		if err := stageExtlinuxBootAssets(rootfsPath, res.kernelImagePath, initramfsPath, dev.Boot.Cmdline, dtbPath); err != nil {
 			return nil, fmt.Errorf("error staging extlinux boot assets: %w", err)
 		}
 	} else {
-		fmt.Println("Warning: skipping extlinux boot asset staging (missing kernel or initramfs)")
+		runner.Logln("Warning: skipping extlinux boot asset staging (missing kernel or initramfs)")
 	}
 
 	return res, nil
