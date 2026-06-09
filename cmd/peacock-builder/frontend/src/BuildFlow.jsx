@@ -1,10 +1,19 @@
-/* BuildFlow.jsx — Build an image wizard */
+/* BuildFlow.jsx — Build an image wizard.
+ *
+ * The Review step's "Build & flash" CTA (and the advanced-footer fallback)
+ * routes into FlashFlow — the integrated build + flash-to-device flow.
+ * The legacy build-only Run/BuildDone path is no longer reachable from
+ * this wizard; FlashFlow runs the same simulated build script in the
+ * background while showing the unlock instructions, so the build is now
+ * a sub-step of the flash flow rather than a destination of its own. */
 import React from "react";
 import { AppShell, PK, Btn, Head, SRow, Field, Seg, ModeChip, useMode, FULL, HEAD } from "./shared.jsx";
-import { RunScreen, BUILD_PHASES, buildScript, BuildDone } from "./Run.jsx";
 import { ListDevices } from "./api.js";
 import BaseStep from "./BaseStep.jsx";
 import DesktopStep from "./DesktopStep.jsx";
+import PackagesStep from "./PackagesStep.jsx";
+import ReviewStep from "./ReviewStep.jsx";
+import FlashFlow from "./FlashFlow.jsx";
 
 const DEVICES_FALLBACK = [
   { id: "samsung-jflte", name: "Galaxy S4", code: "samsung-jflte", soc: "msm8960", arch: "armv7h", tag: "stable" },
@@ -24,7 +33,6 @@ const DESKTOPS = [
   { id: "weston", name: "Weston", m: "reference wayland" },
 ];
 const DMS = ["none", "sddm", "greetd", "lightdm"];
-const PKG_SUGGEST = ["firefox-esr", "mpv", "neovim", "foot", "htop", "git", "openssh", "nmap", "calls", "chatty", "gnome-maps", "angelfish"];
 const BSTEPS = ["Device", "Base", "Desktop", "Packages", "Review", "Build"];
 
 export default function BuildFlow({ onHome, startDevice, appClass }) {
@@ -63,25 +71,23 @@ export default function BuildFlow({ onHome, startDevice, appClass }) {
     </React.Fragment>
   );
 
-  // ----- RUN screen -----
-  if (running || bdone) {
-    return <AppShell appClass={appClass} title={<span>Build an image <span className="dim">· {dev.code}</span></span>} status={status}>
-      {bdone
-        ? <BuildDone dev={dev} flavor={flavor} initSys={initSys} desktop={desktop} onHome={onHome} />
-        : <RunScreen script={buildScript(dev, desktop)} title="Assembling image"
-            meta={`${dev.code} · ${flavor} · ${initSys}`} phases={BUILD_PHASES} onDone={() => setBdone(true)} />}
-    </AppShell>;
+  // ----- FLASH FLOW (build + flash-to-device, the new default exit) -----
+  if (running) {
+    return <FlashFlow
+      dev={dev} flavor={flavor} initSys={initSys} desktop={desktop}
+      onHome={onHome} appClass={appClass} />;
   }
 
   // ----- WIZARD -----
+  const basicReview = step === 4 && mdMode !== "advanced";
   const Footer = (
     <div className="mfoot">
       <Btn variant="subtle" onClick={() => (step === 0 ? onHome() : go(step - 1))}>{step === 0 ? "‹ Home" : "‹ Back"}</Btn>
       <div className="sp" />
-      <span className="hint">{step === 4 ? "ready to build" : `${BSTEPS[step]} · ${step + 1}/6`}</span>
+      <span className="hint">{step === 4 ? (basicReview ? "tap Build & flash above" : "ready to build") : `${BSTEPS[step]} · ${step + 1}/6`}</span>
       {step < 4
         ? <Btn variant="primary" ar="›" disabled={!canNext} onClick={() => go(step + 1)}>Continue</Btn>
-        : <Btn variant="grad" ar="→" onClick={() => setRunning(true)}>Build image</Btn>}
+        : (basicReview ? null : <Btn variant="grad" ar="→" onClick={() => setRunning(true)}>Build &amp; flash</Btn>)}
     </div>
   );
 
@@ -124,25 +130,13 @@ export default function BuildFlow({ onHome, startDevice, appClass }) {
 
           {step === 2 && <DesktopStep desktop={desktop} setDesktop={setDesktop} dm={dm} setDm={setDm} mode={mdMode} />}
 
-          {step === 3 && <React.Fragment>
-            <Head c="STEP 04 / 06 · PACKAGES" t="Extra packages" s="Anything beyond the base + desktop set. Type a name and press Enter, or tap a suggestion." />
-            <div className="mbody fade"><Packages pkgs={pkgs} setPkgs={setPkgs} /></div>
-          </React.Fragment>}
+          {step === 3 && <PackagesStep pkgs={pkgs} setPkgs={setPkgs} mode={mdMode} />}
 
-          {step === 4 && <React.Fragment>
-            <Head c="STEP 05 / 06 · REVIEW" t="Ready to build" s="Peacock will cross-compile and assemble a flashable image. This can take several minutes." />
-            <div className="mbody fade">
-              <div className="summary">
-                <SRow k="Device" v={dev.code} /><SRow k="Architecture" v={arch} />
-                <SRow k="Distribution" v={flavor} /><SRow k="Init system" v={initSys} />
-                <SRow k="Build mode" v={buildMode} /><SRow k="Desktop" v={desktop} />
-                <SRow k="Display manager" v={dm} /><SRow k="Extra packages" v={pkgs.length ? pkgs.length + " selected" : "none"} />
-              </div>
-              <div className="callout"><PK src={HEAD} style={{ width: 30, height: 36, flex: "0 0 30px" }} className="pkgrad" />
-                <div className="ct"><b>Output</b> → <span style={{ fontFamily: "var(--mono)", fontSize: 12.5 }}>~/.local/var/peacock/{dev.code}.img</span><br />
-                  Estimated size ≈ {desktop === "none" ? "320 MB" : "1.9 GB"} · ~6 ports built locally.</div></div>
-            </div>
-          </React.Fragment>}
+          {step === 4 && <ReviewStep
+            mode={mdMode}
+            dev={dev} arch={arch} flavor={flavor} initSys={initSys}
+            buildMode={buildMode} desktop={desktop} dm={dm} pkgs={pkgs}
+            onStart={() => setRunning(true)} />}
           </div>
           {Footer}
         </div>
@@ -151,19 +145,3 @@ export default function BuildFlow({ onHome, startDevice, appClass }) {
   );
 }
 
-function Packages({ pkgs, setPkgs }) {
-  const [val, setVal] = React.useState("");
-  const add = (p) => { p = p.trim(); if (p && !pkgs.includes(p)) setPkgs([...pkgs, p]); setVal(""); };
-  return (
-    <div style={{ maxWidth: 620 }}>
-      <div className="chipbox">
-        {pkgs.map(p => <span key={p} className="chip">{p}<span className="x" onClick={() => setPkgs(pkgs.filter(x => x !== p))}>×</span></span>)}
-        <label className="chip add"><input value={val} placeholder={pkgs.length ? "add…" : "package name…"}
-          onChange={e => setVal(e.target.value)} onKeyDown={e => e.key === "Enter" && add(val)} /></label>
-      </div>
-      <div className="suggest">
-        {PKG_SUGGEST.map(p => <span key={p} className={"sug" + (pkgs.includes(p) ? " in" : "")} onClick={() => add(p)}>+ {p}</span>)}
-      </div>
-    </div>
-  );
-}
