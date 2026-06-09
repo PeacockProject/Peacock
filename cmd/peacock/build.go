@@ -133,108 +133,28 @@ This process involves:
 			}
 		}
 
-		if deviceName == "" {
-			fmt.Println("Please specify a device with --device")
-			fatal()
-		}
-
-		// Validate the requested base-distro flavor before doing
-		// anything expensive. Phase 3 ships an arch implementation, a
-		// real debian implementation (debootstrap + apt-get), and a
-		// real alpine implementation (apk add --initdb + apk update).
-		// Non-arch paths only cover the base-distro bootstrap step,
-		// with the rest of the pipeline downstream still pacman-shaped
-		// (tracked in task.md "Flavor bootstrap").
-		flavor := config.Flavor()
-		if !config.IsValidFlavor(flavor) {
-			fmt.Printf("invalid flavor %q (valid: %v)\n", flavor, config.ValidFlavors)
-			fatal()
-		}
-		fmt.Printf("Base-distro flavor: %s\n", flavor)
-
-		// Load device profile from peacock-ports
-		devPath := filepath.Join("peacock-ports", "device", deviceName, "device.toml")
-		dev, err := manifest.LoadDevice(devPath)
+		setup, err := runBuildSetup(ctx, workDir)
 		if err != nil {
-			fmt.Printf("Error loading device manifest %s: %v\n", devPath, err)
+			fmt.Printf("%v\n", err)
 			fatal()
 		}
-
-		fmt.Printf("Building for device: %s\n", dev.Device.Name)
-
-		if flavor != "arch" {
-			// debian: real debootstrap --foreign + qemu second-stage.
-			// alpine: real apk add --initdb path.
-			// Either way the rest of the build pipeline downstream is
-			// still pacman-shaped (`InstallPackagesToRootfs`, etc.) so a
-			// successful flavor bootstrap doesn't yet imply an end-to-end
-			// build — that lands in later phases when the rootfs install
-			// path also forks per flavor.
-			altRoot := filepath.Join(workDir, "flavor-root", flavor)
-			if err := bootstrapBaseChroot(ctx, flavor, altRoot, dev.Device.Architecture, nil); err != nil {
-				fmt.Printf("Bootstrap for flavor %q failed: %v\n", flavor, err)
-				fatal()
-			}
-		}
-
-		initSystem := config.InitSystem()
-		if initSystem == "" {
-			initSystem = "systemd" // default
-		}
-		reader := bufio.NewReader(os.Stdin)
-		desktopChoice := config.Desktop()
-		displayManagerChoice := config.DisplayManager()
-		extraPackages := config.ExtraPackages()
-		userName := config.UserName()
-		userPassword := config.UserPassword()
-		emptyRootfs := config.EmptyRootfs()
-
-		if emptyRootfs {
-			fmt.Println("Empty-rootfs mode enabled: skipping rootfs package/user/desktop setup and producing a small debug image.")
-			desktopChoice = "none"
-			displayManagerChoice = "none"
-			extraPackages = nil
-			userName = ""
-			userPassword = ""
-		} else {
-			if len(extraPackages) == 0 {
-				extraPackages = promptCSV(reader, "Extra packages (comma-separated, empty for none)")
-			}
-
-			if desktopChoice == "" {
-				fmt.Print(userland.DescribeChoices())
-				desktopChoice = promptSelect(reader, "Desktop", userland.DesktopNames(), "none")
-			}
-			if displayManagerChoice == "" {
-				displayManagerChoice = promptSelect(reader, "Display manager", userland.DisplayManagerNames(), "none")
-			}
-
-			if userName == "" {
-				userName = promptLine(reader, "Username (empty to skip user creation)", "")
-			}
-			if userName != "" && userPassword == "" {
-				userPassword = promptPassword(reader, "Password (plaintext)", "Confirm password")
-			}
-		}
+		dev := setup.dev
+		pkg := setup.pkg
+		b := setup.b
+		cacheDir := setup.cacheDir
+		flavor := setup.flavor
+		initSystem := setup.initSystem
+		desktopChoice := setup.desktopChoice
+		displayManagerChoice := setup.displayManagerChoice
+		extraPackages := setup.extraPackages
+		userName := setup.userName
+		userPassword := setup.userPassword
+		emptyRootfs := setup.emptyRootfs
+		reader := setup.reader
+		_ = reader
 
 		// Base packages should be defined in device/package.toml dependencies
 		pkgs := []string{}
-
-		// Load package manifest
-		pkgPath := filepath.Join("peacock-ports", "device", deviceName, "package.toml")
-		pkg, err := manifest.LoadPackage(pkgPath)
-		if err != nil {
-			fmt.Printf("Error loading package manifest %s: %v\n", pkgPath, err)
-			fatal()
-		}
-
-		// Initialize Builder
-		cacheDir := filepath.Join(workDir, "peacock-cache")
-		b, err := builder.NewBuilder(cacheDir)
-		if err != nil {
-			fmt.Printf("Error initializing builder: %v\n", err)
-			fatal()
-		}
 
 		// Dependency Resolution & Pre-Build
 		fmt.Println("Resolving dependencies...")
