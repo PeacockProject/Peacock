@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"peacock/internal/manifest"
 )
@@ -21,13 +20,20 @@ import (
 // names match the existing mock data in BuildFlow.jsx so the device
 // tile renderer doesn't need to change. ID + Code are kept distinct
 // (the React mock uses both) — for real ports they're the same string.
+//
+// SoC + Status come from device.toml's [device] block now; Support
+// comes from device.toml's [support] table. The frontend's
+// DEFAULT_DEVICE_SUPPORT stub is only used when running in dev-mode
+// (no Wails runtime), e.g. the Cloudflare preview deploy.
 type DeviceMeta struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Code string `json:"code"`
-	SoC  string `json:"soc"`
-	Arch string `json:"arch"`
-	Tag  string `json:"tag"`
+	ID      string            `json:"id"`
+	Name    string            `json:"name"`
+	Code    string            `json:"code"`
+	SoC     string            `json:"soc"`
+	Arch    string            `json:"arch"`
+	Status  string            `json:"status"`
+	Tag     string            `json:"tag"` // legacy alias of Status for the existing React mock
+	Support map[string]string `json:"support,omitempty"`
 }
 
 // portsRoot finds the peacock-ports tree. Resolution order:
@@ -100,23 +106,26 @@ func (a *App) ListDevices() ([]DeviceMeta, error) {
 			// via doctor later if needed.
 			continue
 		}
-		pkg, _ := manifest.LoadPackage(pkgTomlPath)
+		_, _ = manifest.LoadPackage(pkgTomlPath) // reserved; not consumed today
 
 		name := dev.Device.Name
 		if name == "" {
 			name = e.Name()
 		}
-		arch := dev.Device.Architecture
-		soc := socFromCodename(e.Name())
-		tag := tagFor(pkg)
+		status := dev.Device.Status
+		if status == "" {
+			status = "experimental" // port exists but maturity unset → safest default
+		}
 
 		out = append(out, DeviceMeta{
-			ID:   e.Name(),
-			Name: name,
-			Code: e.Name(),
-			SoC:  soc,
-			Arch: arch,
-			Tag:  tag,
+			ID:      e.Name(),
+			Name:    name,
+			Code:    e.Name(),
+			SoC:     dev.Device.SoC,
+			Arch:    dev.Device.Architecture,
+			Status:  status,
+			Tag:     status, // legacy field; same value for back-compat
+			Support: dev.Support,
 		})
 	}
 
@@ -124,35 +133,3 @@ func (a *App) ListDevices() ([]DeviceMeta, error) {
 	return out, nil
 }
 
-// socFromCodename is a best-effort guess at the SoC label for the
-// device-picker UI. Real device.toml manifests don't carry an `soc`
-// field today; the existing tiles cosmetically show one, so we
-// derive from the codename for the four known ports. Empty string
-// when unknown — the React side already handles that.
-func socFromCodename(code string) string {
-	switch code {
-	case "oppo-a16":
-		return "mt6765"
-	case "samsung-jflte":
-		return "msm8960"
-	case "xiaomi-daisy":
-		return "msm8953"
-	case "qemu-x86_64":
-		return "qemu / uefi"
-	}
-	return ""
-}
-
-// tagFor picks the small "stable"/"testing" pill displayed on each
-// device tile. Today this is a heuristic: x86_64 + linux- ports are
-// "stable", everything else gets "testing". Once package.toml carries
-// an explicit maturity field, swap to that.
-func tagFor(pkg *manifest.Package) string {
-	if pkg == nil {
-		return "testing"
-	}
-	if strings.HasPrefix(pkg.Package.Name, "device-qemu") {
-		return "stable"
-	}
-	return "testing"
-}

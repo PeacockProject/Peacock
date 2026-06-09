@@ -14,7 +14,22 @@ type Device struct {
 		Name         string `toml:"name"`
 		Architecture string `toml:"architecture"`
 		FlashMethod  string `toml:"flash_method"`
+		SoC          string `toml:"soc"`
+		// Status is the port maturity. Recognised values:
+		//   "stable"       — daily-driveable
+		//   "testing"      — mostly works
+		//   "experimental" — basic boot, many features missing
+		//   "partial"      — only some features work
+		//   "unsupported"  — listed for reference only
+		Status string `toml:"status"`
 	} `toml:"device"`
+
+	// Support is a free-form map of feature → state, surfaced by the
+	// peacock-builder GUI's "What works on this device" matrix.
+	// Conventional keys: calls, sms, wifi, bluetooth, touch, gpu,
+	// battery, audio, camrear, camfront, gps, sensors, modem. State
+	// values: "ok" | "partial" | "none". Notes go in <key>_note.
+	Support map[string]string `toml:"support"`
 
 	Quirks struct {
 		KeepFbRefresherWithDM bool `toml:"keep_fb_refresher_with_dm"`

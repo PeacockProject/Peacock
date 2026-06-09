@@ -16,6 +16,32 @@ import PackagesStep from "./PackagesStep.jsx";
 import ReviewStep from "./ReviewStep.jsx";
 import FlashFlow from "./FlashFlow.jsx";
 
+/* buildSupportMap projects the per-device support data (returned by
+ * the real Wails ListDevices() binding via dev.support) into the
+ * { [deviceId]: { feature: state | { state, note } } } shape
+ * DevicePickerStep expects. Falls back to DEFAULT_DEVICE_SUPPORT for
+ * any device whose backend doesn't include a [support] table — which
+ * is the case in dev-mode (Cloudflare preview) and for any port whose
+ * device.toml hasn't been populated yet. The conversion folds
+ * "<key>_note" siblings into { state, note } pairs so the matrix can
+ * render the explanatory text. */
+function buildSupportMap(devices) {
+  const out = { ...DEFAULT_DEVICE_SUPPORT };
+  for (const d of devices || []) {
+    if (!d || !d.support) continue;
+    const raw = d.support;
+    const folded = {};
+    for (const k of Object.keys(raw)) {
+      if (k.endsWith("_note")) continue;
+      const note = raw[`${k}_note`];
+      folded[k] = note ? { state: raw[k], note } : raw[k];
+    }
+    if (raw._note) folded._note = raw._note;
+    out[d.id] = folded;
+  }
+  return out;
+}
+
 const DEVICES_FALLBACK = [
   { id: "samsung-jflte", name: "Galaxy S4", code: "samsung-jflte", soc: "msm8960", arch: "armv7h", tag: "stable", status: "stable" },
   { id: "xiaomi-daisy", name: "Redmi 6A", code: "xiaomi-daisy", soc: "msm8953", arch: "aarch64", tag: "stable", status: "stable" },
@@ -112,7 +138,7 @@ export default function BuildFlow({ onHome, startDevice, appClass }) {
             devices={devices}
             dev={dev}
             onPick={pick}
-            supportMap={DEFAULT_DEVICE_SUPPORT} />}
+            supportMap={buildSupportMap(devices)} />}
 
           {step === 1 && <BaseStep
             mode={mdMode}
