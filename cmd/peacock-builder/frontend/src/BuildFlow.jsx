@@ -9,6 +9,7 @@
 import React from "react";
 import { AppShell, PK, Btn, Head, SRow, Field, Seg, ModeChip, useMode, FULL, HEAD } from "./shared.jsx";
 import { ListDevices } from "./api.js";
+import DevicePickerStep from "./DevicePickerStep.jsx";
 import BaseStep from "./BaseStep.jsx";
 import DesktopStep from "./DesktopStep.jsx";
 import PackagesStep from "./PackagesStep.jsx";
@@ -107,18 +108,10 @@ export default function BuildFlow({ onHome, startDevice, appClass }) {
         <div className="main">
           <ModeChip mode={mdMode} onClick={toggleMode} />
           <div key={step} className="mflow">
-          {step === 0 && <React.Fragment>
-            <Head c="STEP 01 / 06 · TARGET" t="Choose a device" s="Pick the device this image will be flashed to. Architecture and bootloader are set from its profile." />
-            <div className="mbody fade"><div className="tiles">
-              {devices.map(d => (
-                <div key={d.id} className={"tile" + (dev && dev.id === d.id ? " on" : "")} onClick={() => pick(d)}>
-                  <div className="check">✓</div><div className="tg">{d.tag}</div>
-                  <div className="tn">{d.name}</div>
-                  <div className="tm">{d.code}<br />{d.soc} · {d.arch}</div>
-                </div>
-              ))}
-            </div></div>
-          </React.Fragment>}
+          {step === 0 && <DevicePickerStep
+            devices={devices}
+            dev={dev}
+            onPick={pick} />}
 
           {step === 1 && <BaseStep
             mode={mdMode}
