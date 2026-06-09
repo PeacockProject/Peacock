@@ -7,18 +7,20 @@
  *      rendered as collapsible sections (open by default).
  *   3. Status pills with hover hints (stable / testing / experimental /
  *      partial / unsupported).
- *   4. Per-card "What works on this device" expander — a 2-column grid
- *      of the 13 standard features with ✓ / ⚠ / ✗ states. Cards grow
- *      in place (max-height transition, no modal). Clicking the card
- *      surface still selects+advances; only the small expand handle
- *      toggles the matrix.
+ *   4. Per-card click opens a right-side details drawer ("DPKDrawer")
+ *      that shows the device summary + a 2-column "What works" matrix
+ *      and a primary "Select this device" CTA. Cards themselves stay
+ *      small + uniform; the wizard's footer Continue button still
+ *      advances to the next step once a device has been picked. The
+ *      drawer hot-swaps content when another card is clicked while it
+ *      is open, and closes on Escape, backdrop click, or its own ✕.
  *
  * The support data shown in the matrix is HAND-WRITTEN, intentionally
  * cautious, and will be populated from peacock-ports/device/<name>/
  * device.toml in a future round. The map is keyed by device id and
  * passed in as the `supportMap` prop (defaults to {}). */
 import React from "react";
-import { Head } from "./shared.jsx";
+import { Head, Btn } from "./shared.jsx";
 
 /* Brand inference from codename. Order of BRAND_ORDER below also drives
  * the section render order — most-tested brands first. */
@@ -48,6 +50,9 @@ function brandOf(dev) {
   if (c.startsWith("fairphone-")) return "Fairphone";
   if (c.startsWith("generic-x86") || c.startsWith("qemu-")) return "PC / virtual";
   return "Other";
+}
+function brandSlug(dev) {
+  return brandOf(dev).toLowerCase().replace(/[^a-z0-9]+/g, "-");
 }
 
 /* The 13 standard features displayed in the per-device "What works"
@@ -101,6 +106,25 @@ function summarize(support) {
   return { ok, partial, none, total };
 }
 
+/* Drawer prose blurb. The matrix below it has all the technical detail
+ * already, so this is a 1–2 sentence "what should I expect" line. If
+ * the supportMap entry carries a `_note`, we lead with it. */
+function summaryProse(device, support) {
+  const sum = summarize(support);
+  const note = support && support._note;
+  const status = statusOf(device);
+  const tail =
+    status === "stable"       ? "Daily-driveable on this port — most users won't hit blockers."
+    : status === "testing"    ? "Works for most everyday tasks; expect a rough edge here or there."
+    : status === "partial"    ? "Boots and runs, but several major features still don't work."
+    : status === "unsupported" ? "Listed for reference only — this port isn't actively maintained."
+    :                            "Active bring-up: basic boot works, but a lot of hardware isn't wired in yet.";
+  const head = note
+    ? note
+    : `${sum.ok} of ${sum.total} core features work on ${device.name} today${sum.partial ? `, ${sum.partial} partially` : ""}.`;
+  return `${head} ${tail}`;
+}
+
 function fuzzMatch(dev, q) {
   if (!q) return true;
   const hay = [
@@ -112,14 +136,23 @@ function fuzzMatch(dev, q) {
 export default function DevicePickerStep({ devices, dev, onPick, supportMap }) {
   const [query, setQuery] = React.useState("");
   const [collapsedBrands, setCollapsedBrands] = React.useState({});
-  const [expandedCard, setExpandedCard] = React.useState(null);
+  // Device whose details the drawer is currently showing. Distinct from
+  // `dev` (the wizard's actual picked device): you can peek at one and
+  // commit to it (or another) via the drawer's "Select this device" CTA.
+  const [drawerId, setDrawerId] = React.useState(null);
   const searchRef = React.useRef(null);
   const sm = supportMap || {};
 
   // `/` focuses the search box (skip if user is already in another input
-  // so we don't fight other shortcuts like B/I).
+  // so we don't fight other shortcuts like B/I). Escape closes the
+  // drawer first, falling through to default behaviour otherwise.
   React.useEffect(() => {
     const onKey = (e) => {
+      if (e.key === "Escape" && drawerId) {
+        e.preventDefault();
+        setDrawerId(null);
+        return;
+      }
       if (e.key !== "/") return;
       const t = e.target;
       if (t && /input|textarea/i.test(t.tagName)) return;
@@ -128,7 +161,7 @@ export default function DevicePickerStep({ devices, dev, onPick, supportMap }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [drawerId]);
 
   const q = query.trim().toLowerCase();
   const filtered = React.useMemo(() => devices.filter(d => fuzzMatch(d, q)), [devices, q]);
@@ -150,6 +183,10 @@ export default function DevicePickerStep({ devices, dev, onPick, supportMap }) {
 
   const totalShown = filtered.length;
   const totalAll = devices.length;
+  const drawerDevice = drawerId ? devices.find(d => d.id === drawerId) || null : null;
+  const openDrawer = (d) => setDrawerId(d.id);
+  const closeDrawer = () => setDrawerId(null);
+  const selectFromDrawer = (d) => { onPick(d); setDrawerId(null); };
 
   return (
     <React.Fragment>
@@ -188,14 +225,20 @@ export default function DevicePickerStep({ devices, dev, onPick, supportMap }) {
                 collapsed={!!collapsedBrands[brand]}
                 onToggle={() => setCollapsedBrands(cb => ({ ...cb, [brand]: !cb[brand] }))}
                 selectedId={dev && dev.id}
-                expandedId={expandedCard}
-                onExpand={id => setExpandedCard(c => c === id ? null : id)}
+                openId={drawerId}
                 supportMap={sm}
-                onPick={onPick} />
+                onOpen={openDrawer} />
             ))}
           </div>
         )}
       </div>
+
+      <DPKDrawer
+        device={drawerDevice}
+        support={drawerDevice ? sm[drawerDevice.id] : null}
+        selected={dev && drawerDevice && dev.id === drawerDevice.id}
+        onClose={closeDrawer}
+        onSelect={selectFromDrawer} />
     </React.Fragment>
   );
 }
@@ -218,7 +261,7 @@ function DPKEmpty({ query }) {
   );
 }
 
-function DPKBrandSection({ brand, devices, collapsed, onToggle, selectedId, expandedId, onExpand, supportMap, onPick }) {
+function DPKBrandSection({ brand, devices, collapsed, onToggle, selectedId, openId, supportMap, onOpen }) {
   return (
     <section className={"dpk-grp" + (collapsed ? " collapsed" : "")}>
       <header className="dpk-grp-head" onClick={onToggle} role="button" tabIndex={0}
@@ -235,10 +278,9 @@ function DPKBrandSection({ brand, devices, collapsed, onToggle, selectedId, expa
                 key={d.id}
                 device={d}
                 selected={selectedId === d.id}
-                expanded={expandedId === d.id}
-                onExpand={() => onExpand(d.id)}
+                open={openId === d.id}
                 support={supportMap[d.id]}
-                onPick={() => onPick(d)} />
+                onOpen={() => onOpen(d)} />
             ))}
           </div>
         </div>
@@ -247,20 +289,11 @@ function DPKBrandSection({ brand, devices, collapsed, onToggle, selectedId, expa
   );
 }
 
-function DPKCard({ device, selected, expanded, onExpand, support, onPick }) {
-  const brandSlug = brandOf(device).toLowerCase().replace(/[^a-z0-9]+/g, "-");
+function DPKCard({ device, selected, open, support, onOpen }) {
+  const slug = brandSlug(device);
   const st = statusOf(device);
   const meta = STATUS_META[st];
   const sum = summarize(support);
-
-  // Tap-for-details handle stops propagation so the card surface still
-  // fires the pick handler when clicked anywhere else.
-  const onExpandClick = (e) => { e.stopPropagation(); onExpand(); };
-  const onExpandKey = (e) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault(); e.stopPropagation(); onExpand();
-    }
-  };
 
   // Friendly progress string. Skips zero-noise — e.g. "13 / 13 work"
   // when everything is fine, "11 / 13 work · 2 limited" when partial.
@@ -269,31 +302,144 @@ function DPKCard({ device, selected, expanded, onExpand, support, onPick }) {
   if (sum.none && !sum.partial) progressBits.push(`${sum.none} missing`);
 
   return (
-    <div className={"dpk-card brand-" + brandSlug + (selected ? " on" : "") + (expanded ? " expanded" : "")}
-      onClick={onPick}
+    <div className={"dpk-card brand-" + slug + (selected ? " on" : "") + (open ? " peek" : "")}
+      onClick={onOpen}
       role="button" tabIndex={0}
-      onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); onPick(); } }}>
+      aria-pressed={selected}
+      aria-haspopup="dialog"
+      aria-expanded={open}
+      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); } }}>
       <div className="dpk-card-accent" aria-hidden="true" />
       <div className={"dpk-pill dpk-stat-" + st} title={meta.hint}>{meta.label}</div>
       <div className="dpk-card-name">{device.name}</div>
       <div className="dpk-card-code">{device.code}</div>
       <div className="dpk-card-soc">{device.soc} · {device.arch}</div>
       <div className="dpk-card-prog">{progressBits.join(" · ")}</div>
-      <button type="button"
-        className={"dpk-card-handle" + (expanded ? " open" : "")}
-        onClick={onExpandClick} onKeyDown={onExpandKey}
-        aria-expanded={expanded}
-        aria-label={expanded ? "Hide feature details" : "Show feature details"}>
-        <span className="dpk-card-handle-lab">
-          {expanded ? "Hide details" : "Tap for details"}
-        </span>
-        <span className="dpk-card-handle-chev" aria-hidden="true">{expanded ? "▴" : "▾"}</span>
-      </button>
-      <div className={"dpk-matrix-wrap" + (expanded ? " open" : "")}
-        aria-hidden={!expanded}>
-        <DPKMatrix support={support} />
-      </div>
     </div>
+  );
+}
+
+/* ----------------------------------------------------------------------
+ * DPKDrawer — right-side slide-in panel with device detail.
+ *
+ * Stays mounted while a device is "peeked at" (drawerId !== null in the
+ * parent). Animates via the .open class toggling translateX 100% → 0
+ * over 220 ms. The backdrop dims the picker and absorbs clicks so the
+ * user can't accidentally re-trigger a card underneath the dim.
+ * -------------------------------------------------------------------- */
+function DPKDrawer({ device, support, selected, onClose, onSelect }) {
+  const closeBtnRef = React.useRef(null);
+  const rootRef = React.useRef(null);
+  // Keep the LAST device around for one render after `device` goes null
+  // so the slide-out animation has something to paint. Once the CSS
+  // transition would have finished (~240 ms) we clear it.
+  const [last, setLast] = React.useState(device);
+  React.useEffect(() => {
+    if (device) {
+      setLast(device);
+      return;
+    }
+    const t = setTimeout(() => setLast(null), 260);
+    return () => clearTimeout(t);
+  }, [device]);
+
+  // Auto-focus the close button when the drawer opens so Tab cycles
+  // ✕ → summary link area → matrix items → Cancel → Select, then wraps.
+  React.useEffect(() => {
+    if (device && closeBtnRef.current) {
+      const id = requestAnimationFrame(() => {
+        if (closeBtnRef.current) closeBtnRef.current.focus();
+      });
+      return () => cancelAnimationFrame(id);
+    }
+  }, [device && device.id]);
+
+  const shown = device || last;
+  if (!shown) return null;
+  const open = !!device;
+  const slug = brandSlug(shown);
+  const st = statusOf(shown);
+  const meta = STATUS_META[st];
+  const prose = summaryProse(shown, support);
+  const sum = summarize(support);
+
+  return (
+    <div className={"dpk-drawer-root" + (open ? " open" : " closing")}
+      ref={rootRef}
+      aria-hidden={!open}>
+      <div className="dpk-drawer-backdrop" onClick={onClose} />
+      <aside className={"dpk-drawer brand-" + slug}
+        role="dialog" aria-modal="true"
+        aria-label={`Details for ${shown.name}`}>
+        <div className="dpk-drawer-accent" aria-hidden="true" />
+        <header className="dpk-drawer-head">
+          <div className="dpk-drawer-titles">
+            <div className="dpk-drawer-name">{shown.name}</div>
+            <div className={"dpk-pill dpk-stat-" + st} title={meta.hint}>{meta.label}</div>
+          </div>
+          <button type="button" className="dpk-drawer-x"
+            ref={closeBtnRef}
+            onClick={onClose}
+            aria-label="Close details">✕</button>
+        </header>
+
+        <div className="dpk-drawer-meta">
+          <span><b>{brandOf(shown)}</b></span>
+          <span className="dpk-drawer-sep">·</span>
+          <span className="dpk-drawer-mono">{shown.code}</span>
+          <span className="dpk-drawer-sep">·</span>
+          <span className="dpk-drawer-mono">{shown.soc}</span>
+          <span className="dpk-drawer-sep">·</span>
+          <span className="dpk-drawer-mono">{shown.arch}</span>
+        </div>
+
+        <div className="dpk-drawer-body">
+          <p className="dpk-drawer-prose" tabIndex={0}>{prose}</p>
+
+          <div className="dpk-drawer-progress">
+            <span className="dpk-drawer-progress-num">{sum.ok}<small>/{sum.total}</small></span>
+            <span className="dpk-drawer-progress-lab">core features working
+              {sum.partial ? <small> · {sum.partial} partial</small> : null}
+              {sum.none && !sum.partial ? <small> · {sum.none} missing</small> : null}
+            </span>
+          </div>
+
+          <div className="dpk-drawer-mxhead">What works</div>
+          <DPKMatrix support={support} />
+        </div>
+
+        <div className="dpk-drawer-foot">
+          <FocusBtn onClick={onClose} ariaLabel="Cancel and close drawer">
+            <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+          </FocusBtn>
+          <div className="dpk-drawer-foot-sp" />
+          <FocusBtn onClick={() => onSelect(shown)} ariaLabel="Select this device and continue">
+            <Btn variant="primary" ar="→" onClick={() => onSelect(shown)}>
+              {selected ? "Keep this device" : "Select this device"}
+            </Btn>
+          </FocusBtn>
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+/* The shared <Btn /> atom renders as a non-focusable <div>, which would
+ * leave Cancel / Select unreachable via Tab. FocusBtn is a thin role
+ * wrapper that makes them keyboard-activatable without forking shared.jsx. */
+function FocusBtn({ children, onClick, ariaLabel }) {
+  return (
+    <span className="dpk-drawer-fbtn"
+      role="button" tabIndex={0}
+      aria-label={ariaLabel}
+      onKeyDown={e => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick && onClick();
+        }
+      }}>
+      {children}
+    </span>
   );
 }
 
@@ -320,7 +466,7 @@ function DPKMatrix({ support }) {
           {works.length === 0
             ? <li className="dpk-mx-row dpk-mx-empty">Nothing confirmed yet.</li>
             : works.map(r => (
-              <li key={r.id} className="dpk-mx-row dpk-mx-ok">
+              <li key={r.id} className="dpk-mx-row dpk-mx-ok" tabIndex={0}>
                 <span className="dpk-mx-rk">✓</span>
                 <span className="dpk-mx-rn">{r.name}</span>
               </li>
@@ -335,7 +481,7 @@ function DPKMatrix({ support }) {
           {broken.length === 0
             ? <li className="dpk-mx-row dpk-mx-empty">Nothing missing — everything tested works.</li>
             : broken.map(r => (
-              <li key={r.id} className={"dpk-mx-row dpk-mx-" + STATE_MARK[r.state].cls}>
+              <li key={r.id} className={"dpk-mx-row dpk-mx-" + STATE_MARK[r.state].cls} tabIndex={0}>
                 <span className="dpk-mx-rk">{STATE_MARK[r.state].icon}</span>
                 <span className="dpk-mx-rn">
                   {r.name}

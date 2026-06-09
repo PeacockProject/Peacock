@@ -863,3 +863,85 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 .dpk-mx-empty{color:var(--faint);font-style:italic;}
 .dpk-mx-note{display:block;font-family:var(--mono);font-size:10.5px;color:var(--soft);margin-top:1px;}
 
+/* Card-with-drawer mode: cards are now uniform-height tap targets.
+ * The in-card matrix is gone; the .peek state mirrors a card whose
+ * details are currently being inspected in the right-side drawer. */
+.dpk-card{min-height:128px;justify-content:flex-start;}
+.dpk-card.peek{border-color:var(--soft);box-shadow:0 6px 18px -8px rgba(32,31,36,.22);
+  background:#fff;}
+.dpk-card.peek.on{border-color:var(--blue);box-shadow:0 0 0 1px var(--blue),0 6px 18px -8px rgba(46,134,200,.32);}
+
+/* -------- DPKDrawer (right-side slide-in panel) --------
+ * Lives at the .stage edge as a fixed overlay; the backdrop sits to its
+ * left and dims the picker. Animation is pure CSS — translateX 100% → 0
+ * over 220 ms, plus a backdrop fade. The root is always mounted while
+ * a device is "peeked at", which lets the .closing class paint the
+ * slide-out frame before the panel unmounts. */
+.dpk-drawer-root{position:fixed;inset:0;z-index:60;pointer-events:none;}
+.dpk-drawer-root.open{pointer-events:auto;}
+.dpk-drawer-backdrop{position:absolute;inset:0;background:rgba(20,18,24,.0);
+  backdrop-filter:blur(0);-webkit-backdrop-filter:blur(0);
+  transition:background .22s ease, backdrop-filter .22s ease, -webkit-backdrop-filter .22s ease;}
+.dpk-drawer-root.open .dpk-drawer-backdrop{background:rgba(20,18,24,.5);
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);}
+.dpk-drawer{position:absolute;top:0;right:0;bottom:0;width:420px;max-width:92vw;
+  background:#fff;border-left:1px solid var(--line2);
+  box-shadow:-22px 0 44px -22px rgba(20,18,24,.32);
+  display:flex;flex-direction:column;min-height:0;
+  transform:translateX(100%);
+  transition:transform .22s cubic-bezier(.2,.7,.2,1);
+  --dpk-acc:var(--blue);}
+.dpk-drawer-root.open .dpk-drawer{transform:translateX(0);}
+.dpk-drawer.brand-oppo{--dpk-acc:#1FA39A;}
+.dpk-drawer.brand-xiaomi{--dpk-acc:#E07A4B;}
+.dpk-drawer.brand-samsung{--dpk-acc:#2E86C8;}
+.dpk-drawer.brand-pine64{--dpk-acc:#6C63D8;}
+.dpk-drawer.brand-fairphone{--dpk-acc:#1F8A5B;}
+.dpk-drawer.brand-pc-virtual{--dpk-acc:#7C7782;}
+.dpk-drawer.brand-other{--dpk-acc:#A6A2AC;}
+.dpk-drawer-accent{height:4px;flex:0 0 4px;background:var(--dpk-acc);}
+.dpk-drawer-head{display:flex;align-items:flex-start;gap:12px;padding:22px 22px 10px;}
+.dpk-drawer-titles{display:flex;flex-direction:column;gap:8px;min-width:0;flex:1;}
+.dpk-drawer-name{font-family:var(--serif);font-size:32px;line-height:1.04;color:var(--ink);
+  word-break:break-word;}
+.dpk-drawer-head .dpk-pill{position:static;align-self:flex-start;}
+.dpk-drawer-x{appearance:none;background:transparent;border:1px solid var(--line2);
+  border-radius:8px;width:30px;height:30px;line-height:1;color:var(--soft);
+  font-size:14px;cursor:pointer;flex:0 0 30px;
+  transition:color .12s,border-color .12s,background .12s;}
+.dpk-drawer-x:hover{color:var(--ink);border-color:var(--soft);background:var(--panel);}
+.dpk-drawer-x:focus-visible{outline:2px solid var(--blue);outline-offset:2px;}
+.dpk-drawer-meta{display:flex;flex-wrap:wrap;gap:6px;align-items:center;
+  padding:0 22px 14px;font-size:12px;color:var(--ink2);}
+.dpk-drawer-meta b{font-weight:600;color:var(--ink);}
+.dpk-drawer-mono{font-family:var(--mono);font-size:11.5px;color:var(--soft);}
+.dpk-drawer-sep{color:var(--faint);}
+.dpk-drawer-body{flex:1;min-height:0;overflow:auto;padding:6px 22px 22px;}
+.dpk-drawer-body::-webkit-scrollbar{width:9px;}
+.dpk-drawer-body::-webkit-scrollbar-thumb{background:var(--line2);border-radius:6px;border:2px solid #fff;}
+.dpk-drawer-prose{font-size:13.5px;line-height:1.55;color:var(--ink2);margin:0 0 16px;}
+.dpk-drawer-prose:focus-visible{outline:2px solid var(--blue);outline-offset:3px;border-radius:4px;}
+.dpk-drawer-progress{display:flex;align-items:baseline;gap:10px;padding:10px 12px;
+  background:var(--panel);border:1px solid var(--line);border-radius:9px;margin-bottom:18px;}
+.dpk-drawer-progress-num{font-family:var(--serif);font-size:28px;line-height:1;color:var(--ink);}
+.dpk-drawer-progress-num small{font-family:var(--mono);font-size:13px;color:var(--soft);margin-left:2px;}
+.dpk-drawer-progress-lab{font-size:12px;color:var(--ink2);}
+.dpk-drawer-progress-lab small{font-family:var(--mono);font-size:11px;color:var(--soft);}
+.dpk-drawer-mxhead{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--soft);margin-bottom:8px;}
+/* Two-col by default; collapses to one when the drawer body's
+ * available width drops under ~380 px (narrow window / mobile). */
+.dpk-drawer .dpk-matrix{margin-top:0;padding-top:0;border-top:0;
+  grid-template-columns:1fr 1fr;gap:14px;}
+@media (max-width:760px){
+  .dpk-drawer .dpk-matrix{grid-template-columns:1fr;}
+}
+.dpk-drawer-foot{flex:0 0 auto;display:flex;align-items:center;gap:10px;
+  padding:14px 22px;border-top:1px solid var(--line);background:var(--bg);}
+.dpk-drawer-foot-sp{flex:1;}
+.dpk-drawer-foot .btn{padding:10px 14px;}
+.dpk-drawer-foot .btn.primary{background:var(--ink);}
+.dpk-drawer-fbtn{display:inline-flex;border-radius:11px;}
+.dpk-drawer-fbtn:focus-visible{outline:2px solid var(--blue);outline-offset:3px;}
+.dpk-drawer .dpk-mx-row:focus-visible{outline:2px solid var(--blue);outline-offset:2px;border-radius:4px;}
+
