@@ -5,7 +5,11 @@
  * unlock work so the flow feels instant by the time they're back at the PC.
  *
  * Sub-steps:
- *   F1  Warn  — data-loss confirmation (kicks off the background build job).
+ *   F0  Splash — short peacock splash that morphs (scales down + slides to
+ *                the top-left of the wizard chrome) into the spot where the
+ *                persistent build banner will live. Kicks off the background
+ *                build job at mount.
+ *   F1  Warn  — data-loss confirmation.
  *   F2  Unlock — per-brand bootloader-unlock instructions + live build banner.
  *   F3  Connect — plug-in detection (mock 4s).
  *   F4  Flash  — bootloader → recovery → system, live progress + log.
@@ -44,7 +48,7 @@ function portsFor(dev) {
   return PORTS[dev.id] || PORTS[dev.code] || { brand: "generic", bootloader: null, recovery: null, system: "linux-" + (dev.code || "device") };
 }
 
-/* ===== background build job (F1 kick-off, F2 banner, F3 gate) =====
+/* ===== background build job (F0 kick-off, F2 banner, F3 gate) =====
  *
  * A custom hook that drives the same simulated buildScript() lines used in
  * Run.jsx, but emits {progress, phase, done} so callers can render a small
@@ -62,6 +66,41 @@ function useBuildJob(dev, desktop, armed) {
   const prog = n > 0 ? script[n - 1].prog : 0;
   const phase = BUILD_PHASES.reduce((a, p) => (prog >= p.at ? p.label : a), BUILD_PHASES[0].label);
   return { progress: prog, phase, done: prog >= 100, lines: script.slice(0, n) };
+}
+
+/* ===== F0: splash → top-bar morph =======================================
+ *
+ * The splash is a full-stage hero (peacock + one line). After ~1.7s it enters
+ * a "docking" state: a single coordinated CSS transition scales the peacock
+ * down + translates it to the top-left, the label fades out, and the body
+ * fades in behind it. Once the transform transition ends the driver advances
+ * to F1 and the docked spot becomes the home for the persistent build banner
+ * (added in the next commit).
+ *
+ * Technique: a single fixed-position layer with two states (`.docking`
+ * applied after ~1.7s, transition runs ~700ms). transform + opacity only,
+ * so it stays on the GPU and doesn't thrash layout. */
+function StepSplash({ onDone }) {
+  const [docking, setDocking] = React.useState(false);
+  React.useEffect(() => {
+    const t = setTimeout(() => setDocking(true), 1700);
+    return () => clearTimeout(t);
+  }, []);
+  return (
+    <div className={"ff-splash" + (docking ? " docking" : "")}
+      onTransitionEnd={(e) => {
+        /* only react once, when the peacock layer finishes its move */
+        if (docking && e.propertyName === "transform" && e.target.classList.contains("ff-splash-pk")) {
+          onDone();
+        }
+      }}>
+      <div className="ff-splash-stage">
+        <div className="ff-splash-aura" />
+        <PK src={FULL} className="ff-splash-pk pkgrad" />
+        <div className="ff-splash-line">Building your image…</div>
+      </div>
+    </div>
+  );
 }
 
 /* ===== F2: per-brand unlock instructions ================================ */
@@ -615,13 +654,14 @@ function DiscardModal({ open, onKeep, onDiscard }) {
 
 /* ===== top-level driver =================================================
  *
- * State machine: warn → unlock → connect → flash → done. The background
- * build job is armed when we enter "warn" so it runs in parallel with the
- * user reading the unlock instructions. */
+ * State machine: splash → warn → unlock → connect → flash → done. The
+ * background build job is armed at mount (splash entry) so it runs in
+ * parallel with the user reading the warning + unlock instructions. F0 owns
+ * its own splash → dock animation, and F5 has its own celebratory screen. */
 export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appClass }) {
-  const [sub, setSub] = React.useState("warn");
+  const [sub, setSub] = React.useState("splash");
   const [discardOpen, setDiscardOpen] = React.useState(false);
-  const build = useBuildJob(dev, desktop, true); // armed immediately at F1 entry
+  const build = useBuildJob(dev, desktop, true); // armed immediately at F0 entry
   const ports = portsFor(dev);
 
   const cancel = () => setDiscardOpen(true);
@@ -634,10 +674,14 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appCl
       <span className="sep">·</span><span>flash · {ports.brand}</span>
       <span className="r">
         <span className="crumb">{
-          sub === "warn" ? "Warning" : sub === "unlock" ? "Unlock" : sub === "connect" ? "Connect" : sub === "flash" ? "Flashing" : "Done"
+          sub === "splash" ? "Preparing" :
+          sub === "warn" ? "Warning" :
+          sub === "unlock" ? "Unlock" :
+          sub === "connect" ? "Connect" :
+          sub === "flash" ? "Flashing" : "Done"
         }</span>
         <span className="sep">·</span>
-        <span>step {{ warn: 1, unlock: 2, connect: 3, flash: 4, done: 5 }[sub]} / 5</span>
+        <span>step {{ splash: 0, warn: 1, unlock: 2, connect: 3, flash: 4, done: 5 }[sub]} / 5</span>
       </span>
     </React.Fragment>
   );
@@ -645,6 +689,7 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appCl
   return (
     <AppShell appClass={appClass} title={<span>Flash to device <span className="dim">· {dev && dev.code}</span></span>} status={status}>
       <div className="ffwrap">
+        {sub === "splash" && <StepSplash onDone={() => setSub("warn")} />}
         {sub === "warn" && <StepWarn dev={dev} onCancel={cancel} onBack={onHome} onNext={() => setSub("unlock")} />}
         {sub === "unlock" && <StepUnlock dev={dev} build={build} onCancel={cancel} onBack={() => setSub("warn")} onNext={() => setSub("connect")} />}
         {sub === "connect" && <StepConnect dev={dev} build={build} onCancel={cancel} onBack={() => setSub("unlock")} onNext={() => setSub("flash")} />}

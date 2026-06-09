@@ -523,6 +523,39 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
   font-size:13px;color:#fff;background:#fff;transition:.13s;cursor:pointer;}
 .ff-ack.on .ff-check{background:#C84A2E;border-color:#C84A2E;}
 
+/* ===== F0: splash → top-bar morph =====
+ *
+ * Two states: idle (full-stage hero) and .docking (peacock scales down and
+ * translates to the top-left dock target; line + aura fade out). Pure
+ * transform + opacity, kept on the GPU. The transform target coordinates
+ * match where the persistent build banner will later live (top-left of the
+ * wizard chrome). */
+.ff-splash{position:absolute;inset:0;z-index:35;display:grid;place-items:center;background:var(--bg);
+  background-image:radial-gradient(60% 50% at 50% 38%,rgba(46,134,200,.12),transparent 70%),radial-gradient(40% 38% at 60% 60%,rgba(108,99,216,.10),transparent 72%);}
+.ff-splash-stage{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  transition:opacity .55s ease;}
+.ff-splash.docking .ff-splash-stage{opacity:0;}
+.ff-splash-aura{position:absolute;left:50%;top:50%;width:340px;height:340px;border-radius:50%;
+  background:radial-gradient(circle,rgba(46,134,200,.22),transparent 65%);
+  transform:translate(-50%,-50%) scale(1);transition:transform .65s ease,opacity .55s ease;pointer-events:none;}
+.ff-splash.docking .ff-splash-aura{opacity:0;transform:translate(-50%,-50%) scale(.2);}
+.ff-splash-pk{width:160px;height:188px;position:relative;
+  filter:drop-shadow(0 24px 44px rgba(46,134,200,.28));
+  transform-origin:center center;
+  transition:transform .72s cubic-bezier(.55,.05,.2,1),opacity .5s ease;
+  animation:ffsplash-in .55s cubic-bezier(.2,.7,.2,1) both;}
+@keyframes ffsplash-in{from{transform:scale(.6);opacity:0;}to{transform:scale(1);opacity:1;}}
+/* Dock target: small circle, top-left, at the same coordinates as the
+ * future persistent TopBanner's left edge. Translate from current center
+ * (50vw,50vh) to top-left (60px,60px) while scaling down to ~18%. */
+.ff-splash.docking .ff-splash-pk{transform:translate(calc(-50vw + 60px),calc(-50vh + 60px)) scale(.18);
+  filter:drop-shadow(0 4px 10px rgba(46,134,200,.45));}
+.ff-splash-line{margin-top:18px;font-family:var(--serif);font-size:30px;letter-spacing:-.003em;color:var(--ink);
+  background:var(--irid);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
+  animation:ffsplash-line-in .65s ease .15s both;transition:opacity .35s ease;}
+.ff-splash.docking .ff-splash-line{opacity:0;}
+@keyframes ffsplash-line-in{from{transform:translateY(8px);opacity:0;}to{transform:translateY(0);opacity:1;}}
+
 /* ===== discard modal ===== */
 .ff-modal-wrap{position:absolute;inset:0;z-index:40;display:grid;place-items:center;}
 .ff-modal-back{position:absolute;inset:0;background:rgba(20,18,26,.42);animation:fadein .2s ease both;}
