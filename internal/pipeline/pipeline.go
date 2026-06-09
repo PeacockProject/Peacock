@@ -62,6 +62,13 @@ type RunnerOpts struct {
 // Runner runs a fresh pipeline.
 type Runner struct {
 	opts RunnerOpts
+
+	// setupFn overrides the phase-1 implementation. nil (the default)
+	// means (*Runner).runBuildSetup. It exists purely as a test seam so
+	// pipeline_test.go can exercise Run's control flow (validation,
+	// config push, context cancellation) without bootstrapping a real
+	// device + chroot.
+	setupFn func(ctx context.Context, workDir string) (*buildSetup, error)
 }
 
 // NewRunner wraps RunnerOpts into a Runner. We keep the constructor
@@ -103,22 +110,7 @@ func (r *Runner) Run(ctx context.Context, cfg buildconfig.BuildPipelineConfig) (
 	// reads viper directly via internal/config accessors) sees the
 	// caller's intent. This is a temporary belt-and-braces — phase
 	// functions read from the Runner's own opts where possible.
-	flavor := cfg.Flavor
-	if flavor == "" {
-		flavor = "arch"
-	}
-	viper.Set(config.KeyFlavor, flavor)
-	viper.Set(config.KeyInitSystem, cfg.InitSystem)
-	viper.Set(config.KeyDesktop, cfg.Desktop)
-	viper.Set(config.KeyDisplayManager, cfg.DisplayManager)
-	viper.Set(config.KeyExtraPackages, cfg.Extras)
-	viper.Set(config.KeyUserName, cfg.UserName)
-	viper.Set(config.KeyUserPassword, cfg.UserPassword)
-	viper.Set(config.KeyImageSizeMB, cfg.ImageSizeMB)
-	viper.Set(config.KeyEmptyRootfs, cfg.EmptyRootfs)
-	if cfg.WorkDir != "" {
-		viper.Set(config.KeyWorkDir, cfg.WorkDir)
-	}
+	pushConfig(cfg)
 
 	// Push RunnerOpts from cfg fields where the GUI supplied them.
 	if cfg.UseQemu != "" {
@@ -134,7 +126,11 @@ func (r *Runner) Run(ctx context.Context, cfg buildconfig.BuildPipelineConfig) (
 
 	workDir := cfg.WorkDir
 
-	setup, err := r.runBuildSetup(ctx, workDir)
+	runSetup := r.runBuildSetup
+	if r.setupFn != nil {
+		runSetup = r.setupFn
+	}
+	setup, err := runSetup(ctx, workDir)
 	if err != nil {
 		return "", fmt.Errorf("build setup: %w", err)
 	}
@@ -186,4 +182,31 @@ func (r *Runner) Run(ctx context.Context, cfg buildconfig.BuildPipelineConfig) (
 	}
 
 	return imagePath, nil
+}
+
+// pushConfig mirrors cfg into viper so the phase code (which reads
+// config via internal/config's viper-backed accessors) sees the
+// caller's intent. Extracted from Run so the viper plumbing is
+// testable without bootstrapping phase 1; behavior is identical.
+//
+// An empty Flavor defaults to "arch" (parity with config.Flavor()),
+// and an empty WorkDir leaves the persisted key untouched so a GUI
+// run can't clobber the `peacock init` value with "".
+func pushConfig(cfg buildconfig.BuildPipelineConfig) {
+	flavor := cfg.Flavor
+	if flavor == "" {
+		flavor = "arch"
+	}
+	viper.Set(config.KeyFlavor, flavor)
+	viper.Set(config.KeyInitSystem, cfg.InitSystem)
+	viper.Set(config.KeyDesktop, cfg.Desktop)
+	viper.Set(config.KeyDisplayManager, cfg.DisplayManager)
+	viper.Set(config.KeyExtraPackages, cfg.Extras)
+	viper.Set(config.KeyUserName, cfg.UserName)
+	viper.Set(config.KeyUserPassword, cfg.UserPassword)
+	viper.Set(config.KeyImageSizeMB, cfg.ImageSizeMB)
+	viper.Set(config.KeyEmptyRootfs, cfg.EmptyRootfs)
+	if cfg.WorkDir != "" {
+		viper.Set(config.KeyWorkDir, cfg.WorkDir)
+	}
 }
