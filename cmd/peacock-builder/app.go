@@ -23,6 +23,15 @@ type App struct {
 	// completion is safe.
 	buildsMu sync.Mutex
 	builds   map[string]context.CancelFunc
+
+	// privilegeErr holds the error (if any) from
+	// EnsureBuildPrivileges run at startup. The React side reads it
+	// via PrivilegeError() and renders a friendly "we couldn't
+	// acquire admin rights" panel when non-empty. We deliberately
+	// don't fail-fast at startup — the user may want to inspect
+	// other tabs (Host check, device picker) even if builds can't
+	// run yet.
+	privilegeErr string
 }
 
 // NewApp returns a fresh App. The Wails context is filled in by
@@ -36,8 +45,32 @@ func NewApp() *App {
 // startup is registered as options.App.OnStartup. Wails calls it
 // after the webview is ready, handing us a context that's valid
 // for the lifetime of the window. EventsEmit / EventsOn use it.
+//
+// We also kick EnsureBuildPrivileges here so the polkit / osascript
+// dialog (Linux / macOS) pops at GUI launch rather than blocking the
+// first build attempt mid-pipeline. Any error is stashed on the App
+// struct and surfaced to the frontend via PrivilegeError(); we don't
+// fail startup so the user can still see Host check / device pages.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	if err := EnsureBuildPrivileges(ctx); err != nil {
+		a.privilegeErr = err.Error()
+	}
+}
+
+// PrivilegeError returns the message stashed by startup when
+// EnsureBuildPrivileges failed, or "" when privileges were acquired
+// successfully. Bound for the React side to render a banner / panel.
+func (a *App) PrivilegeError() string {
+	return a.privilegeErr
+}
+
+// PrivilegeMode returns the short description of how privileges are
+// being managed on the current platform. Bound for the React side to
+// show in the Host check tile (e.g. "linux: sudo credential cache +
+// pkexec fallback").
+func (a *App) PrivilegeMode() string {
+	return SudoPrivilegeMode()
 }
 
 // registerBuild stores the cancel func so CancelBuild can find it.

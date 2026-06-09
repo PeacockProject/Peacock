@@ -15,5 +15,10 @@
     "productVersion": "0.1.0",
     "copyright": "Copyright PeacockProject",
     "comments": "Cross-platform GUI for the Peacock distro builder"
+  },
+  "nsisType": "single",
+  "windowsManifest": {
+    "comment": "asInvoker — do not always-elevate. We escalate on demand via Windows' built-in UAC when a privileged operation actually runs. TODO: Windows builds aren't really exercised yet; revisit this once we have a Windows CI runner and a privileged-op smoke test.",
+    "requestedExecutionLevel": "asInvoker"
   }
 }
