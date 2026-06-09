@@ -1,14 +1,22 @@
 /* DevicePickerStep.jsx — Step 1 of the build wizard.
  *
- * Picks the device PeacockOS will be flashed to. Features in this first
- * pass:
+ * Picks the device PeacockOS will be flashed to. Features:
  *   1. Search box at the top — live-filters devices by name, codename,
  *      SoC, brand, or arch. `/` focuses it from anywhere.
  *   2. Brand grouping — devices bucketed by codename prefix and
  *      rendered as collapsible sections (open by default).
+ *   3. Status pills with hover hints (stable / testing / experimental /
+ *      partial / unsupported).
+ *   4. Per-card "What works on this device" expander — a 2-column grid
+ *      of the 13 standard features with ✓ / ⚠ / ✗ states. Cards grow
+ *      in place (max-height transition, no modal). Clicking the card
+ *      surface still selects+advances; only the small expand handle
+ *      toggles the matrix.
  *
- * The selection behavior matches the old inline grid: a single click on
- * the card surface advances the wizard (handled by onPick in BuildFlow). */
+ * The support data shown in the matrix is HAND-WRITTEN, intentionally
+ * cautious, and will be populated from peacock-ports/device/<name>/
+ * device.toml in a future round. The map is keyed by device id and
+ * passed in as the `supportMap` prop (defaults to {}). */
 import React from "react";
 import { Head } from "./shared.jsx";
 
@@ -42,6 +50,57 @@ function brandOf(dev) {
   return "Other";
 }
 
+/* The 13 standard features displayed in the per-device "What works"
+ * matrix. Ordered loosely by how often a user notices breakage. Each
+ * device's support map keys these by id; missing keys are treated as
+ * "unknown — likely doesn't work yet". */
+const FEATURES = [
+  { id: "calls",     name: "Calls" },
+  { id: "sms",       name: "SMS" },
+  { id: "wifi",      name: "WiFi" },
+  { id: "bluetooth", name: "Bluetooth" },
+  { id: "touch",     name: "Touchscreen" },
+  { id: "gpu",       name: "GPU" },
+  { id: "battery",   name: "Battery + charging" },
+  { id: "audio",     name: "Audio + headphone jack" },
+  { id: "camrear",   name: "Camera (rear)" },
+  { id: "camfront",  name: "Camera (front)" },
+  { id: "gps",       name: "GPS" },
+  { id: "sensors",   name: "Sensors (accelerometer, etc.)" },
+  { id: "modem",     name: "Modem / mobile data" },
+];
+
+// Marks for the three states a feature can be in. "n/a" maps to a
+// dimmed dash — used for things like cellular on the qemu / x86 build,
+// where the feature simply doesn't apply rather than being broken.
+const STATE_MARK = {
+  ok:      { icon: "✓", cls: "ok",      label: "Works" },
+  partial: { icon: "⚠", cls: "partial", label: "Partial" },
+  none:    { icon: "✗", cls: "none",    label: "Doesn't work yet" },
+  na:      { icon: "—", cls: "na",      label: "Not applicable" },
+};
+function featureState(support, fid) {
+  const e = support && support[fid];
+  if (!e) return { state: "none" };
+  if (typeof e === "string") return { state: e };
+  return { state: e.state || "none", note: e.note };
+}
+
+// Summary line: "11 / 13 work · 2 limited". Skips n/a entries so qemu
+// doesn't report "9 / 13" just because cellular is irrelevant.
+function summarize(support) {
+  let ok = 0, partial = 0, none = 0, total = 0;
+  for (const f of FEATURES) {
+    const { state } = featureState(support, f.id);
+    if (state === "na") continue;
+    total++;
+    if (state === "ok") ok++;
+    else if (state === "partial") partial++;
+    else none++;
+  }
+  return { ok, partial, none, total };
+}
+
 function fuzzMatch(dev, q) {
   if (!q) return true;
   const hay = [
@@ -50,10 +109,12 @@ function fuzzMatch(dev, q) {
   return hay.includes(q);
 }
 
-export default function DevicePickerStep({ devices, dev, onPick }) {
+export default function DevicePickerStep({ devices, dev, onPick, supportMap }) {
   const [query, setQuery] = React.useState("");
   const [collapsedBrands, setCollapsedBrands] = React.useState({});
+  const [expandedCard, setExpandedCard] = React.useState(null);
   const searchRef = React.useRef(null);
+  const sm = supportMap || {};
 
   // `/` focuses the search box (skip if user is already in another input
   // so we don't fight other shortcuts like B/I).
@@ -127,6 +188,9 @@ export default function DevicePickerStep({ devices, dev, onPick }) {
                 collapsed={!!collapsedBrands[brand]}
                 onToggle={() => setCollapsedBrands(cb => ({ ...cb, [brand]: !cb[brand] }))}
                 selectedId={dev && dev.id}
+                expandedId={expandedCard}
+                onExpand={id => setExpandedCard(c => c === id ? null : id)}
+                supportMap={sm}
                 onPick={onPick} />
             ))}
           </div>
@@ -154,7 +218,7 @@ function DPKEmpty({ query }) {
   );
 }
 
-function DPKBrandSection({ brand, devices, collapsed, onToggle, selectedId, onPick }) {
+function DPKBrandSection({ brand, devices, collapsed, onToggle, selectedId, expandedId, onExpand, supportMap, onPick }) {
   return (
     <section className={"dpk-grp" + (collapsed ? " collapsed" : "")}>
       <header className="dpk-grp-head" onClick={onToggle} role="button" tabIndex={0}
@@ -171,6 +235,9 @@ function DPKBrandSection({ brand, devices, collapsed, onToggle, selectedId, onPi
                 key={d.id}
                 device={d}
                 selected={selectedId === d.id}
+                expanded={expandedId === d.id}
+                onExpand={() => onExpand(d.id)}
+                support={supportMap[d.id]}
                 onPick={() => onPick(d)} />
             ))}
           </div>
@@ -180,12 +247,29 @@ function DPKBrandSection({ brand, devices, collapsed, onToggle, selectedId, onPi
   );
 }
 
-function DPKCard({ device, selected, onPick }) {
+function DPKCard({ device, selected, expanded, onExpand, support, onPick }) {
   const brandSlug = brandOf(device).toLowerCase().replace(/[^a-z0-9]+/g, "-");
   const st = statusOf(device);
   const meta = STATUS_META[st];
+  const sum = summarize(support);
+
+  // Tap-for-details handle stops propagation so the card surface still
+  // fires the pick handler when clicked anywhere else.
+  const onExpandClick = (e) => { e.stopPropagation(); onExpand(); };
+  const onExpandKey = (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault(); e.stopPropagation(); onExpand();
+    }
+  };
+
+  // Friendly progress string. Skips zero-noise — e.g. "13 / 13 work"
+  // when everything is fine, "11 / 13 work · 2 limited" when partial.
+  const progressBits = [`${sum.ok} / ${sum.total} work`];
+  if (sum.partial) progressBits.push(`${sum.partial} limited`);
+  if (sum.none && !sum.partial) progressBits.push(`${sum.none} missing`);
+
   return (
-    <div className={"dpk-card brand-" + brandSlug + (selected ? " on" : "")}
+    <div className={"dpk-card brand-" + brandSlug + (selected ? " on" : "") + (expanded ? " expanded" : "")}
       onClick={onPick}
       role="button" tabIndex={0}
       onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); onPick(); } }}>
@@ -194,6 +278,73 @@ function DPKCard({ device, selected, onPick }) {
       <div className="dpk-card-name">{device.name}</div>
       <div className="dpk-card-code">{device.code}</div>
       <div className="dpk-card-soc">{device.soc} · {device.arch}</div>
+      <div className="dpk-card-prog">{progressBits.join(" · ")}</div>
+      <button type="button"
+        className={"dpk-card-handle" + (expanded ? " open" : "")}
+        onClick={onExpandClick} onKeyDown={onExpandKey}
+        aria-expanded={expanded}
+        aria-label={expanded ? "Hide feature details" : "Show feature details"}>
+        <span className="dpk-card-handle-lab">
+          {expanded ? "Hide details" : "Tap for details"}
+        </span>
+        <span className="dpk-card-handle-chev" aria-hidden="true">{expanded ? "▴" : "▾"}</span>
+      </button>
+      <div className={"dpk-matrix-wrap" + (expanded ? " open" : "")}
+        aria-hidden={!expanded}>
+        <DPKMatrix support={support} />
+      </div>
+    </div>
+  );
+}
+
+/* Two-column "What works / What doesn't" grid. Left column lists every
+ * feature with state "ok"; right column lists the rest (partial + none),
+ * each annotated with its mark and optional one-line note. */
+function DPKMatrix({ support }) {
+  const works = [];
+  const broken = [];
+  for (const f of FEATURES) {
+    const { state, note } = featureState(support, f.id);
+    const row = { ...f, state, note };
+    if (state === "ok") works.push(row);
+    else if (state === "na") { /* skip — feature doesn't apply to this device */ }
+    else broken.push(row);
+  }
+  return (
+    <div className="dpk-matrix" onClick={e => e.stopPropagation()}>
+      <div className="dpk-mx-col">
+        <div className="dpk-mx-hd dpk-mx-hd-ok">
+          <span className="dpk-mx-ic">✓</span> Works
+        </div>
+        <ul className="dpk-mx-list">
+          {works.length === 0
+            ? <li className="dpk-mx-row dpk-mx-empty">Nothing confirmed yet.</li>
+            : works.map(r => (
+              <li key={r.id} className="dpk-mx-row dpk-mx-ok">
+                <span className="dpk-mx-rk">✓</span>
+                <span className="dpk-mx-rn">{r.name}</span>
+              </li>
+            ))}
+        </ul>
+      </div>
+      <div className="dpk-mx-col">
+        <div className="dpk-mx-hd dpk-mx-hd-bad">
+          <span className="dpk-mx-ic">✗</span> Doesn't work yet
+        </div>
+        <ul className="dpk-mx-list">
+          {broken.length === 0
+            ? <li className="dpk-mx-row dpk-mx-empty">Nothing missing — everything tested works.</li>
+            : broken.map(r => (
+              <li key={r.id} className={"dpk-mx-row dpk-mx-" + STATE_MARK[r.state].cls}>
+                <span className="dpk-mx-rk">{STATE_MARK[r.state].icon}</span>
+                <span className="dpk-mx-rn">
+                  {r.name}
+                  {r.note ? <small className="dpk-mx-note"> · {r.note}</small> : null}
+                </span>
+              </li>
+            ))}
+        </ul>
+      </div>
     </div>
   );
 }

@@ -733,3 +733,39 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 .dpk-stat-partial     {color:#7d6512;border-color:#e3d28b;background:#faf2d4;}
 .dpk-stat-unsupported {color:#5a575f;border-color:var(--line2);background:#ececea;}
 
+/* Progress summary + expand handle inside the card. */
+.dpk-card-prog{font-family:var(--mono);font-size:11px;color:var(--soft);margin-top:4px;}
+.dpk-card-handle{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px;
+  background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 10px;
+  font-family:var(--mono);font-size:11px;letter-spacing:.04em;color:var(--soft);cursor:pointer;
+  transition:background .14s,color .14s,border-color .14s;}
+.dpk-card-handle:hover{background:#fff;color:var(--ink);border-color:var(--soft);}
+.dpk-card-handle.open{color:var(--ink);background:#fff;border-color:var(--soft);}
+.dpk-card-handle-chev{font-size:13px;line-height:1;opacity:.7;transition:transform .15s;}
+.dpk-card-handle.open .dpk-card-handle-chev{opacity:1;}
+
+/* Expandable matrix. Uses grid-rows auto + max-height transition so
+ * the card grows in place — no modal, no layout reflow shock. */
+.dpk-matrix-wrap{display:grid;grid-template-rows:0fr;transition:grid-template-rows .28s cubic-bezier(.2,.7,.2,1);}
+.dpk-matrix-wrap.open{grid-template-rows:1fr;}
+.dpk-matrix-wrap > .dpk-matrix{overflow:hidden;min-height:0;}
+.dpk-matrix-wrap.open > .dpk-matrix{overflow:visible;}
+.dpk-matrix{margin-top:10px;padding-top:12px;border-top:1px dashed var(--line);
+  display:grid;grid-template-columns:1fr 1fr;gap:14px;cursor:default;}
+.dpk-mx-col{min-width:0;}
+.dpk-mx-hd{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;
+  display:flex;align-items:center;gap:6px;margin-bottom:6px;}
+.dpk-mx-hd-ok{color:#0e5e3c;}
+.dpk-mx-hd-bad{color:#9a4b1e;}
+.dpk-mx-hd .dpk-mx-ic{font-size:13px;}
+.dpk-mx-list{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:4px;}
+.dpk-mx-row{display:flex;gap:7px;align-items:flex-start;font-size:11.5px;line-height:1.35;color:var(--ink2);}
+.dpk-mx-rk{font-family:var(--mono);font-size:12px;flex:0 0 12px;line-height:1.3;text-align:center;}
+.dpk-mx-rn{min-width:0;}
+.dpk-mx-ok .dpk-mx-rk     {color:#1F8A5B;}
+.dpk-mx-partial .dpk-mx-rk{color:#b78a2e;}
+.dpk-mx-none .dpk-mx-rk   {color:#b54a2b;}
+.dpk-mx-na .dpk-mx-rk     {color:var(--faint);}
+.dpk-mx-empty{color:var(--faint);font-style:italic;}
+.dpk-mx-note{display:block;font-family:var(--mono);font-size:10.5px;color:var(--soft);margin-top:1px;}
+
