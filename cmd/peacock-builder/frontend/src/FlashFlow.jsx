@@ -309,6 +309,188 @@ function StepConnect({ dev, build, onCancel, onBack, onNext }) {
   );
 }
 
+/* ===== F4: live flashing ================================================
+ *
+ * Three sub-phases: bootloader → recovery → system. Each has its own log
+ * script (same shape as buildScript), and the screen-wide progress bar at
+ * the top is the combined % across all three. We weight equally — Phase 4
+ * later can swap to real fastboot-emitted byte progress when the Wails
+ * pipeline ships.
+ *
+ * Partition convention: we flash to `boot` for the custom second-stage
+ * bootloader (minkernel/lk2nd both go there — they replace the stock boot
+ * image), `recovery` for PRP, and `system` for the rootfs. This matches
+ * what `peacock flash --device <code>` does today.
+ *
+ * For devices that don't ship a custom bootloader port yet (Pine, x86,
+ * Fairphone) the bootloader phase is rendered as a "Not needed for this
+ * device — skipping." card and contributes 0% / 0s to the totals. */
+
+const L = (t, prog, node) => ({ t, prog, node });
+
+function bootloaderScript(dev, ports) {
+  const img = ports.bootloader;
+  if (!img) return null;
+  /* minkernel-* and lk2nd-* both flash to the `boot` partition. */
+  return [
+    L("·",  6, <span>fastboot devices</span>),
+    L("·", 14, <span><span className="b">→</span> {dev.code} · fastboot</span>),
+    L("·", 22, <span>peacock-resolve <span className="b">{img}</span></span>),
+    L("·", 36, <span><span className="g">✓</span> {img}.img <span className="y">(312 KB)</span></span>),
+    L("·", 48, <span>fastboot flash boot <span className="b">{img}.img</span></span>),
+    L("·", 70, <span>sending <span className="y">'boot'</span> (312 KB)…</span>),
+    L("·", 86, <span>writing <span className="y">'boot'</span>…</span>),
+    L("·", 100, <span><span className="g">✓</span> boot partition flashed</span>),
+  ];
+}
+function recoveryScript(dev, ports) {
+  if (!ports.recovery) return null;
+  const img = ports.recovery;
+  return [
+    L("·",  8, <span>peacock-resolve <span className="b">{img}</span></span>),
+    L("·", 22, <span><span className="g">✓</span> {img}.img <span className="y">(8.4 MB)</span></span>),
+    L("·", 30, <span>fastboot flash recovery <span className="b">{img}.img</span></span>),
+    L("·", 52, <span>sending <span className="y">'recovery'</span> (8.4 MB)…</span>),
+    L("·", 78, <span>writing <span className="y">'recovery'</span>…</span>),
+    L("·", 100, <span><span className="g">✓</span> recovery partition flashed</span>),
+  ];
+}
+function systemScript(dev) {
+  /* The build pipeline writes the rootfs image to ~/.local/var/peacock/<code>.img.
+   * We flash it to the `system` partition; userdata is wiped separately. */
+  return [
+    L("·",  6, <span>peacock-resolve <span className="b">peacockos-{dev.code}.img</span></span>),
+    L("·", 14, <span><span className="g">✓</span> rootfs image <span className="y">(1.92 GB)</span></span>),
+    L("·", 20, <span>fastboot erase userdata</span>),
+    L("·", 28, <span><span className="g">✓</span> userdata erased</span>),
+    L("·", 32, <span>fastboot flash system <span className="b">peacockos-{dev.code}.img</span></span>),
+    L("·", 50, <span>sending <span className="y">'system'</span> (1.92 GB)…</span>),
+    L("·", 72, <span>&nbsp;&nbsp;chunk 12 / 31 · 38.2 MB/s</span>),
+    L("·", 88, <span>writing <span className="y">'system'</span>…</span>),
+    L("·", 96, <span><span className="g">✓</span> system partition flashed</span>),
+    L("·", 100, <span><span className="g">✓</span> all partitions written</span>),
+  ];
+}
+
+/* Drives one phase to completion using the same setTimeout cadence as
+ * RunScreen. onDone fires once we've ticked past the last line. */
+function usePhase(script, armed, onDone) {
+  const [n, setN] = React.useState(0);
+  React.useEffect(() => {
+    if (!armed || !script) return;
+    if (n >= script.length) {
+      const t = setTimeout(onDone, 600);
+      return () => clearTimeout(t);
+    }
+    const t = setTimeout(() => setN(n + 1), n === 0 ? 320 : 360 + Math.random() * 240);
+    return () => clearTimeout(t);
+  }, [armed, n, script]);
+  React.useEffect(() => { if (!armed) setN(0); }, [armed]);
+  const prog = !script ? 100 : n > 0 ? script[n - 1].prog : 0;
+  return { prog, n, lines: script ? script.slice(0, n) : [] };
+}
+
+function StepFlash({ dev, onCancel, onBack, onDone }) {
+  const ports = portsFor(dev);
+  const blScript = React.useMemo(() => bootloaderScript(dev, ports), [dev.code, ports.bootloader]);
+  const rcScript = React.useMemo(() => recoveryScript(dev, ports), [dev.code, ports.recovery]);
+  const syScript = React.useMemo(() => systemScript(dev), [dev.code]);
+
+  const [phase, setPhase] = React.useState(blScript ? "bootloader" : (rcScript ? "recovery" : "system"));
+  const [finished, setFinished] = React.useState(false);
+
+  /* Sequence: bootloader → recovery → system → reboot. We use one phase
+   * hook each, gated by `armed`. A small state machine advances them. */
+  const bl = usePhase(blScript, phase === "bootloader", () => setPhase(rcScript ? "recovery" : "system"));
+  const rc = usePhase(rcScript, phase === "recovery", () => setPhase("system"));
+  const sy = usePhase(syScript, phase === "system", () => setFinished(true));
+
+  /* Combined progress: each phase contributes 1/3. Skipped phases count
+   * as 100% so a Pine/x86 flow lands at 33% the moment it starts. */
+  const blPct = blScript ? bl.prog : 100;
+  const rcPct = rcScript ? rc.prog : 100;
+  const syPct = sy.prog;
+  const total = Math.round((blPct + rcPct + syPct) / 3);
+
+  /* Auto-advance once flashing finishes, after the "reboot in 10 sec" message. */
+  React.useEffect(() => {
+    if (!finished) return;
+    const t = setTimeout(onDone, 10000);
+    return () => clearTimeout(t);
+  }, [finished]);
+
+  /* aggregate log: prefix lines with phase tag so the user understands order. */
+  const allLines = [
+    ...bl.lines.map(l => ({ ...l, _ph: "boot" })),
+    ...rc.lines.map(l => ({ ...l, _ph: "recv" })),
+    ...sy.lines.map(l => ({ ...l, _ph: "sys"  })),
+  ];
+
+  return (
+    <div className="ff" data-step="flash">
+      <FFTop title="Step 4 of 5 · Flashing PeacockOS" onCancel={onCancel} />
+      <div className="ff-flash">
+        <div className="ff-flash-top">
+          <div className="ff-flash-meta">
+            <span>{dev.code}</span>
+            <span className="sep">·</span>
+            <span>{finished ? "all done" : phase === "bootloader" ? "bootloader" : phase === "recovery" ? "recovery" : "system"}</span>
+          </div>
+          <div className="ff-flash-pct">{total}<span className="pp">%</span></div>
+          <h2 className="ff-flash-h2">
+            {finished ? "Almost done" :
+             phase === "bootloader" ? "Flashing your custom bootloader…" :
+             phase === "recovery"   ? "Flashing the recovery environment…" :
+                                       "Flashing PeacockOS…"}
+          </h2>
+          <p className="ff-flash-sub">
+            {finished ? `Your phone will reboot in 10 seconds. The first boot can take a couple of minutes — that's normal.` :
+             phase === "bootloader" ? "This is the small program that decides what to boot. PeacockOS needs its own." :
+             phase === "recovery"   ? "If anything goes wrong later, you'll boot into this to recover." :
+                                       "This is the actual operating system you'll use."}
+          </p>
+          <div className="ff-flash-track"><i style={{ width: total + "%" }} /></div>
+          <div className="ff-flash-phases">
+            <PhasePill label="Bootloader" pct={blPct} state={blScript ? (phase === "bootloader" ? "cur" : blPct >= 100 ? "done" : "pend") : "skip"} />
+            <PhasePill label="Recovery"   pct={rcPct} state={rcScript ? (phase === "recovery"   ? "cur" : rcPct >= 100 ? "done" : "pend") : "skip"} />
+            <PhasePill label="System"     pct={syPct} state={phase === "system" && !finished ? "cur" : finished ? "done" : "pend"} />
+          </div>
+        </div>
+        <div className="ff-flash-log">
+          <div className="ff-flash-log-top">live log</div>
+          <div className="ff-flash-log-wrap">
+            {allLines.length === 0 && <div className="ln dim">starting…</div>}
+            {allLines.map((l, i) => (
+              <div key={i} className="ln">
+                <span className="t">[{l._ph}]</span>
+                {l.node}
+              </div>
+            ))}
+            {!finished && <div className="ln"><span className="cur">▍</span></div>}
+          </div>
+        </div>
+      </div>
+      <FFFoot
+        onBack={onBack}
+        hint={finished ? "rebooting in a moment…" : "do not unplug your phone"}
+        onNext={onDone}
+        nextDisabled={!finished}
+        nextLabel="Done"
+        nextVariant="grad"
+      />
+    </div>
+  );
+}
+function PhasePill({ label, pct, state }) {
+  return (
+    <div className={"ff-fpp " + state}>
+      <span className="d" />
+      <span className="lab">{label}</span>
+      <span className="pc">{state === "skip" ? "skip" : state === "pend" ? "—" : Math.round(pct) + "%"}</span>
+    </div>
+  );
+}
+
 /* ===== F1: data-loss warning ============================================ */
 function StepWarn({ dev, onCancel, onBack, onNext }) {
   const [ack1, setAck1] = React.useState(false);
@@ -430,8 +612,9 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appCl
         {sub === "warn" && <StepWarn dev={dev} onCancel={cancel} onBack={onHome} onNext={() => setSub("unlock")} />}
         {sub === "unlock" && <StepUnlock dev={dev} build={build} onCancel={cancel} onBack={() => setSub("warn")} onNext={() => setSub("connect")} />}
         {sub === "connect" && <StepConnect dev={dev} build={build} onCancel={cancel} onBack={() => setSub("unlock")} onNext={() => setSub("flash")} />}
-        {/* flash / done land in subsequent commits */}
-        {(sub === "flash" || sub === "done") && <div className="ff-tbd">step "{sub}" — coming next commit</div>}
+        {sub === "flash" && <StepFlash dev={dev} onCancel={cancel} onBack={() => setSub("connect")} onDone={() => setSub("done")} />}
+        {/* done lands in next commit */}
+        {sub === "done" && <div className="ff-tbd">step "done" — coming next commit</div>}
         <DiscardModal open={discardOpen} onKeep={keep} onDiscard={discard} />
       </div>
     </AppShell>
