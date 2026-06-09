@@ -84,12 +84,35 @@ on Linux; frontend is the adapted React mock at
       `appimagetool`, `darwin/universal` → `.dmg` via `create-dmg`,
       `windows/amd64` → standalone `.exe`. Verify each on a clean platform
       VM. CI matrix (see "CI / automation" below).
-- [ ] **Phase 7+ peacock-installer.** Calamares-style installer for the
-      live ISO. Greenfield `internal/installer/` (~500–800 LOC):
-      target disk detect, partition, format, rsync from `/run/live`,
-      bootloader install via grub-install or extlinux, user creation on
-      target system, reboot. Bundles into peacockos live ISO via the live
-      rootfs hook.
+- [x] **Phase 7+ peacock-installer.** Calamares-style installer for the
+      live ISO. `internal/installer/` landed at 2032 LOC across 11 files
+      (`installer.go`, `disks.go`, `partition.go`, `format.go`, `copy.go`,
+      `bootloader.go`, `user.go`, `system.go`, `pipeline.go`, `runner.go`,
+      `installer_test.go`). 12 test funcs / 34 subtests pass. Wails app at
+      `cmd/peacock-installer/` shares the React mock via symlinks back to
+      `cmd/peacock-builder/frontend/src/`. Open follow-ups:
+  - [ ] **End-to-end exercise on a live USB VM.** `CreateLayout`,
+        `FormatPartitions`, `CopyLiveRootfs`, `InstallBootloader`,
+        `CreateUser`, `RunInstall` all execute real shell-outs against
+        block devices and need root + a live ISO context; unit tests
+        can't cover those.
+  - [ ] **Rsync exclude list completeness.** Today covers Debian-flavoured
+        live-boot; arch airootfs may also want `/var/lib/pacman/sync` +
+        `/var/cache/pacman/pkg`. Wire to the peacockos live ISO recipe.
+  - [ ] **grub vs grub2 binary name.** Currently calls `grub-install` /
+        `grub-mkconfig`. Detect inside the target chroot to also support
+        Fedora/RHEL's `grub2-*` names.
+  - [ ] **Locale handling parity.** Arch path implemented (`locale-gen`);
+        Debian's `update-locale` path is untested. Live ISO ships locales
+        pre-generated so this is best-effort.
+  - [ ] **Distro group-set map.** `useradd` tries `wheel,audio,video,input,sudo`
+        then falls back. Principled per-distro map would be cleaner.
+  - [ ] **`PartMode="manual"`** — only `erase` is supported in v0.
+  - [ ] **ARM bootloader defaults.** Layout autodetect is x86-only
+        (efivars or BIOS). ARM ports need port-specific layouts.
+  - [ ] **Live ISO integration.** `peacock-installer` binary needs to be
+        bundled into the peacockos live ISO + launched automatically on
+        the live session's desktop. Out of scope for now.
 - [ ] **Frontend simulated scripts.** `Run.jsx` still ships the mock
       `buildScript` / `installScript` simulations. Phase 4 wired the real
       `window.runtime.EventsOn("build:log", …)` subscriptions but the
