@@ -3,6 +3,7 @@ import React from "react";
 import { AppShell, PK, Btn, Head, SRow, Field, Seg, ModeChip, useMode, FULL, HEAD } from "./shared.jsx";
 import { RunScreen, BUILD_PHASES, buildScript, BuildDone } from "./Run.jsx";
 import { ListDevices } from "./api.js";
+import BaseStep from "./BaseStep.jsx";
 
 const DEVICES_FALLBACK = [
   { id: "samsung-jflte", name: "Galaxy S4", code: "samsung-jflte", soc: "msm8960", arch: "armv7h", tag: "stable" },
@@ -41,7 +42,7 @@ export default function BuildFlow({ onHome, startDevice, appClass }) {
   const [flavor, setFlavor] = React.useState("arch");
   const [initSys, setInitSys] = React.useState("openrc");
   const [arch, setArch] = React.useState(init0 ? init0.arch : "aarch64");
-  const [mode, setMode] = React.useState("qemu-user");
+  const [buildMode, setBuildMode] = React.useState("qemu-user");
   const [desktop, setDesktop] = React.useState("phosh");
   const [dm, setDm] = React.useState("sddm");
   const [pkgs, setPkgs] = React.useState(["firefox-esr", "mpv"]);
@@ -113,19 +114,12 @@ export default function BuildFlow({ onHome, startDevice, appClass }) {
             </div></div>
           </React.Fragment>}
 
-          {step === 1 && <React.Fragment>
-            <Head c="STEP 02 / 06 · BASE" t="Base flavor & init" s="The base distribution Peacock bootstraps into the rootfs, and how the system boots." />
-            <div className="mbody fade">
-              <Field l="Distribution" sub="base-distro">
-                <Seg v={flavor} set={setFlavor} opts={["arch", "debian", "alpine"]} /></Field>
-              <Field l="Init system">
-                <Seg v={initSys} set={setInitSys} opts={["systemd", "openrc"]} /></Field>
-              <Field l="Architecture" sub="from device">
-                <Seg v={arch} set={setArch} opts={["aarch64", "armv7h", "x86_64"]} /></Field>
-              <Field l="Build mode" sub="cross-compile">
-                <Seg v={mode} set={setMode} opts={["qemu-user", "native", "cross"]} /></Field>
-            </div>
-          </React.Fragment>}
+          {step === 1 && <BaseStep
+            mode={mdMode}
+            flavor={flavor} setFlavor={setFlavor}
+            initSys={initSys} setInitSys={setInitSys}
+            arch={arch} setArch={setArch}
+            buildMode={buildMode} setBuildMode={setBuildMode} />}
 
           {step === 2 && <React.Fragment>
             <Head c="STEP 03 / 06 · USERLAND" t="Desktop & login" s="Choose a graphical environment and the display manager that greets you. Pick None for a headless console image." />
@@ -155,7 +149,7 @@ export default function BuildFlow({ onHome, startDevice, appClass }) {
               <div className="summary">
                 <SRow k="Device" v={dev.code} /><SRow k="Architecture" v={arch} />
                 <SRow k="Distribution" v={flavor} /><SRow k="Init system" v={initSys} />
-                <SRow k="Build mode" v={mode} /><SRow k="Desktop" v={desktop} />
+                <SRow k="Build mode" v={buildMode} /><SRow k="Desktop" v={desktop} />
                 <SRow k="Display manager" v={dm} /><SRow k="Extra packages" v={pkgs.length ? pkgs.length + " selected" : "none"} />
               </div>
               <div className="callout"><PK src={HEAD} style={{ width: 30, height: 36, flex: "0 0 30px" }} className="pkgrad" />
