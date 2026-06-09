@@ -1,0 +1,11 @@
+[package]
+name = "demo-app"
+version = "2.3.4"
+runtime = "compat-glibc"
+
+[build]
+script = "true"
+
+[install]
+layout = "compat"
+prefix = "/compat/glibc"

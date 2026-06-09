@@ -1,0 +1,7 @@
+[package]
+name = "demo-flavor-pair"
+version = "0.0.1"
+flavor = ["arch", "debian"]
+
+[build]
+script = "true"

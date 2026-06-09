@@ -1,0 +1,9 @@
+[package]
+name = "demo-peacock"
+version = "1.0.0"
+
+[build]
+script = "true"
+
+[install]
+layout = "peacock"
