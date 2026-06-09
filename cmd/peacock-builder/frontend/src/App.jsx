@@ -1,0 +1,68 @@
+/* App.jsx — top-level router
+ *
+ * The mock app.jsx wrapped this in a live <TweaksPanel> for design-review
+ * theme tweaking; that file (tweaks-panel.jsx) ships only with the mock and
+ * is intentionally not vendored. We keep the small applyTweaks() helper so
+ * the iridescent gradient + serif CSS vars get seeded on load. */
+import React from "react";
+import { AppShell } from "./shared.jsx";
+import Home from "./Home.jsx";
+import BuildFlow from "./BuildFlow.jsx";
+import InstallFlow from "./InstallFlow.jsx";
+
+const TWEAK_DEFAULTS = {
+  accent: "iridescent",
+  serif: "Instrument Serif",
+  peacock: "gradient",
+  compact: false,
+};
+
+const ACCENTS = {
+  iridescent: { stops: ["#23B7AE", "#2E86C8", "#6C63D8"], blue: "#2E86C8", css: "linear-gradient(120deg,#23B7AE,#2E86C8 50%,#6C63D8)" },
+  azure:      { stops: ["#46A6E8", "#2E86C8", "#1E6FB0"], blue: "#2E86C8", css: "linear-gradient(120deg,#46A6E8,#2E86C8 50%,#1E6FB0)" },
+  ink:        { stops: ["#46434C", "#2C2A32", "#1A1820"], blue: "#2C2A32", css: "linear-gradient(120deg,#46434C,#2C2A32 50%,#1A1820)" },
+};
+
+function applyTweaks(t) {
+  const root = document.documentElement.style;
+  const a = ACCENTS[t.accent] || ACCENTS.iridescent;
+  root.setProperty("--irid", a.css);
+  root.setProperty("--blue", a.blue);
+  const stops = document.querySelectorAll("#irid stop");
+  if (stops.length === 3) a.stops.forEach((c, i) => stops[i].setAttribute("stop-color", c));
+  root.setProperty("--serif", `'${t.serif}',serif`);
+}
+
+applyTweaks(TWEAK_DEFAULTS);
+
+export default function App() {
+  const t = TWEAK_DEFAULTS;
+  const [view, setView] = React.useState(() => localStorage.getItem("pb-view") || "home");
+  const [startDevice, setStartDevice] = React.useState(null);
+  React.useEffect(() => { localStorage.setItem("pb-view", view); }, [view]);
+  React.useEffect(() => { applyTweaks(t); }, [t.accent, t.serif]);
+
+  const home = () => { setStartDevice(null); setView("home"); };
+  const appClass = t.compact ? "compact" : "";
+
+  if (view === "build") {
+    return <div className="viewwrap"><BuildFlow key="b" onHome={home} startDevice={startDevice} appClass={appClass} /></div>;
+  }
+  if (view === "install") {
+    return <div className="viewwrap"><InstallFlow key="i" onHome={home} appClass={appClass} /></div>;
+  }
+
+  const status = (
+    <React.Fragment>
+      <span className="pd" /><span>PeacockOS 0.9</span><span className="sep">·</span><span>arch · aarch64</span>
+      <span className="r"><span className="live" /><span>live session · 3 devices detected</span></span>
+    </React.Fragment>
+  );
+  return (
+    <div className="viewwrap">
+      <AppShell title="PeacockBuilder" status={status} appClass={appClass}>
+        <Home go={setView} peacock={t.peacock} resume={() => { setStartDevice("samsung-jflte"); setView("build"); }} />
+      </AppShell>
+    </div>
+  );
+}
