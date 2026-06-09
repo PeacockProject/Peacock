@@ -50,6 +50,12 @@ file; leaving them here so it's clear what's underway vs. what's still untouched
       `internal/builder/flavor_aliases` resolver.
 - [/] Top-level README in Peacock, peacock-ports, feather, peacock-mkinitfs;
       device-port walkthrough; SCHEMA.md examples for layout=app / layout=compat.
+- [x] PRP-as-port: `peacock-ports/device/prp-<device>/package.toml` for
+      oppo-a16, xiaomi-daisy, samsung-jflte. Builds `make bootimg
+      TARGET=<device>` and stages
+      `/usr/share/peacock/recovery/prp-<device>-recovery.img`. Same
+      pattern as minkernel-* / lk2nd-*. Versioned 0.0.30 (PRP commit
+      count); switch to tag pinning when PRP starts cutting tags.
 
 ## Untouched
 
