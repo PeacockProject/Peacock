@@ -222,6 +222,93 @@ function BuildBanner({ build }) {
   );
 }
 
+/* ===== F3: connect device =============================================== */
+
+/* useMockDetect — in dev mode the fastboot binding is unavailable so we
+ * fake a 4-second "scanning" pulse before reporting the device as found.
+ * This is the single seam where the real Wails binding will plug in:
+ *   useEffect → window.runtime.EventsOn("device:fastboot", setFound)
+ *   plus a periodic poll of `App.ListFastbootDevices()`. */
+function useMockDetect(dev) {
+  const [found, setFound] = React.useState(false);
+  React.useEffect(() => {
+    setFound(false);
+    const t = setTimeout(() => setFound(true), 4000);
+    return () => clearTimeout(t);
+  }, [dev && dev.code]);
+  return found;
+}
+
+function StepConnect({ dev, build, onCancel, onBack, onNext }) {
+  const detected = useMockDetect(dev);
+  const [helpOpen, setHelpOpen] = React.useState(false);
+  const name = (dev && dev.name) || "phone";
+  return (
+    <div className="ff" data-step="connect">
+      <FFTop title="Step 3 of 5 · Plug in your phone" onCancel={onCancel} />
+      <BuildBanner build={build} />
+      <div className="ff-body">
+        <div className="ff-connect">
+          <div className={"ff-cable" + (detected ? " ok" : "")} aria-hidden="true">
+            <PK src={HEAD} className="pkw pkgrad" />
+            <span className="ff-cable-port" />
+            <span className="ff-cable-pulse" />
+          </div>
+          <h2 className="ff-connect-h2">
+            {detected ? "Got it." : "Plug in your phone."}
+          </h2>
+          <p className="ff-connect-body">
+            {detected
+              ? `Your computer can see your ${name}. We're good to go.`
+              : "Plug your phone into your computer with a USB cable now. Make sure the phone is in the unlock/fastboot screen we set up in the last step."}
+          </p>
+          <div className={"ff-detect" + (detected ? " ok" : " scan")}>
+            {detected ? (
+              <React.Fragment>
+                <span className="ff-detect-dot" />
+                <span className="ff-detect-name">Detected: <b>{name}</b> (fastboot mode)</span>
+                <span className="ff-detect-tick">✓</span>
+              </React.Fragment>
+            ) : (
+              <React.Fragment>
+                <span className="ff-detect-spin" />
+                <span className="ff-detect-name">Looking for a phone…</span>
+                <span className="ff-detect-sub">this usually takes a couple of seconds</span>
+              </React.Fragment>
+            )}
+          </div>
+
+          <div className={"ff-help" + (helpOpen ? " open" : "")}>
+            <div className="ff-help-head" onClick={() => setHelpOpen(o => !o)}>
+              <span className="ff-help-chev">{helpOpen ? "−" : "+"}</span>
+              Help, my phone isn't detected
+            </div>
+            {helpOpen && (
+              <div className="ff-help-body">
+                <ul>
+                  <li><b>Try a different USB cable.</b> Many cheap cables are charge-only and don't carry data.</li>
+                  <li><b>Try a different USB port.</b> USB hubs and front-of-tower ports are often flaky — use a port directly on the back of the computer if you can.</li>
+                  <li><b>Windows users:</b> install the "Android USB drivers" package, or use Google's "platform-tools". Without these, Windows can't talk to a phone in fastboot mode.</li>
+                  <li><b>Make sure the phone is actually in fastboot mode</b> (a tiny text screen, usually black or white, with the word FASTBOOT). If it's powered off, hold Power + Volume Down to enter it.</li>
+                  <li><b>Linux users:</b> you may need a udev rule that grants your user access to the device. The app will do this automatically in the production build.</li>
+                </ul>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+      <FFFoot
+        onBack={onBack}
+        hint={detected ? "phone found · ready to flash" : "waiting for your phone…"}
+        onNext={onNext}
+        nextDisabled={!detected}
+        nextLabel="Start flashing"
+        nextVariant="grad"
+      />
+    </div>
+  );
+}
+
 /* ===== F1: data-loss warning ============================================ */
 function StepWarn({ dev, onCancel, onBack, onNext }) {
   const [ack1, setAck1] = React.useState(false);
@@ -342,8 +429,9 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appCl
       <div className="ffwrap">
         {sub === "warn" && <StepWarn dev={dev} onCancel={cancel} onBack={onHome} onNext={() => setSub("unlock")} />}
         {sub === "unlock" && <StepUnlock dev={dev} build={build} onCancel={cancel} onBack={() => setSub("warn")} onNext={() => setSub("connect")} />}
-        {/* connect / flash / done land in subsequent commits */}
-        {(sub === "connect" || sub === "flash" || sub === "done") && <div className="ff-tbd">step "{sub}" — coming next commit</div>}
+        {sub === "connect" && <StepConnect dev={dev} build={build} onCancel={cancel} onBack={() => setSub("unlock")} onNext={() => setSub("flash")} />}
+        {/* flash / done land in subsequent commits */}
+        {(sub === "flash" || sub === "done") && <div className="ff-tbd">step "{sub}" — coming next commit</div>}
         <DiscardModal open={discardOpen} onKeep={keep} onDiscard={discard} />
       </div>
     </AppShell>
