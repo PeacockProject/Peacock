@@ -29,18 +29,26 @@ const DEFAULT_DEVICES = [
 ];
 
 // _appPromise lazily resolves to the generated wailsjs module if it
-// exists. We don't import it statically because Vite errors out on
-// missing modules at build time, and wailsjs/ is .gitignored — only
-// the Wails build pipeline writes it.
+// exists. We can't `import("./wailsjs/go/main/App.js")` with a literal
+// path because Vite/Rollup statically analyzes dynamic imports and
+// fails the build when the file is missing (wailsjs/ is .gitignored —
+// only the Wails build pipeline writes it). Workarounds:
+//   1. Use a Vite virtual import via import.meta.glob — it returns
+//      every match (zero or one) without erroring on absence.
+//   2. Build the path via concatenation so Rollup can't trace it.
+// We pick (1): the glob is empty in plain vite dev, and yields the
+// module object once Wails has scaffolded the bindings.
 let _appPromise = null;
 async function getGeneratedApp() {
   if (_appPromise) return _appPromise;
   _appPromise = (async () => {
     try {
-      // The path is relative so Vite can resolve it; if the dir is
-      // absent the dynamic import throws, we catch and return null.
-      // eslint-disable-next-line import/no-unresolved
-      const mod = await import("./wailsjs/go/main/App.js");
+      // import.meta.glob with a wildcard returns a record of matchers
+      // — empty {} when no file matches, so the build never fails.
+      const modules = import.meta.glob("./wailsjs/go/main/App.js");
+      const loader = modules["./wailsjs/go/main/App.js"];
+      if (typeof loader !== "function") return null;
+      const mod = await loader();
       return mod;
     } catch (_err) {
       return null;
