@@ -319,3 +319,59 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 @media (prefers-reduced-motion: reduce){
   *{animation-duration:.001ms!important;animation-delay:0!important;transition-duration:.001ms!important;}
 }
+
+/* ===================== FLASH FLOW ===================== */
+/* Layout: top crumb/cancel bar · scrollable body · sticky footer with Back / hint / Continue.
+ * Distinct from .wiz so the data-loss step can use a red/orange accent instead of teal. */
+.ffwrap{height:100%;display:flex;flex-direction:column;position:relative;background:var(--bg);}
+.ff{flex:1;min-height:0;display:flex;flex-direction:column;}
+.ff-top{display:flex;align-items:center;gap:12px;padding:18px 46px 0;}
+.ff-crumb{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--soft);}
+.ff-cancel{margin-left:auto;background:transparent;border:1px solid var(--line2);color:var(--soft);border-radius:8px;
+  padding:6px 12px;font-family:var(--mono);font-size:11px;cursor:pointer;letter-spacing:.04em;transition:.14s;}
+.ff-cancel:hover{color:#b54a2b;border-color:#d27451;}
+.ff-body{flex:1;min-height:0;overflow:auto;padding:0 0 14px;}
+.ff-body::-webkit-scrollbar{width:9px;}
+.ff-body::-webkit-scrollbar-thumb{background:var(--line2);border-radius:6px;border:2px solid var(--bg);}
+.ff-foot{flex:0 0 auto;padding:16px 46px;border-top:1px solid var(--line);display:flex;align-items:center;gap:13px;background:var(--bg);}
+.ff-foot .sp{flex:1;}
+.ff-foot .ff-hint{font-family:var(--mono);font-size:11px;color:var(--faint);}
+.ff-tbd{padding:80px 46px;font-family:var(--mono);font-size:13px;color:var(--soft);}
+
+/* warn variant of .btn — used by the data-loss "Continue" CTA */
+.btn.warn{background:linear-gradient(120deg,#E07A4B,#C84A2E 60%,#A02717);color:#fff;
+  box-shadow:0 10px 26px -12px rgba(200,74,46,.7);}
+.btn.warn:hover{transform:translateY(-1px);}
+
+/* ===== F1: data-loss warning ===== */
+.ff-warn{max-width:640px;margin:32px auto 0;padding:38px 46px 28px;background:#fff;border-radius:18px;
+  border:1px solid #E9C8B6;box-shadow:0 26px 60px -36px rgba(200,74,46,.42),0 0 0 1px #f2dccc inset;position:relative;overflow:hidden;text-align:left;}
+.ff-warn::before{content:"";position:absolute;left:0;right:0;top:0;height:4px;background:linear-gradient(90deg,#E07A4B,#C84A2E 60%,#A02717);}
+.ff-warn-icon{width:78px;height:90px;position:relative;margin:6px 0 16px;filter:saturate(.95) drop-shadow(0 12px 22px rgba(200,74,46,.32));}
+.ff-warn-icon .pkw{width:100%;height:100%;}
+.ff-warn-icon .pkw svg path{fill:#C84A2E!important;}
+.ff-warn-bang{position:absolute;right:-6px;top:-2px;width:26px;height:26px;border-radius:50%;background:#fff;
+  border:2px solid #C84A2E;color:#C84A2E;display:grid;place-items:center;font-weight:800;font-size:15px;font-family:var(--sans);}
+.ff-warn-tag{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:#A02717;margin-bottom:10px;}
+.ff-warn-h1{font-family:var(--serif);font-size:50px;line-height:1.02;margin:2px 0 12px;color:var(--ink);letter-spacing:-.005em;}
+.ff-warn-body{font-size:15.5px;line-height:1.6;color:var(--ink2);max-width:54ch;margin:0 0 24px;}
+.ff-warn-body b{color:var(--ink);font-weight:600;}
+.ff-acks{display:flex;flex-direction:column;gap:10px;}
+.ff-ack{display:flex;align-items:flex-start;gap:12px;padding:14px 16px;background:var(--panel);border:1px solid var(--line);
+  border-radius:11px;cursor:pointer;font-size:14px;line-height:1.45;color:var(--ink2);transition:.13s;user-select:none;}
+.ff-ack:hover{border-color:var(--soft);background:#fff;}
+.ff-ack.on{border-color:#C84A2E;box-shadow:0 0 0 1px #C84A2E;background:#fff;color:var(--ink);}
+.ff-ack .ff-check{width:20px;height:20px;border-radius:5px;border:1.6px solid var(--line2);flex:0 0 20px;display:grid;place-items:center;
+  font-size:13px;color:#fff;background:#fff;transition:.13s;cursor:pointer;}
+.ff-ack.on .ff-check{background:#C84A2E;border-color:#C84A2E;}
+
+/* ===== discard modal ===== */
+.ff-modal-wrap{position:absolute;inset:0;z-index:40;display:grid;place-items:center;}
+.ff-modal-back{position:absolute;inset:0;background:rgba(20,18,26,.42);animation:fadein .2s ease both;}
+.ff-modal{position:relative;background:#fff;border-radius:16px;padding:30px 32px 24px;width:min(440px,86%);
+  box-shadow:0 24px 60px -20px rgba(20,18,26,.4);animation:popin .26s cubic-bezier(.3,1.4,.5,1) both;}
+.ff-modal-tag{font-family:var(--mono);font-size:10.5px;letter-spacing:.22em;color:#A02717;text-transform:uppercase;margin-bottom:8px;}
+.ff-modal h2{font-family:var(--serif);font-size:30px;line-height:1.05;margin:0 0 10px;}
+.ff-modal p{color:var(--ink2);font-size:14px;line-height:1.55;margin:0 0 22px;}
+.ff-modal-acts{display:flex;gap:10px;justify-content:flex-end;}
+@keyframes fadein{from{opacity:0;}to{opacity:1;}}
