@@ -36,15 +36,30 @@ type InstallOpts struct {
 	ExtraArgs []string
 }
 
+// lookupBinary is the exec.LookPath / os.Stat shim resolveBinary
+// delegates to. It's a function var so feather_test.go can swap in
+// stubs without touching $PATH or /peacock/bin on the host. Tests
+// MUST restore the original value via t.Cleanup.
+var lookupBinary = defaultLookupBinary
+
+// defaultLookupBinary is the production behavior: PATH first, fallback
+// to /peacock/bin/ftr.
+func defaultLookupBinary() (string, bool) {
+	if p, err := exec.LookPath("ftr"); err == nil {
+		return p, true
+	}
+	if _, err := os.Stat(fallbackFtrPath); err == nil {
+		return fallbackFtrPath, true
+	}
+	return "", false
+}
+
 // resolveBinary looks up ftr on PATH first, then falls back to
 // /peacock/bin/ftr. Returns ("", error) when neither is present so
 // callers can decide whether to skip the step or fail loudly.
 func resolveBinary() (string, error) {
-	if p, err := exec.LookPath("ftr"); err == nil {
+	if p, ok := lookupBinary(); ok {
 		return p, nil
-	}
-	if _, err := os.Stat(fallbackFtrPath); err == nil {
-		return fallbackFtrPath, nil
 	}
 	return "", fmt.Errorf("ftr binary not found — feather not installed (phase 4 will populate)")
 }
