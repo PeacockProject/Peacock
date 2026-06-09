@@ -24,6 +24,7 @@ import (
 	"peacock/internal/image"
 	"peacock/internal/manifest"
 	"peacock/internal/runner"
+	"peacock/pkg/buildconfig"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -131,46 +132,30 @@ This process involves:
 			}
 		}
 
-		setup, err := runBuildSetup(ctx, workDir)
-		if err != nil {
-			fmt.Printf("%v\n", err)
-			fatal()
-		}
-		dev := setup.dev
-		pkg := setup.pkg
-		b := setup.b
-		cacheDir := setup.cacheDir
-		flavor := setup.flavor
-		initSystem := setup.initSystem
-		desktopChoice := setup.desktopChoice
-		displayManagerChoice := setup.displayManagerChoice
-		extraPackages := setup.extraPackages
-		userName := setup.userName
-		userPassword := setup.userPassword
-		emptyRootfs := setup.emptyRootfs
-
-		pkgRes, err := runPackageOrchestration(b, pkg, dev, flavor, initSystem, desktopChoice, displayManagerChoice, extraPackages, workDir, useQemuFlag, crossCompileFlag)
-		if err != nil {
-			fmt.Printf("%v\n", err)
-			fatal()
-		}
-		pkgs := pkgRes.pkgs
-		localPackages := pkgRes.localPackages
-		depBuildDirs := pkgRes.depBuildDirs
-		depPackagePaths := pkgRes.depPackagePaths
-
-		initramfsPath, err := runInitramfsPhase(b, pkg, dev, depBuildDirs, depPackagePaths, initSystem, workDir, useQemuFlag, crossCompileFlag)
-		if err != nil {
-			fmt.Printf("%v\n", err)
-			fatal()
+		// Build the pipeline config from the same flag/viper state the
+		// cobra layer has already populated. runBuildSetup's interactive
+		// prompts still fire when fields are empty here — non-cobra
+		// callers (the Wails GUI) skip those by passing complete cfgs.
+		// The outer `cleanup` above stays as the signal-handler safety net;
+		// RunBuildPipeline drives its own internal cleanup in lockstep with
+		// phase 4 so loop devs / image-build chroot mounts get released.
+		cfg := buildconfig.BuildPipelineConfig{
+			Device:         deviceName,
+			Flavor:         config.Flavor(),
+			InitSystem:     config.InitSystem(),
+			Desktop:        config.Desktop(),
+			DisplayManager: config.DisplayManager(),
+			Extras:         config.ExtraPackages(),
+			UserName:       config.UserName(),
+			UserPassword:   config.UserPassword(),
+			ImageSizeMB:    config.ImageSizeMB(),
+			EmptyRootfs:    config.EmptyRootfs(),
+			UseQemu:        useQemuFlag,
+			CrossCompile:   crossCompileFlag,
+			WorkDir:        workDir,
 		}
 
-		rootfsRes, err := runRootfsPhase(b, pkg, dev, depBuildDirs, depPackagePaths, pkgs, localPackages, cacheDir, initSystem, desktopChoice, displayManagerChoice, userName, userPassword, emptyRootfs, initramfsPath, workDir, useQemuFlag, crossCompileFlag, cleanup)
-		if err != nil {
-			fmt.Printf("%v\n", err)
-			fatal()
-		}
-		imagePath, err := runImageAssemblyPhase(b, dev, rootfsRes.imageChrootRoot, rootfsRes.rootfsPath, rootfsRes.kernelBuildDir, initramfsPath, emptyRootfs, workDir)
+		imagePath, err := RunBuildPipeline(ctx, cfg)
 		if err != nil {
 			fmt.Printf("%v\n", err)
 			fatal()
