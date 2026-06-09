@@ -1,0 +1,12 @@
+# Wails build artifacts
+build/bin/
+build/darwin/
+build/windows/
+build/linux/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Auto-generated Wails JS bindings (regenerated on `wails build`)
+frontend/src/wailsjs/
