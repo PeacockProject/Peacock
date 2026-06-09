@@ -8,7 +8,7 @@
  * a sub-step of the flash flow rather than a destination of its own. */
 import React from "react";
 import { AppShell, PK, Btn, Head, SRow, Field, Seg, ModeChip, useMode, FULL, HEAD } from "./shared.jsx";
-import { ListDevices } from "./api.js";
+import { ListDevices, DEFAULT_DEVICE_SUPPORT } from "./api.js";
 import DevicePickerStep from "./DevicePickerStep.jsx";
 import BaseStep from "./BaseStep.jsx";
 import DesktopStep from "./DesktopStep.jsx";
@@ -111,7 +111,8 @@ export default function BuildFlow({ onHome, startDevice, appClass }) {
           {step === 0 && <DevicePickerStep
             devices={devices}
             dev={dev}
-            onPick={pick} />}
+            onPick={pick}
+            supportMap={DEFAULT_DEVICE_SUPPORT} />}
 
           {step === 1 && <BaseStep
             mode={mdMode}
