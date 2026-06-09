@@ -74,16 +74,37 @@ on Linux; frontend is the adapted React mock at
       non-main package like `internal/pipeline/` or `pkg/buildpipeline/`.
       The DTO + Wails event shape (`build:log`, `build:error`, `build:done`)
       stays stable so the swap is body-only inside `build_runner.go`.
-- [ ] **Phase 5 sudo handling.** `cmd/peacock-builder/sudo.go` — check
-      `sudo -n true` at startup; on Linux fall back to `pkexec sudo -v`,
-      macOS to `osascript` admin prompt, Windows to a UAC manifest. Today
-      the GUI launches and any sudo-needing step in the subprocess'd build
-      will hang waiting for terminal input.
-- [ ] **Phase 6 distribution targets.** `cmd/peacock-builder/Makefile`
-      wrapping `wails build -platform linux/amd64` → AppImage via
-      `appimagetool`, `darwin/universal` → `.dmg` via `create-dmg`,
-      `windows/amd64` → standalone `.exe`. Verify each on a clean platform
-      VM. CI matrix (see "CI / automation" below).
+- [/] **Phase 5 sudo handling.** `cmd/peacock-builder/sudo.go` landed —
+      `EnsureBuildPrivileges` + `SudoPrivilegeMode` are wired into
+      `app.startup`. Linux checks `sudo -n true` then falls back to
+      `pkexec sudo -v`; macOS falls back to an `osascript ... with
+      administrator privileges` shell; Windows is handled by the UAC
+      manifest in `wails.json` (`requestedExecutionLevel: asInvoker`).
+      A background goroutine runs `sudo -v` every 4 min to keep the
+      credential cache warm. Errors surface to React via the new
+      `PrivilegeError()` + `PrivilegeMode()` bindings. Follow-ups:
+  - [ ] React panel that reads `PrivilegeError()` and renders the
+        "couldn't acquire admin rights — here's how to fix it" UI.
+  - [ ] Smoke-test the Windows UAC manifest end-to-end on a real
+        Windows runner; today it's set but unverified.
+  - [ ] Evaluate `Security.framework`'s
+        `AuthorizationExecuteWithPrivileges` as a macOS replacement
+        for the osascript shellout (deprecated but still functional).
+- [/] **Phase 6 distribution targets.** `cmd/peacock-builder/Makefile`
+      landed with `appimage` / `dmg` / `exe` / `all` / `clean` /
+      `help` targets. Wraps `wails build` per platform and bundles via
+      `appimagetool` / `create-dmg`; `exe` ships as a single .exe (no
+      installer wrapper). `VERSION` defaults to `git describe`.
+      Follow-ups:
+  - [ ] End-to-end verify each target on a clean platform VM (Linux
+        AppImage on a stock Debian box; macOS .dmg on a real Mac;
+        Windows .exe on a Windows 10/11 VM). Local dev box doesn't
+        have `wails` / `appimagetool` / `create-dmg` installed, so
+        the targets have only been smoke-tested via `make -n`.
+  - [ ] CI matrix (see "CI / automation" below) — run each target
+        on its native runner so we catch regressions before release.
+  - [ ] macOS notarization + Windows code signing — both follow-ups
+        once we have signing keys.
 - [x] **Phase 7+ peacock-installer.** Calamares-style installer for the
       live ISO. `internal/installer/` landed at 2032 LOC across 11 files
       (`installer.go`, `disks.go`, `partition.go`, `format.go`, `copy.go`,
