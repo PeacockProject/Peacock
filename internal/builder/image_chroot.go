@@ -24,10 +24,10 @@ func (b *Builder) EnsureImageBuildChroot() (string, error) {
 
 	// Check if already exists
 	if _, err := os.Stat(filepath.Join(root, "etc", "arch-release")); err == nil {
-		fmt.Println("Image build chroot already exists, skipping bootstrap")
+		runner.Logln("Image build chroot already exists, skipping bootstrap")
 		// Ensure special filesystems are mounted
 		if err := chroot.MountWithSudo(root); err != nil {
-			fmt.Printf("Warning: failed to mount chroot filesystems: %v\n", err)
+			runner.Logf("Warning: failed to mount chroot filesystems: %v\n", err)
 		}
 		// Ensure required tooling is present even after partial/failed previous runs.
 		if err := b.installImageTools(root); err != nil {
@@ -37,7 +37,7 @@ func (b *Builder) EnsureImageBuildChroot() (string, error) {
 		return root, nil
 	}
 
-	fmt.Println("Setting up image build chroot...")
+	runner.Logln("Setting up image build chroot...")
 
 	// Create directory
 	if err := os.MkdirAll(root, 0755); err != nil {
@@ -60,13 +60,13 @@ func (b *Builder) EnsureImageBuildChroot() (string, error) {
 		return "", fmt.Errorf("failed to install image tools: %w", err)
 	}
 
-	fmt.Println("Image build chroot ready")
+	runner.Logln("Image build chroot ready")
 	return root, nil
 }
 
 // bootstrapImageChroot downloads and extracts the Arch Linux bootstrap tarball
 func (b *Builder) bootstrapImageChroot(root string) error {
-	fmt.Println("Bootstrapping image build chroot...")
+	runner.Logln("Bootstrapping image build chroot...")
 
 	// Use cached bootstrap if available
 	bootstrapTarball := filepath.Join(b.CacheDir, "archlinux-bootstrap-x86_64.tar.zst")
@@ -83,7 +83,7 @@ func (b *Builder) bootstrapImageChroot(root string) error {
 	}
 
 	// Initialize pacman keyring
-	fmt.Println("Initializing pacman keyring in image chroot...")
+	runner.Logln("Initializing pacman keyring in image chroot...")
 	keyringCmd := exec.Command("sudo", "chroot", root, "pacman-key", "--init")
 	keyringCmd.Stdout = runner.LogWriter()
 	keyringCmd.Stderr = runner.LogWriter()
@@ -115,7 +115,7 @@ func (b *Builder) bootstrapImageChroot(root string) error {
 
 // installImageTools installs QEMU and image-building utilities
 func (b *Builder) installImageTools(root string) error {
-	fmt.Println("Installing image-building tools...")
+	runner.Logln("Installing image-building tools...")
 
 	// In this chroot setup, /proc/self/mounts does not always expose a usable "/"
 	// entry, so pacman's CheckSpace can fail with a false ENOSPC. Disable it here.
@@ -147,7 +147,7 @@ func (b *Builder) installImageTools(root string) error {
 
 	// Register binfmt handlers (same as build chroot)
 	if err := b.registerBinfmtInChroot(root); err != nil {
-		fmt.Printf("Warning: binfmt registration failed: %v\n", err)
+		runner.Logf("Warning: binfmt registration failed: %v\n", err)
 	}
 
 	return nil
@@ -155,7 +155,7 @@ func (b *Builder) installImageTools(root string) error {
 
 // registerBinfmtInChroot reads QEMU binfmt config files and registers them
 func (b *Builder) registerBinfmtInChroot(root string) error {
-	fmt.Println("Registering QEMU binfmt handlers...")
+	runner.Logln("Registering QEMU binfmt handlers...")
 	binfmtDir := filepath.Join(root, "usr", "lib", "binfmt.d")
 	entries, err := os.ReadDir(binfmtDir)
 	if err != nil {
@@ -167,11 +167,11 @@ func (b *Builder) registerBinfmtInChroot(root string) error {
 			continue
 		}
 		confPath := filepath.Join(binfmtDir, entry.Name())
-		fmt.Printf("Processing %s...\n", entry.Name())
+		runner.Logf("Processing %s...\n", entry.Name())
 
 		data, err := os.ReadFile(confPath)
 		if err != nil {
-			fmt.Printf("Warning: could not read %s: %v\n", entry.Name(), err)
+			runner.Logf("Warning: could not read %s: %v\n", entry.Name(), err)
 			continue
 		}
 
@@ -220,11 +220,11 @@ func (b *Builder) registerBinfmtInChroot(root string) error {
 			if err := runner.RunCmd(registerCmd); err != nil {
 				// Ignore errors - entry might already exist
 				if len(parts) > 1 {
-					fmt.Printf("Note: %s already registered or error\n", parts[1])
+					runner.Logf("Note: %s already registered or error\n", parts[1])
 				}
 			} else {
 				if len(parts) > 6 {
-					fmt.Printf("Registered: %s (using %s)\n", parts[1], parts[6])
+					runner.Logf("Registered: %s (using %s)\n", parts[1], parts[6])
 				}
 			}
 		}
@@ -238,7 +238,7 @@ func (b *Builder) registerBinfmtInChroot(root string) error {
 func (b *Builder) InstallPackagesToRootfs(imageChrootRoot, rootfsPath string, packages []string, arch string) error {
 	// De-duplicate to avoid duplicate targets in pacman.
 	packages = uniqueStrings(packages)
-	fmt.Printf("Installing %d packages to rootfs...\n", len(packages))
+	runner.Logf("Installing %d packages to rootfs...\n", len(packages))
 
 	// Ensure rootfs directory exists on host
 	if err := runner.RunCmd(exec.Command("sudo", "mkdir", "-p", rootfsPath)); err != nil {
@@ -294,13 +294,13 @@ func (b *Builder) InstallPackagesToRootfs(imageChrootRoot, rootfsPath string, pa
 	var repoPkgs []string
 	var localPkgs []string
 
-	fmt.Println("Identifying package locations...")
+	runner.Logln("Identifying package locations...")
 	for _, pkg := range packages {
 		// Check if package file exists in host CacheDir
 		pattern := filepath.Join(b.CacheDir, pkg+"-*.pkg.tar.gz")
 		matches, err := filepath.Glob(pattern)
 		if err != nil {
-			fmt.Printf("Glob error for %s: %v\n", pkg, err)
+			runner.Logf("Glob error for %s: %v\n", pkg, err)
 		}
 
 		var selected string
@@ -334,10 +334,10 @@ func (b *Builder) InstallPackagesToRootfs(imageChrootRoot, rootfsPath string, pa
 		if selected != "" {
 			// Found local file
 			filename := filepath.Base(selected)
-			fmt.Printf(" [LOCAL] Found %s -> %s\n", pkg, filename)
+			runner.Logf(" [LOCAL] Found %s -> %s\n", pkg, filename)
 			localPkgs = append(localPkgs, filepath.Join(internalCache, filename))
 		} else {
-			fmt.Printf(" [REPO]  Assume %s is in repo (no local file matched pattern: %s)\n", pkg, pattern)
+			runner.Logf(" [REPO]  Assume %s is in repo (no local file matched pattern: %s)\n", pkg, pattern)
 			repoPkgs = append(repoPkgs, pkg)
 		}
 	}
@@ -423,7 +423,7 @@ func (b *Builder) InstallPackagesToRootfs(imageChrootRoot, rootfsPath string, pa
 		return err
 	}
 
-	fmt.Println("Packages installed to rootfs successfully")
+	runner.Logln("Packages installed to rootfs successfully")
 	return nil
 }
 
@@ -456,7 +456,7 @@ func ensureRootfsLoaderSymlink(rootfsPath, arch string) error {
 	if err := runner.RunCmd(exec.Command("sudo", "ln", "-s", "/usr/lib/"+loader, dst)); err != nil {
 		return fmt.Errorf("failed to create loader symlink %s -> /usr/lib/%s: %w", dst, loader, err)
 	}
-	fmt.Printf("Created rootfs loader symlink: %s -> /usr/lib/%s\n", dst, loader)
+	runner.Logf("Created rootfs loader symlink: %s -> /usr/lib/%s\n", dst, loader)
 	return nil
 }
 
@@ -485,7 +485,7 @@ func isMountPoint(path string) bool {
 // CreateDiskImage creates a bootable disk image from a populated rootfs
 // This creates partitions, filesystems, and copies the rootfs contents
 func (b *Builder) CreateDiskImage(imageChrootRoot, rootfsPath, outputPath string, sizeM int, legacyRootfsExt4 bool) error {
-	fmt.Printf("Creating disk image: %s (%dMB)\n", outputPath, sizeM)
+	runner.Logf("Creating disk image: %s (%dMB)\n", outputPath, sizeM)
 
 	// Create empty image file
 	ddCmd := exec.Command("dd", "if=/dev/zero", fmt.Sprintf("of=%s", outputPath), "bs=1M", fmt.Sprintf("count=%d", sizeM))
@@ -519,7 +519,7 @@ func (b *Builder) CreateDiskImage(imageChrootRoot, rootfsPath, outputPath string
 		return fmt.Errorf("failed to copy rootfs: %w", err)
 	}
 
-	fmt.Printf("Disk image created successfully: %s\n", outputPath)
+	runner.Logf("Disk image created successfully: %s\n", outputPath)
 	return nil
 }
 
@@ -570,7 +570,7 @@ func (b *Builder) setupLoopDevice(imagePath string) (string, error) {
 		return "", fmt.Errorf("losetup failed: %w: %s", err, string(output))
 	}
 	loopDevice := strings.TrimSpace(string(output))
-	fmt.Printf("Attached loop device: %s\n", loopDevice)
+	runner.Logf("Attached loop device: %s\n", loopDevice)
 	return loopDevice, nil
 }
 
@@ -582,7 +582,7 @@ func (b *Builder) detachLoopDevice(loopDevice string) {
 
 // partitionDisk creates GPT partition table with boot and root partitions
 func (b *Builder) partitionDisk(device string) error {
-	fmt.Println("Creating partition table...")
+	runner.Logln("Creating partition table...")
 
 	commands := [][]string{
 		{"sudo", "parted", "-s", device, "mklabel", "gpt"},
@@ -606,7 +606,7 @@ func (b *Builder) partitionDisk(device string) error {
 
 // formatPartitions creates FAT32 boot and ext4 root filesystems
 func (b *Builder) formatPartitions(bootPart, rootPart string, legacyRootfsExt4 bool) error {
-	fmt.Println("Formatting partitions...")
+	runner.Logln("Formatting partitions...")
 
 	// Format boot partition as ext2 so lk2nd can mount/read extlinux directly.
 	bootCmd := exec.Command("sudo", "mkfs.ext2", "-F", "-L", "BOOT", bootPart)
@@ -638,7 +638,7 @@ func (b *Builder) formatPartitions(bootPart, rootPart string, legacyRootfsExt4 b
 
 // copyRootfsToImage mounts partitions and copies rootfs contents
 func (b *Builder) copyRootfsToImage(rootfsPath, rootPart, bootPart string) error {
-	fmt.Println("Copying rootfs to image...")
+	runner.Logln("Copying rootfs to image...")
 
 	// Create mount points
 	mountRoot := filepath.Join(os.TempDir(), "peacock-img-root")
@@ -684,11 +684,11 @@ func (b *Builder) copyRootfsToImage(rootfsPath, rootPart, bootPart string) error
 	}
 
 	// CRITICAL: Sync filesystem before unmount to prevent corruption
-	fmt.Println("Syncing filesystem...")
+	runner.Logln("Syncing filesystem...")
 	if err := runner.RunCmd(exec.Command("sync")); err != nil {
 		return fmt.Errorf("failed to sync filesystem: %w", err)
 	}
 
-	fmt.Println("Rootfs copied successfully")
+	runner.Logln("Rootfs copied successfully")
 	return nil
 }

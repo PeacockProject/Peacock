@@ -36,16 +36,16 @@ func (b *Builder) Download(url string, expectedChecksum string) (string, error) 
 	if _, err := os.Stat(destPath); err == nil {
 		// Validate checksum
 		if err := b.verifyChecksum(destPath, expectedChecksum); err == nil {
-			fmt.Printf("Using cached %s\n", filename)
+			runner.Logf("Using cached %s\n", filename)
 			return destPath, nil
 		}
-		fmt.Printf("Cached file %s invalid, redownloading...\n", filename)
+		runner.Logf("Cached file %s invalid, redownloading...\n", filename)
 	}
 
 	// Copy or download source
 	if strings.HasPrefix(url, "file://") {
 		localPath := strings.TrimPrefix(url, "file://")
-		fmt.Printf("Copying local file %s...\n", localPath)
+		runner.Logf("Copying local file %s...\n", localPath)
 		src, err := os.Open(localPath)
 		if err != nil {
 			return "", fmt.Errorf("failed to open local source: %w", err)
@@ -61,7 +61,7 @@ func (b *Builder) Download(url string, expectedChecksum string) (string, error) 
 			return "", fmt.Errorf("failed to copy local source: %w", err)
 		}
 	} else {
-		fmt.Printf("Downloading %s...\n", url)
+		runner.Logf("Downloading %s...\n", url)
 		resp, err := http.Get(url)
 		if err != nil {
 			return "", fmt.Errorf("download failed: %w", err)
@@ -161,7 +161,7 @@ func (b *Builder) BuildPackage(pkg *manifest.Package, targetArch string) (string
 		}
 	}
 
-	fmt.Printf("Building package %s %s for %s in %s...\n", pkg.Package.Name, pkg.Package.Version, targetArch, buildDir)
+	runner.Logf("Building package %s %s for %s in %s...\n", pkg.Package.Name, pkg.Package.Version, targetArch, buildDir)
 
 	// 1. Extract Source
 	// Using external tar for simplicity and robustness in diverse environments
@@ -175,7 +175,7 @@ func (b *Builder) BuildPackage(pkg *manifest.Package, targetArch string) (string
 
 	// 2. Execute Build Script from Manifest
 	if pkg.Build.Script != "" {
-		fmt.Println("Running build script...")
+		runner.Logln("Running build script...")
 		buildCmd := exec.Command("sh", "-c", pkg.Build.Script)
 		buildCmd.Dir = buildDir
 		buildCmd.Stdout = runner.LogWriter()

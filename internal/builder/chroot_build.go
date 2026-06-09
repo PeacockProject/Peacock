@@ -213,7 +213,7 @@ func (b *Builder) BuildPackageInChroot(pkg *manifest.Package, targetArch string,
 		}
 	}
 
-	fmt.Printf("Building package %s %s for %s in %s (chroot)\n", pkg.Package.Name, pkg.Package.Version, targetArch, buildDir)
+	runner.Logf("Building package %s %s for %s in %s (chroot)\n", pkg.Package.Name, pkg.Package.Version, targetArch, buildDir)
 
 	// Extract source if provided
 	if tarball != "" {

@@ -39,7 +39,7 @@ func (b *Builder) EnsureBuildChroot(root string, chrootArch string, useQemu bool
 		// Register binfmt handlers EVERY time (not just on first bootstrap)
 		// This ensures QEMU works even if host was rebooted (binfmt is lost on reboot)
 		if chrootExists {
-			fmt.Println("Master chroot exists, ensuring binfmt handlers are registered...")
+			runner.Logln("Master chroot exists, ensuring binfmt handlers are registered...")
 			binfmtDir := filepath.Join(root, "usr", "lib", "binfmt.d")
 			if entries, err := os.ReadDir(binfmtDir); err == nil {
 				for _, entry := range entries {
@@ -97,7 +97,7 @@ func (b *Builder) EnsureBuildChroot(root string, chrootArch string, useQemu bool
 						registerCmd.Stderr = runner.LogWriter()
 						if err := runner.RunCmd(registerCmd); err == nil {
 							if len(parts) > 6 {
-								fmt.Printf("Registered: %s (using %s)\n", parts[1], parts[6])
+								runner.Logf("Registered: %s (using %s)\n", parts[1], parts[6])
 							}
 						}
 					}
@@ -196,17 +196,17 @@ func (b *Builder) EnsureBuildChroot(root string, chrootArch string, useQemu bool
 		// Enable mirrors in master chroot and disable space check
 		mirrorlistPath := filepath.Join(root, "etc", "pacman.d", "mirrorlist")
 		if err := runner.RunCmd(exec.Command("sudo", "sed", "-i", "s/^#Server/Server/", mirrorlistPath)); err != nil {
-			fmt.Printf("Warning: failed to update mirrorlist: %v\n", err)
+			runner.Logf("Warning: failed to update mirrorlist: %v\n", err)
 		}
 
 		confPath := filepath.Join(root, "etc", "pacman.conf")
 		if err := runner.RunCmd(exec.Command("sudo", "sed", "-i", "s/^CheckSpace/#CheckSpace/", confPath)); err != nil {
-            fmt.Printf("Warning: failed to disable CheckSpace: %v\n", err)
+            runner.Logf("Warning: failed to disable CheckSpace: %v\n", err)
 		}
 
 		// Create /etc/mtab symlink in Master so pacman can check free space/mounts properly
 		if err := runner.RunCmd(exec.Command("sudo", "ln", "-sf", "/proc/self/mounts", filepath.Join(root, "etc", "mtab"))); err != nil {
-			fmt.Printf("Warning: failed to link /etc/mtab: %v\n", err)
+			runner.Logf("Warning: failed to link /etc/mtab: %v\n", err)
 		}
 
 		// Initialize keys inside
@@ -232,23 +232,23 @@ func (b *Builder) EnsureBuildChroot(root string, chrootArch string, useQemu bool
 	// Register binfmt handlers by reading config files and writing to /proc
 	// The qemu-user-static-binfmt package provides config files in /usr/lib/binfmt.d/
 	// Format: :name:type:offset:magic:mask:interpreter:flags (one per line)
-	fmt.Println("Registering QEMU binfmt handlers...")
+	runner.Logln("Registering QEMU binfmt handlers...")
 	binfmtDir := filepath.Join(root, "usr", "lib", "binfmt.d")
 	entries, err = os.ReadDir(binfmtDir)
 	if err != nil {
-		fmt.Printf("Warning: could not read binfmt.d directory: %v\n", err)
+		runner.Logf("Warning: could not read binfmt.d directory: %v\n", err)
 	} else {
 		for _, entry := range entries {
 			if !strings.HasPrefix(entry.Name(), "qemu-") || !strings.HasSuffix(entry.Name(), ".conf") {
 				continue
 			}
 			confPath := filepath.Join(binfmtDir, entry.Name())
-			fmt.Printf("Processing %s...\n", entry.Name())
+			runner.Logf("Processing %s...\n", entry.Name())
 
 			// Read and parse the conf file
 			data, err := os.ReadFile(confPath)
 			if err != nil {
-				fmt.Printf("Warning: could not read %s: %v\n", entry.Name(), err)
+				runner.Logf("Warning: could not read %s: %v\n", entry.Name(), err)
 				continue
 			}
 
@@ -299,11 +299,11 @@ func (b *Builder) EnsureBuildChroot(root string, chrootArch string, useQemu bool
 				if err := runner.RunCmd(registerCmd); err != nil {
 					// Ignore errors - entry might already be registered
 					if len(parts) > 1 {
-						fmt.Printf("Note: registration of %s skipped (might already exist or error occurred)\n", parts[1])
+						runner.Logf("Note: registration of %s skipped (might already exist or error occurred)\n", parts[1])
 					}
 				} else {
 					if len(parts) > 6 {
-						fmt.Printf("Registered: %s (using %s)\n", parts[1], parts[6])
+						runner.Logf("Registered: %s (using %s)\n", parts[1], parts[6])
 					}
 				}
 			}
@@ -382,7 +382,7 @@ func (b *Builder) EnsureBuildChroot(root string, chrootArch string, useQemu bool
 	// Disable CheckSpace in target config to avoid mount point errors in nested chroot
 	targetConfPath := filepath.Join(root, "etc", "pacman.conf")
 	if err := runner.RunCmd(exec.Command("sudo", "sed", "-i", "s/^CheckSpace/#CheckSpace/", targetConfPath)); err != nil {
-		fmt.Printf("Warning: failed to disable CheckSpace in target: %v\n", err)
+		runner.Logf("Warning: failed to disable CheckSpace in target: %v\n", err)
 	}
 
 	// 2. Install 'base' and 'qemu-user-static' into root using Master's pacman
