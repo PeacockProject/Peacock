@@ -4,6 +4,9 @@ build/darwin/
 build/windows/
 build/linux/
 
+# Distribution artifacts (Makefile output: AppImage, .dmg, .exe)
+dist/
+
 # Frontend
 frontend/node_modules/
 frontend/dist/
