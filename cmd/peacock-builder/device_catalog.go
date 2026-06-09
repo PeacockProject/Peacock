@@ -106,8 +106,6 @@ func (a *App) ListDevices() ([]DeviceMeta, error) {
 			// via doctor later if needed.
 			continue
 		}
-		_, _ = manifest.LoadPackage(pkgTomlPath) // reserved; not consumed today
-
 		name := dev.Device.Name
 		if name == "" {
 			name = e.Name()
