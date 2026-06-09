@@ -51,23 +51,6 @@ type bisectResult struct {
 	LogPath string
 }
 
-// normalizeBisectDepName mirrors normalizeDepName from build_packages.go
-// without depending on file-private state — the dep walker test runs
-// hermetically against synthetic Package values.
-func normalizeBisectDepName(dep string) string {
-	dep = strings.TrimSpace(dep)
-	if dep == "" {
-		return ""
-	}
-	if i := strings.IndexAny(dep, "<>="); i >= 0 {
-		dep = strings.TrimSpace(dep[:i])
-	}
-	if i := strings.IndexByte(dep, ' '); i >= 0 {
-		dep = strings.TrimSpace(dep[:i])
-	}
-	return dep
-}
-
 // computeBuildOrder walks the local-manifest dep tree rooted at
 // rootPort and returns a leaves-up build order. Deps absent from the
 // manifests map are treated as already-satisfied leaves and dropped
@@ -109,7 +92,7 @@ func computeBuildOrder(rootPort string, manifests map[string]*manifest.Package) 
 		// on the exact ordering.
 		sort.Strings(deps)
 		for _, dep := range deps {
-			d := normalizeBisectDepName(dep)
+			d := normalizeDepName(dep)
 			if d == "" || d == name {
 				continue
 			}
@@ -153,7 +136,7 @@ func loadLocalManifests(rootPort string) (map[string]*manifest.Package, error) {
 		deps := append([]string{}, pkg.Build.Dependencies...)
 		deps = append(deps, pkg.Package.Depends...)
 		for _, dep := range deps {
-			d := normalizeBisectDepName(dep)
+			d := normalizeDepName(dep)
 			if d == "" || d == name {
 				continue
 			}

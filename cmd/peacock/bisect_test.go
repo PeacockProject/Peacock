@@ -97,7 +97,7 @@ func TestComputeBuildOrder_CycleDetected(t *testing.T) {
 }
 
 func TestComputeBuildOrder_DepWithVersionSpecStripped(t *testing.T) {
-	// "a>=1.2.3" should normalize to "a" via normalizeBisectDepName.
+	// "a>=1.2.3" should normalize to "a" via normalizeDepName.
 	a := pkgWith("a")
 	b := pkgWith("b", "a>=1.2.3")
 	manifests := map[string]*manifest.Package{
@@ -135,7 +135,7 @@ func TestComputeBuildOrder_PackageDependsAlsoWalked(t *testing.T) {
 
 func TestComputeBuildOrder_SelfDepIgnored(t *testing.T) {
 	// A manifest that names itself in deps must not trip the cycle
-	// detector. normalizeBisectDepName + the equal-name guard drop it
+	// detector. normalizeDepName + the equal-name guard drop it
 	// silently.
 	a := pkgWith("a", "a")
 	manifests := map[string]*manifest.Package{"a": a}
@@ -177,9 +177,9 @@ func TestNormalizeBisectDepName(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.in, func(t *testing.T) {
-			got := normalizeBisectDepName(tc.in)
+			got := normalizeDepName(tc.in)
 			if got != tc.want {
-				t.Fatalf("normalizeBisectDepName(%q) = %q, want %q", tc.in, got, tc.want)
+				t.Fatalf("normalizeDepName(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}
