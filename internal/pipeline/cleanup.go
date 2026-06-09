@@ -41,23 +41,22 @@ func NewCleanup(workDir string) *Cleanup {
 // remaining steps (otherwise a stuck mount could trap the loop device).
 // Safe to call multiple times; cleared fields turn into no-ops.
 func (c *Cleanup) Run() {
-	cleanWork := filepath.Clean(c.workDir)
 	if c.imageChroot != "" {
 		workMount := filepath.Join(c.imageChroot, "work")
-		if cleanWork != "" && strings.HasPrefix(filepath.Clean(workMount), cleanWork+string(os.PathSeparator)) {
+		if underWorkDir(c.workDir, workMount) {
 			_ = chroot.UnmountPathWithSudo(workMount)
 		}
 		_ = chroot.UnmountWithSudo(c.imageChroot)
 	}
 	if c.bootDir != "" {
-		if cleanWork != "" && strings.HasPrefix(filepath.Clean(c.bootDir), cleanWork+string(os.PathSeparator)) {
+		if underWorkDir(c.workDir, c.bootDir) {
 			_ = chroot.UnmountPathWithSudo(c.bootDir)
 		} else {
 			fmt.Fprintf(os.Stderr, "skipping unsafe boot unmount: %s\n", c.bootDir)
 		}
 	}
 	if c.installDir != "" {
-		if cleanWork != "" && strings.HasPrefix(filepath.Clean(c.installDir), cleanWork+string(os.PathSeparator)) {
+		if underWorkDir(c.workDir, c.installDir) {
 			_ = chroot.UnmountPathWithSudo(c.installDir)
 		} else {
 			fmt.Fprintf(os.Stderr, "skipping unsafe install unmount: %s\n", c.installDir)
@@ -66,4 +65,15 @@ func (c *Cleanup) Run() {
 	if c.loopDev != "" {
 		_ = image.UnmountLoop(c.loopDev)
 	}
+}
+
+// underWorkDir reports whether path is strictly nested inside workDir
+// after lexical cleaning. It is the guard that keeps a corrupted or
+// adversarial mountpoint string from making Cleanup unmount host paths
+// outside the Peacock work directory. The workDir itself does not
+// count as "under" it, and an empty workDir (cleaned to ".") never
+// matches an absolute path.
+func underWorkDir(workDir, path string) bool {
+	cleanWork := filepath.Clean(workDir)
+	return cleanWork != "" && strings.HasPrefix(filepath.Clean(path), cleanWork+string(os.PathSeparator))
 }
