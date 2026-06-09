@@ -1,0 +1,6 @@
+# Identity (Arch is the canonical name source, so it's effectively a
+# no-op when consulted, but the file exists so the resolver doesn't
+# emit a missing-file warning.)
+[aliases]
+"base-devel" = "base-devel"
+"gcc" = "gcc"

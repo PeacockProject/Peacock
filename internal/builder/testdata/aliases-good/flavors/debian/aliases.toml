@@ -1,0 +1,6 @@
+[aliases]
+"base-devel" = "build-essential"
+"ninja" = "ninja-build"
+# Multi-target: Debian splits Arch's util-linux headers across four
+# packages. The resolver MUST whitespace-split the value.
+"util-linux" = "util-linux libblkid-dev libmount-dev libuuid1-dev"

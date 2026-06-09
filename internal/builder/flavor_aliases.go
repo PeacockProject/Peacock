@@ -4,12 +4,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/pelletier/go-toml/v2"
 
 	"peacock/internal/runner"
 )
+
+// FlavorAliasesRoot overrides the search root for per-flavor alias
+// tables. Empty (the default) means "look under ./peacock-ports". Tests
+// flip this to point at a hermetic testdata directory; the build path
+// never sets it.
+var FlavorAliasesRoot = ""
 
 // aliasTableFile is the per-flavor build_deps alias map. Schema:
 //
@@ -29,9 +36,22 @@ var (
 )
 
 // flavorAliasesPath returns the canonical location for a flavor's
-// alias table.
+// alias table. FlavorAliasesRoot lets tests redirect the lookup.
 func flavorAliasesPath(flavor string) string {
-	return filepath.Join("peacock-ports", "flavors", flavor, "aliases.toml")
+	root := FlavorAliasesRoot
+	if root == "" {
+		root = "peacock-ports"
+	}
+	return filepath.Join(root, "flavors", flavor, "aliases.toml")
+}
+
+// ResetAliasCache wipes the package-level alias cache so tests can
+// observe alias-table changes between sub-tests. Not part of the
+// public CLI surface — exported for test packages only.
+func ResetAliasCache() {
+	aliasCacheMu.Lock()
+	defer aliasCacheMu.Unlock()
+	aliasCache = map[string]map[string]string{}
 }
 
 // loadFlavorAliases returns the rewrite map for the given flavor,
@@ -83,7 +103,15 @@ func ResolveBuildDeps(deps []string, flavor string) []string {
 	out := make([]string, 0, len(deps))
 	for _, d := range deps {
 		if alias, ok := table[d]; ok && alias != "" {
-			out = append(out, alias)
+			// Multi-target: an alias value can be a
+			// whitespace-separated list of target-distro package
+			// names. Debian splits e.g. util-linux's headers across
+			// libblkid-dev / libmount-dev / libuuid1-dev; the alias
+			// table encodes that as a single string and the
+			// resolver expands it here.
+			for _, t := range strings.Fields(alias) {
+				out = append(out, t)
+			}
 			continue
 		}
 		out = append(out, d)

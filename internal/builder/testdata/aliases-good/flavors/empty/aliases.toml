@@ -1,0 +1,3 @@
+# Present file with no entries — exercises the present-but-empty
+# branch of the resolver (identity passthrough, no warning).
+[aliases]
