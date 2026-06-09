@@ -15,13 +15,17 @@
  *   F4  Flash  — bootloader → recovery → system, live progress + log.
  *   F5  Done   — Welcome screen, next steps.
  *
+ * Persistent build banner: lives at the top-left of the wizard chrome across
+ * F1..F4. Click it to open the full RunScreen overlay so power users can
+ * watch the live log without losing flash-flow state.
+ *
  * Phase 1 (today): all jobs are simulated via the same log-script pattern as
  * Run.jsx — see useBuildJob / useFlashJob below. Phase 4 will swap the
  * timers for Wails event subscriptions (window.runtime.EventsOn). */
 
 import React from "react";
 import { AppShell, PK, Btn, FULL, HEAD } from "./shared.jsx";
-import { buildScript, BUILD_PHASES } from "./Run.jsx";
+import { buildScript, BUILD_PHASES, RunScreen } from "./Run.jsx";
 
 /* ===== per-device port wiring =====
  *
@@ -65,7 +69,7 @@ function useBuildJob(dev, desktop, armed) {
   }, [armed, n, script.length]);
   const prog = n > 0 ? script[n - 1].prog : 0;
   const phase = BUILD_PHASES.reduce((a, p) => (prog >= p.at ? p.label : a), BUILD_PHASES[0].label);
-  return { progress: prog, phase, done: prog >= 100, lines: script.slice(0, n) };
+  return { progress: prog, phase, done: prog >= 100, lines: script.slice(0, n), script };
 }
 
 /* ===== F0: splash → top-bar morph =======================================
@@ -99,6 +103,61 @@ function StepSplash({ onDone }) {
         <PK src={FULL} className="ff-splash-pk pkgrad" />
         <div className="ff-splash-line">Building your image…</div>
       </div>
+    </div>
+  );
+}
+
+/* ===== persistent top-docked build banner ===============================
+ *
+ * Rendered by the driver across F1..F4. Visually it sits at the wizard's
+ * top-left (above the step's own .ff-top), shows a small circle that pulses
+ * during build and turns green on done, plus a click-to-open affordance for
+ * the live RunScreen overlay so power users can watch the log without
+ * losing their place in the flash flow. */
+function TopBanner({ build, onOpenLive }) {
+  const pct = Math.round(build.progress);
+  const done = build.done;
+  return (
+    <div className={"ff-topbar" + (done ? " done" : "")} role="status"
+      onClick={onOpenLive} title="Open the live build screen">
+      <span className={"ff-topbar-dot" + (done ? " g" : "")} />
+      <div className="ff-topbar-text">
+        <div className="ff-topbar-title">
+          {done ? "Your image is ready." : "We're building in the background while you work."}
+        </div>
+        <div className="ff-topbar-sub">
+          <span className="pct">{pct}%</span>
+          <span className="sep">·</span>
+          <span className="ph">{done ? "system image written" : build.phase}</span>
+        </div>
+      </div>
+      <div className="ff-topbar-track"><i style={{ width: pct + "%" }} /></div>
+      <span className="ff-topbar-open">›</span>
+    </div>
+  );
+}
+
+/* The live overlay: full-stage RunScreen with a small "Back to flash setup"
+ * pill at the top-right. We re-use RunScreen unchanged, then absolute-overlay
+ * the pill on top. RunScreen drives its own internal timer; we pass an
+ * onDone that the user typically never hits — they click the pill first. */
+function LiveOverlay({ dev, desktop, onBack }) {
+  const script = React.useMemo(() => buildScript(dev || { code: "x" }, desktop), [dev && dev.code, desktop]);
+  const meta = (
+    <span>{(dev && dev.code) || "build"} · <span>live build</span></span>
+  );
+  return (
+    <div className="ff-live">
+      <button className="ff-live-back" onClick={onBack} title="Return to flash setup">
+        ‹ Back to flash setup
+      </button>
+      <RunScreen
+        script={script}
+        title="Building your image…"
+        meta={meta}
+        phases={BUILD_PHASES}
+        onDone={onBack}
+      />
     </div>
   );
 }
@@ -661,12 +720,17 @@ function DiscardModal({ open, onKeep, onDiscard }) {
 export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appClass }) {
   const [sub, setSub] = React.useState("splash");
   const [discardOpen, setDiscardOpen] = React.useState(false);
+  const [liveOpen, setLiveOpen] = React.useState(false);
   const build = useBuildJob(dev, desktop, true); // armed immediately at F0 entry
   const ports = portsFor(dev);
 
   const cancel = () => setDiscardOpen(true);
   const keep = () => setDiscardOpen(false);
   const discard = () => { setDiscardOpen(false); onHome(); };
+
+  /* Persistent top-docked banner shows on F1..F4. F0 has its own splash
+   * (which docks into the same spot), and F5 has its own celebratory layout. */
+  const showBanner = sub === "warn" || sub === "unlock" || sub === "connect" || sub === "flash";
 
   const status = (
     <React.Fragment>
@@ -689,12 +753,14 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appCl
   return (
     <AppShell appClass={appClass} title={<span>Flash to device <span className="dim">· {dev && dev.code}</span></span>} status={status}>
       <div className="ffwrap">
+        {showBanner && <TopBanner build={build} onOpenLive={() => setLiveOpen(true)} />}
         {sub === "splash" && <StepSplash onDone={() => setSub("warn")} />}
         {sub === "warn" && <StepWarn dev={dev} onCancel={cancel} onBack={onHome} onNext={() => setSub("unlock")} />}
         {sub === "unlock" && <StepUnlock dev={dev} build={build} onCancel={cancel} onBack={() => setSub("warn")} onNext={() => setSub("connect")} />}
         {sub === "connect" && <StepConnect dev={dev} build={build} onCancel={cancel} onBack={() => setSub("unlock")} onNext={() => setSub("flash")} />}
         {sub === "flash" && <StepFlash dev={dev} onCancel={cancel} onBack={() => setSub("connect")} onDone={() => setSub("done")} />}
         {sub === "done" && <StepDone dev={dev} onHome={onHome} onBuildAnother={onHome} />}
+        {liveOpen && <LiveOverlay dev={dev} desktop={desktop} onBack={() => setLiveOpen(false)} />}
         <DiscardModal open={discardOpen} onKeep={keep} onDiscard={discard} />
       </div>
     </AppShell>
