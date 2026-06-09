@@ -21,11 +21,9 @@ import (
 	"peacock/internal/builder"
 	"peacock/internal/chroot"
 	"peacock/internal/config"
-	"peacock/internal/feather"
 	"peacock/internal/image"
 	"peacock/internal/manifest"
 	"peacock/internal/runner"
-	"peacock/internal/userland"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -167,469 +165,81 @@ This process involves:
 			fatal()
 		}
 
-		// 8. Build Kernel
-		kernelBuildDir := ""
-		kernelImagePath := ""
-		fmt.Println("Building/Fetching Kernel...")
-		kernelManifest := filepath.Join("peacock-ports", "device", "linux-"+deviceName, "package.toml")
-		kernelPkg, err := manifest.LoadPackage(kernelManifest)
+		rootfsRes, err := runRootfsPhase(b, pkg, dev, depBuildDirs, depPackagePaths, pkgs, localPackages, cacheDir, initSystem, desktopChoice, displayManagerChoice, userName, userPassword, emptyRootfs, initramfsPath, workDir, useQemuFlag, crossCompileFlag, cleanup)
 		if err != nil {
-			// For prototype tolerance, if missing, skip bootimg
-			fmt.Printf("Kernel manifest not found: %v. Skipping boot.img\n", err)
-		} else {
-			kernelOpts, kernelChrootArch, err := resolveBuildOptions(kernelPkg, dev.Device.Architecture, useQemuFlag, crossCompileFlag)
-			if err != nil {
-				fmt.Printf("Error resolving build options for kernel: %v\n", err)
-				fatal()
-			}
-			kernelBuildDir = ""
-			if cachedDir, ok := depBuildDirs[kernelPkg.Package.Name]; ok {
-				zImagePath := filepath.Join(cachedDir, "zImage")
-				if fileExistsFile(zImagePath) {
-					kernelBuildDir = cachedDir
-					fmt.Printf("Reusing kernel build from dependencies at %s\n", kernelBuildDir)
-				}
-			}
-			if kernelBuildDir == "" {
-				if pkgPath, ok := depPackagePaths[kernelPkg.Package.Name]; ok {
-					extractedDir, err := extractKernelFromPackage(pkgPath, workDir)
-					if err != nil {
-						fmt.Printf("Error extracting kernel from cached package: %v\n", err)
-						fatal()
-					}
-					kernelBuildDir = extractedDir
-					fmt.Printf("Reusing kernel extracted from cached package at %s\n", kernelBuildDir)
-				}
-			}
-			if kernelBuildDir == "" {
-				fmt.Println("Kernel not built in dependencies; building now...")
-				kernelChrootDir := filepath.Join(workDir, "build-chroot", kernelChrootArch)
-				buildDepChrootRoot := filepath.Join(workDir, "build-dep-chroot", hostArchString())
-				kernelUseQemu := kernelOpts.UseQemu != nil && *kernelOpts.UseQemu
-				if err := b.EnsureBuildChroot(kernelChrootDir, kernelChrootArch, kernelUseQemu); err != nil {
-					fmt.Printf("Error ensuring build chroot for kernel: %v\n", err)
-					fatal()
-				}
-				if err := ensureBuildChrootBootstrap(b, kernelChrootDir, kernelChrootArch); err != nil {
-					fmt.Printf("Error bootstrapping build tools for kernel: %v\n", err)
-					fatal()
-				}
-				kernelExtraPaths, err := prepareBuildDepPackages(b, kernelPkg, kernelChrootDir, buildDepChrootRoot)
-				if err != nil {
-					fmt.Printf("Error preparing build dep packages for kernel: %v\n", err)
-					fatal()
-				}
-				kernelOpts.ExtraPath = kernelExtraPaths.Bin
-				kernelOpts.ExtraInclude = kernelExtraPaths.Inc
-				kernelOpts.ExtraLib = kernelExtraPaths.Lib
-				kernelOpts.ExtraLdLib = kernelExtraPaths.LD
-				kernelBuildDir, err = b.BuildPackageInChroot(kernelPkg, dev.Device.Architecture, kernelChrootDir, kernelOpts)
-				if err != nil {
-					fmt.Printf("Error building kernel: %v\n", err)
-					fatal()
-				}
-			}
-			kernelImagePath = filepath.Join(kernelBuildDir, "zImage")
-			if !fileExistsFile(kernelImagePath) {
-				fmt.Printf("Warning: kernel image not found at %s\n", kernelImagePath)
-				kernelImagePath = ""
-			}
-
-			// 9. Create Boot Image (Android)
-			if dev.Boot.GenerateBootImg {
-				fmt.Println("Generating Android boot.img...")
-				bootImgPath := filepath.Join(workDir, "boot.img")
-
-				// Paths to artifacts in build dir
-				zImagePath := filepath.Join(kernelBuildDir, "zImage")
-				// TODO: DTB handling (cat zImage + dtb or separate?)
-				// S4 usually uses appended DTB for older kernels or separate for newer.
-				// We'll simplisticly assume zImage has what we need or just use it.
-				// For the prototype 'mkbootimg' function we wrote, it takes a ramdisk path.
-
-				// Get cmdline from device profile
-				cmdline := dev.Boot.Cmdline
-
-				// Parse hex addresses from device profile
-				parseHex := func(s string) (uint32, error) {
-					var val uint32
-					_, err := fmt.Sscanf(s, "0x%x", &val)
-					if err != nil {
-						_, err = fmt.Sscanf(s, "%x", &val)
-					}
-					return val, err
-				}
-
-				baseAddr, err := parseHex(dev.Boot.Android.Base)
-				if err != nil {
-					fmt.Printf("Error parsing base address %s: %v, using default 0x80200000\n", dev.Boot.Android.Base, err)
-					baseAddr = 0x80200000
-				}
-
-				kernelOffset, err := parseHex(dev.Boot.Android.KernelOffset)
-				if err != nil {
-					kernelOffset = 0x00008000 // default
-				}
-
-				ramdiskOffset, err := parseHex(dev.Boot.Android.RamdiskOffset)
-				if err != nil {
-					ramdiskOffset = 0x02000000 // default
-				}
-
-				secondOffset, err := parseHex(dev.Boot.Android.SecondOffset)
-				if err != nil {
-					secondOffset = 0x00f00000 // default
-				}
-
-				tagsOffset, err := parseHex(dev.Boot.Android.TagsOffset)
-				if err != nil {
-					tagsOffset = 0x00000100 // default
-				}
-
-				pageSize := uint32(dev.Boot.Android.PageSize)
-				if pageSize == 0 {
-					pageSize = 2048 // default
-				}
-
-				if err := image.CreateBootImage(bootImgPath, zImagePath, initramfsPath, cmdline, baseAddr, kernelOffset, ramdiskOffset, secondOffset, tagsOffset, pageSize); err != nil {
-					fmt.Printf("Error creating boot.img: %v\n", err)
-				} else {
-					fmt.Printf("Boot image created at: %s\n", bootImgPath)
-				}
-			}
-		}
-
-		// 9. Create Image using dedicated image-build-chroot
-		fmt.Println("=== Phase 2: Image Assembly ===")
-		imagePath := filepath.Join(workDir, fmt.Sprintf("%s.img", deviceName))
-
-		// Set up image build chroot (separate from package build chroot)
-		fmt.Println("Setting up image build environment...")
-		imageChrootRoot, err := b.EnsureImageBuildChroot()
-		if err != nil {
-			fmt.Printf("Error preparing image build chroot: %v\n", err)
+			fmt.Printf("%v\n", err)
 			fatal()
 		}
+		imageChrootRoot := rootfsRes.imageChrootRoot
+		rootfsPath := rootfsRes.rootfsPath
+		kernelBuildDir := rootfsRes.kernelBuildDir
+		kernelImagePath := rootfsRes.kernelImagePath
 
-		// Mount image chroot for cleanup tracking
-		cleanup.imageChroot = imageChrootRoot
+		imagePath := filepath.Join(workDir, fmt.Sprintf("%s.img", deviceName))
 
-		// Create rootfs path inside image chroot
-		rootfsPath := filepath.Join(imageChrootRoot, "rootfs")
-		// Clean up previous rootfs to avoid package conflicts (e.g. systemd vs openrc).
-		// Important: unmount nested bind/proc/sys mounts first; otherwise rm can recurse
-		// into host-mounted /dev and remove host nodes like /dev/null.
-		if err := unmountRootfsSubmounts(rootfsPath); err != nil {
-			fmt.Printf("Warning: failed to unmount stale rootfs submounts: %v\n", err)
-		}
-		_ = chroot.UnmountPathWithSudo(rootfsPath)
-		if err := execCommand("sudo", "rm", "-rf", "--one-file-system", rootfsPath); err != nil {
-			fmt.Printf("Warning: failed to clean rootfs: %v\n", err)
-		}
-		if err := execCommand("sudo", "mkdir", "-p", rootfsPath); err != nil {
-			fmt.Printf("Warning: failed to create rootfs: %v\n", err)
-		}
+		// 9. Create Boot Image (Android)
+		if kernelBuildDir != "" && dev.Boot.GenerateBootImg {
+			fmt.Println("Generating Android boot.img...")
+			bootImgPath := filepath.Join(workDir, "boot.img")
 
-		// Determine packages to install
-		allPackages := pkgs
+			// Paths to artifacts in build dir
+			zImagePath := filepath.Join(kernelBuildDir, "zImage")
+			// TODO: DTB handling (cat zImage + dtb or separate?)
+			// S4 usually uses appended DTB for older kernels or separate for newer.
+			// We'll simplisticly assume zImage has what we need or just use it.
+			// For the prototype 'mkbootimg' function we wrote, it takes a ramdisk path.
 
-		if !emptyRootfs {
-			// Add local packages
-			if len(localPackages) > 0 {
-				// Copy local packages to cache so they can be found by pacman
-				for _, pkgPath := range localPackages {
-					dst := filepath.Join(cacheDir, filepath.Base(pkgPath))
-					if err := execCommand("cp", "-f", pkgPath, dst); err != nil {
-						fmt.Printf("Warning: failed to copy package %s to cache: %v\n", pkgPath, err)
-					}
+			// Get cmdline from device profile
+			cmdline := dev.Boot.Cmdline
+
+			// Parse hex addresses from device profile
+			parseHex := func(s string) (uint32, error) {
+				var val uint32
+				_, err := fmt.Sscanf(s, "0x%x", &val)
+				if err != nil {
+					_, err = fmt.Sscanf(s, "%x", &val)
 				}
+				return val, err
 			}
 
-			// Install packages to rootfs
-			fmt.Println("Installing packages to rootfs...")
-			if err := b.InstallPackagesToRootfs(imageChrootRoot, rootfsPath, allPackages, dev.Device.Architecture); err != nil {
-				fmt.Printf("Error installing packages to rootfs: %v\n", err)
-				fatal()
-			}
-			if userName != "" {
-				if err := b.CreateUserInRootfs(imageChrootRoot, rootfsPath, userName, userPassword); err != nil {
-					fmt.Printf("Error creating user '%s': %v\n", userName, err)
-					fatal()
-				}
-			}
-		} else {
-			fmt.Println("Skipping package installation into rootfs (empty-rootfs mode)")
-		}
-		if initSystem == "openrc" && !emptyRootfs {
-			// Enable OpenRC logging for debug visibility.
-			rcConfPath := filepath.Join(rootfsPath, "etc", "rc.conf")
-			_ = execCommand("sudo", "sh", "-c", fmt.Sprintf(`set -e
-RC="%s"
-tmp="$(mktemp)"
-if [ -f "$RC" ]; then
-	grep -vE '^(#?rc_logger=|#?rc_log_path=)' "$RC" > "$tmp"
-else
-	: > "$tmp"
-fi
-printf 'rc_logger="YES"\nrc_log_path="/var/log/rc.log"\n' >> "$tmp"
-mv "$tmp" "$RC"
-`, rcConfPath))
-
-			dmService := userland.DisplayManagerService(displayManagerChoice)
-			if dmService != "" {
-				if err := b.EnableOpenRCService(imageChrootRoot, rootfsPath, dmService, "default"); err != nil {
-					fmt.Printf("Error enabling display manager '%s' in openrc: %v\n", dmService, err)
-					fatal()
-				}
-				// Keep tty1 free for the display manager.
-				_ = execCommand("sudo", "rm", "-f", filepath.Join(rootfsPath, "etc", "runlevels", "default", "agetty.tty1"))
+			baseAddr, err := parseHex(dev.Boot.Android.Base)
+			if err != nil {
+				fmt.Printf("Error parsing base address %s: %v, using default 0x80200000\n", dev.Boot.Android.Base, err)
+				baseAddr = 0x80200000
 			}
 
-			// Ensure devtmpfs is mounted so /dev/fb0 exists.
-			_ = b.EnableOpenRCService(imageChrootRoot, rootfsPath, "devfs", "boot")
-			// Mount /run as tmpfs so dbus can create its socket.
-			_ = execCommand("sudo", "sh", "-c", fmt.Sprintf(`set -e
-ROOT="%s"
-cat > "$ROOT/etc/init.d/run-tmpfs" <<'EOF'
-#!/sbin/openrc-run
-
-description="Mount /run tmpfs"
-
-depend() {
-	need localmount
-	before dbus
-}
-
-start() {
-	checkpath -d -m 0755 /run
-	if ! grep -q ' /run ' /proc/mounts; then
-		mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
-	fi
-	checkpath -d -m 0755 /run/dbus
-}
-EOF
-chmod 755 "$ROOT/etc/init.d/run-tmpfs"
-`, rootfsPath))
-			_ = b.EnableOpenRCService(imageChrootRoot, rootfsPath, "run-tmpfs", "boot")
-
-			extraServices := userland.DisplayManagerOpenRCServices(displayManagerChoice, initSystem)
-			for _, svc := range extraServices {
-				if err := b.EnableOpenRCService(imageChrootRoot, rootfsPath, svc.Name, svc.Runlevel); err != nil {
-					fmt.Printf("Error enabling openrc service '%s' in runlevel '%s': %v\n", svc.Name, svc.Runlevel, err)
-					fatal()
-				}
+			kernelOffset, err := parseHex(dev.Boot.Android.KernelOffset)
+			if err != nil {
+				kernelOffset = 0x00008000 // default
 			}
 
-			if strings.ToLower(displayManagerChoice) == "sddm" {
-				minimumVT := "7"
-				if initSystem == "openrc" {
-					// BusyBox init commonly respawns a getty on tty1 unless adjusted.
-					// Keep SDDM on VT1 by default for framebuffer-only targets.
-					minimumVT = "1"
-				}
-				serverPath := "/usr/lib/Xorg"
-				serverArguments := "-nolisten tcp -noreset -verbose 4 -logfile /var/log/Xorg.0.log"
-				if dev.Quirks.XorgForceVT1 {
-					minimumVT = "1"
-					// Some devices keep the panel on tty1 and don't switch to SDDM's
-					// auto-selected VT. Wrap Xorg to drop SDDM's vtN arg and force vt1.
-					serverPath = "/usr/local/sbin/peacock-xorg-vt1"
-				}
-				// Ensure sddm user/group and log dirs exist, and configure logs.
-				_ = execCommand("sudo", "sh", "-c", fmt.Sprintf(`set -e
-ROOT="%s"
-mkdir -p "$ROOT/etc" "$ROOT/var/log" "$ROOT/var/run" "$ROOT/var/lib"
-if ! grep -q '^video:' "$ROOT/etc/group"; then echo 'video:x:27:' >> "$ROOT/etc/group"; fi
-if ! grep -q '^input:' "$ROOT/etc/group"; then echo 'input:x:24:' >> "$ROOT/etc/group"; fi
-if ! grep -q '^sddm:' "$ROOT/etc/group"; then echo 'sddm:x:965:' >> "$ROOT/etc/group"; fi
-if ! grep -q '^sddm:' "$ROOT/etc/passwd"; then echo 'sddm:x:965:965:Simple Desktop Display Manager:/var/lib/sddm:/usr/bin/nologin' >> "$ROOT/etc/passwd"; fi
-if [ -f "$ROOT/etc/shadow" ] && ! grep -q '^sddm:' "$ROOT/etc/shadow"; then echo 'sddm:!*:::::::' >> "$ROOT/etc/shadow"; fi
-if [ -f "$ROOT/etc/gshadow" ] && ! grep -q '^sddm:' "$ROOT/etc/gshadow"; then echo 'sddm:!*::' >> "$ROOT/etc/gshadow"; fi
-for grp in video input; do
-	line="$(awk -F: -v g="$grp" '$1==g{print; exit}' "$ROOT/etc/group" 2>/dev/null || true)"
-	[ -n "$line" ] || continue
-	members="$(echo "$line" | cut -d: -f4)"
-	case ",$members," in
-		*,sddm,*) ;;
-		*) new_members="${members:+$members,}sddm"
-		   awk -F: -v OFS=: -v g="$grp" -v m="$new_members" '$1==g{$4=m} {print}' "$ROOT/etc/group" > "$ROOT/etc/group.tmp"
-		   mv "$ROOT/etc/group.tmp" "$ROOT/etc/group" ;;
-	esac
-done
-mkdir -p "$ROOT/var/lib/sddm/.local/share/sddm" "$ROOT/var/run/sddm" "$ROOT/var/log"
-sddm_uid="$(awk -F: '$1=="sddm"{print $3; exit}' "$ROOT/etc/passwd" 2>/dev/null || true)"
-sddm_gid="$(awk -F: '$1=="sddm"{print $3; exit}' "$ROOT/etc/group" 2>/dev/null || true)"
-[ -n "$sddm_uid" ] || sddm_uid=965
-[ -n "$sddm_gid" ] || sddm_gid=965
-chown -R "$sddm_uid:$sddm_gid" "$ROOT/var/lib/sddm" "$ROOT/var/run/sddm" || true
-chmod 0755 "$ROOT/var/lib/sddm" "$ROOT/var/lib/sddm/.local" "$ROOT/var/lib/sddm/.local/share" "$ROOT/var/lib/sddm/.local/share/sddm" "$ROOT/var/run/sddm"
-: > "$ROOT/var/log/sddm.log"
-chown "$sddm_uid:$sddm_gid" "$ROOT/var/log/sddm.log" || true
-chmod 0666 "$ROOT/var/log/sddm.log"
-mkdir -p "$ROOT/etc/sddm.conf.d"
-cat > "$ROOT/usr/bin/peacock-sddm-greeter" <<'EOF'
-#!/bin/sh
-# Prefer greeter matching the Qt major of the SDDM daemon/helper when available.
-if [ -x /usr/bin/sddm-greeter-qt6 ]; then
-	exec /usr/bin/sddm-greeter-qt6 "$@"
-fi
-exec /usr/bin/sddm-greeter "$@"
-EOF
-chmod 0755 "$ROOT/usr/bin/peacock-sddm-greeter"
-# Older SDDM builds ignore GreeterPath and always call /usr/bin/sddm-greeter.
-# On those systems, force the default greeter entrypoint to Qt6 when available.
-if [ -x "$ROOT/usr/bin/sddm-greeter-qt6" ]; then
-	cat > "$ROOT/usr/bin/sddm-greeter" <<'EOF'
-#!/bin/sh
-exec /usr/bin/sddm-greeter-qt6 "$@"
-EOF
-	chmod 0755 "$ROOT/usr/bin/sddm-greeter"
-fi
-if [ "%s" = "/usr/local/sbin/peacock-xorg-vt1" ]; then
-	mkdir -p "$ROOT/usr/local/sbin"
-	cat > "$ROOT/usr/local/sbin/peacock-xorg-vt1" <<'EOF'
-#!/bin/bash
-set -euo pipefail
-args=()
-for a in "$@"; do
-	if [[ "$a" =~ ^vt[0-9]+$ ]]; then
-		continue
-	fi
-	args+=("$a")
-done
-exec /usr/lib/Xorg "${args[@]}" -keeptty vt1
-EOF
-	chmod 0755 "$ROOT/usr/local/sbin/peacock-xorg-vt1"
-fi
-cat > "$ROOT/etc/sddm.conf.d/peacock.conf" <<'EOF'
-[General]
-LogFile=/var/log/sddm.log
-MinimumVT=%s
-DisplayServer=x11
-InputMethod=qtvirtualkeyboard
-GreeterPath=/usr/bin/peacock-sddm-greeter
-GreeterEnvironment=QT_QUICK_BACKEND=software,QSG_RHI_BACKEND=software,QT_XCB_NO_XI2=1,QT_IM_MODULE=qtvirtualkeyboard
+			ramdiskOffset, err := parseHex(dev.Boot.Android.RamdiskOffset)
+			if err != nil {
+				ramdiskOffset = 0x02000000 // default
+			}
 
-[Theme]
-Current=maldives
+			secondOffset, err := parseHex(dev.Boot.Android.SecondOffset)
+			if err != nil {
+				secondOffset = 0x00f00000 // default
+			}
 
-[X11]
-ServerPath=%s
-ServerArguments=%s
-EnableHiDPI=false
-EOF
-mkdir -p "$ROOT/etc/X11"
-cat > "$ROOT/etc/X11/Xwrapper.config" <<'EOF'
-allowed_users=anybody
-needs_root_rights=yes
-EOF
-`, rootfsPath, serverPath, minimumVT, serverPath, serverArguments))
+			tagsOffset, err := parseHex(dev.Boot.Android.TagsOffset)
+			if err != nil {
+				tagsOffset = 0x00000100 // default
+			}
+
+			pageSize := uint32(dev.Boot.Android.PageSize)
+			if pageSize == 0 {
+				pageSize = 2048 // default
+			}
+
+			if err := image.CreateBootImage(bootImgPath, zImagePath, initramfsPath, cmdline, baseAddr, kernelOffset, ramdiskOffset, secondOffset, tagsOffset, pageSize); err != nil {
+				fmt.Printf("Error creating boot.img: %v\n", err)
+			} else {
+				fmt.Printf("Boot image created at: %s\n", bootImgPath)
 			}
 		}
-
-		// Install kernel modules if available
-		if kernelBuildDir != "" {
-			modulesTarPath := filepath.Join(kernelBuildDir, "modules.tar.gz")
-			if fileExistsFile(modulesTarPath) {
-				fmt.Println("Extracting kernel modules to rootfs...")
-				extractCmd := exec.Command("sudo", "tar", "-xzf", modulesTarPath, "-C", rootfsPath)
-				if err := runner.RunCmd(extractCmd); err != nil {
-					fmt.Printf("Warning: failed to extract kernel modules: %v\n", err)
-				}
-			}
-		}
-
-		if initSystem == "openrc" {
-			// Guarantee OpenRC has an inittab in the final rootfs.
-			_ = execCommand("sudo", "sh", "-c", fmt.Sprintf(`set -e
-ROOT="%s"
-if [ ! -f "$ROOT/etc/inittab" ]; then
-	mkdir -p "$ROOT/etc"
-	cat > "$ROOT/etc/inittab" <<'EOF'
-::sysinit:/sbin/openrc sysinit
-::wait:/sbin/openrc boot
-::wait:/sbin/openrc default
-::ctrlaltdel:/sbin/openrc reboot
-::shutdown:/sbin/openrc shutdown
-tty1::respawn:/sbin/agetty -L 115200 tty1 vt100
-EOF
-fi
-`, rootfsPath))
-			if strings.ToLower(displayManagerChoice) != "none" {
-				// Keep tty1 available for display manager VT allocation.
-				_ = execCommand("sudo", "sh", "-c", fmt.Sprintf(`set -e
-ROOT="%s"
-if [ -f "$ROOT/etc/inittab" ]; then
-	sed -i '/^tty1::respawn:/d' "$ROOT/etc/inittab"
-	sed -i '/^tty2::respawn:/d' "$ROOT/etc/inittab"
-	sed -i 's|^tty3::respawn:.*|tty3::respawn:/sbin/agetty -L 115200 tty3 vt100|' "$ROOT/etc/inittab"
-	if ! grep -q '^tty3::respawn:' "$ROOT/etc/inittab"; then
-		echo 'tty3::respawn:/sbin/agetty -L 115200 tty3 vt100' >> "$ROOT/etc/inittab"
-	fi
-fi
-`, rootfsPath))
-			}
-			// /dev is already mounted by initramfs before OpenRC handoff.
-			// Prevent devfs from remounting it and failing with EBUSY.
-			_ = execCommand("sudo", "sh", "-c", fmt.Sprintf(`set -e
-ROOT="%s"
-mkdir -p "$ROOT/etc/conf.d"
-if [ ! -f "$ROOT/etc/conf.d/devfs" ]; then
-	echo 'skip_mount_dev=yes' > "$ROOT/etc/conf.d/devfs"
-elif ! grep -q '^skip_mount_dev=' "$ROOT/etc/conf.d/devfs"; then
-	echo 'skip_mount_dev=yes' >> "$ROOT/etc/conf.d/devfs"
-else
-	sed -i 's/^skip_mount_dev=.*/skip_mount_dev=yes/' "$ROOT/etc/conf.d/devfs"
-fi
-`, rootfsPath))
-
-			// mkinitcpio defaults to systemd hooks on Arch. Force OpenRC-compatible hooks
-			// and regenerate initramfs inside the target rootfs.
-			_ = execCommand("sudo", "sh", "-c", fmt.Sprintf(`set -e
-CFG="%s/etc/mkinitcpio.conf"
-if [ -f "$CFG" ]; then
-	sed -i -E 's|^HOOKS=.*|HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block filesystems fsck)|' "$CFG"
-fi
-`, rootfsPath))
-			if err := chroot.MountWithSudo(rootfsPath); err != nil {
-				fmt.Printf("Error mounting rootfs for mkinitcpio regeneration: %v\n", err)
-				fatal()
-			}
-			func() {
-				defer chroot.UnmountWithSudo(rootfsPath)
-				if err := execCommand("sudo", "chroot", rootfsPath, "sh", "-lc", "command -v mkinitcpio >/dev/null 2>&1"); err != nil {
-					fmt.Println("Warning: mkinitcpio not found in rootfs; skipping rootfs initramfs regeneration")
-					return
-				}
-				if err := execCommand("sudo", "chroot", rootfsPath, "mkinitcpio", "-P"); err != nil {
-					fmt.Printf("Error regenerating rootfs initramfs for openrc: %v\n", err)
-					fatal()
-				}
-			}()
-		}
-
-		// Phase 3 placeholder for the future feather-install step. When
-		// phase 4 lands, this block will iterate the Peacock-platform
-		// ports flagged `layout = "peacock"` and shell out to
-		// feather.Install against rootfsPath. Until then we just check
-		// whether ftr is on PATH and log a skip-message; the Arch path
-		// keeps working unchanged.
-		if feather.Available() {
-			fmt.Println("Feather binary detected; phase 4 will overlay /peacock here.")
-		} else {
-			fmt.Println("skipping feather install step — phase 4 will land")
-		}
-
-		if kernelImagePath != "" && fileExistsFile(initramfsPath) {
-			dtbPath := discoverKernelDTB(kernelBuildDir, deviceName)
-			fmt.Println("Staging extlinux boot assets into rootfs /boot...")
-			if err := stageExtlinuxBootAssets(rootfsPath, kernelImagePath, initramfsPath, dev.Boot.Cmdline, dtbPath); err != nil {
-				fmt.Printf("Error staging extlinux boot assets: %v\n", err)
-				fatal()
-			}
-		} else {
-			fmt.Println("Warning: skipping extlinux boot asset staging (missing kernel or initramfs)")
-		}
+		_ = kernelImagePath
 
 		// Create final disk image
 		fmt.Println("Creating disk image...")
