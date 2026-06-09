@@ -10,7 +10,10 @@
  *                persistent build banner will live. Kicks off the background
  *                build job at mount.
  *   F1  Warn  — data-loss confirmation.
- *   F2  Unlock — per-brand bootloader-unlock instructions + live build banner.
+ *   F2  Unlock — matched-brand bootloader-unlock instructions, with an
+ *                "already unlocked" skip option that swaps in a green
+ *                confirmation card. Build progress shows in the persistent
+ *                top banner above, not inline.
  *   F3  Connect — plug-in detection (mock 4s).
  *   F4  Flash  — bootloader → recovery → system, live progress + log.
  *   F5  Done   — Welcome screen, next steps.
@@ -52,7 +55,7 @@ function portsFor(dev) {
   return PORTS[dev.id] || PORTS[dev.code] || { brand: "generic", bootloader: null, recovery: null, system: "linux-" + (dev.code || "device") };
 }
 
-/* ===== background build job (F0 kick-off, F2 banner, F3 gate) =====
+/* ===== background build job (F0 kick-off, persistent banner, F3 gate) =====
  *
  * A custom hook that drives the same simulated buildScript() lines used in
  * Run.jsx, but emits {progress, phase, done} so callers can render a small
@@ -294,7 +297,6 @@ function StepUnlock({ dev, build, onCancel, onBack, onNext }) {
   return (
     <div className="ff" data-step="unlock">
       <FFTop title="Step 2 of 5 · Unlock your phone" onCancel={onCancel} />
-      <BuildBanner build={build} />
       <div className="ff-body">
         <div className="ff-unlock">
           <p className="ff-lead">
@@ -330,28 +332,6 @@ function StepUnlock({ dev, build, onCancel, onBack, onNext }) {
   );
 }
 
-/* Persistent "Image is building…" status banner. Lives above the unlock
- * body and morphs to "Image ready." with a green dot when the simulated
- * build job completes. The two-color glow shifts based on done state. */
-function BuildBanner({ build }) {
-  const pct = Math.round(build.progress);
-  const done = build.done;
-  /* tiny inline ETA: assume ~12s remaining at 60%, scale linearly. The real
-   * build job will replace this with a server-emitted eta_sec field. */
-  const etaSec = done ? 0 : Math.max(2, Math.round((100 - pct) * 0.18));
-  return (
-    <div className={"ff-banner" + (done ? " done" : "")} role="status">
-      <span className={"ff-bd" + (done ? " g" : "")} />
-      <span className="ff-bt">
-        {done ? "Image ready." : "Image is building…"}
-      </span>
-      <span className="ff-bp">{done ? "100%" : pct + "%"}</span>
-      <div className="ff-btrack"><i style={{ width: pct + "%" }} /></div>
-      <span className="ff-bph">{done ? "system image written" : build.phase + (etaSec ? " · ~" + etaSec + "s left" : "")}</span>
-    </div>
-  );
-}
-
 /* ===== F3: connect device =============================================== */
 
 /* useMockDetect — in dev mode the fastboot binding is unavailable so we
@@ -369,14 +349,13 @@ function useMockDetect(dev) {
   return found;
 }
 
-function StepConnect({ dev, build, onCancel, onBack, onNext }) {
+function StepConnect({ dev, onCancel, onBack, onNext }) {
   const detected = useMockDetect(dev);
   const [helpOpen, setHelpOpen] = React.useState(false);
   const name = (dev && dev.name) || "phone";
   return (
     <div className="ff" data-step="connect">
       <FFTop title="Step 3 of 5 · Plug in your phone" onCancel={onCancel} />
-      <BuildBanner build={build} />
       <div className="ff-body">
         <div className="ff-connect">
           <div className={"ff-cable" + (detected ? " ok" : "")} aria-hidden="true">
@@ -789,7 +768,7 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appCl
         {sub === "splash" && <StepSplash onDone={() => setSub("warn")} />}
         {sub === "warn" && <StepWarn dev={dev} onCancel={cancel} onBack={onHome} onNext={() => setSub("unlock")} />}
         {sub === "unlock" && <StepUnlock dev={dev} build={build} onCancel={cancel} onBack={() => setSub("warn")} onNext={() => setSub("connect")} />}
-        {sub === "connect" && <StepConnect dev={dev} build={build} onCancel={cancel} onBack={() => setSub("unlock")} onNext={() => setSub("flash")} />}
+        {sub === "connect" && <StepConnect dev={dev} onCancel={cancel} onBack={() => setSub("unlock")} onNext={() => setSub("flash")} />}
         {sub === "flash" && <StepFlash dev={dev} onCancel={cancel} onBack={() => setSub("connect")} onDone={() => setSub("done")} />}
         {sub === "done" && <StepDone dev={dev} onHome={onHome} onBuildAnother={onHome} />}
         {liveOpen && <LiveOverlay dev={dev} desktop={desktop} onBack={() => setLiveOpen(false)} />}
