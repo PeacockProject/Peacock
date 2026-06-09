@@ -28,6 +28,7 @@ var (
 	buildPackagesFromFlag     []string
 	buildPackagesWithDeps     bool
 	buildPackagesRebuild      bool
+	buildPackagesBisect       string
 )
 
 func normalizeDepName(dep string) string {
@@ -130,6 +131,14 @@ var buildPackagesCmd = &cobra.Command{
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		runner.SetContext(ctx)
+
+		// --bisect short-circuits the normal flow into the interactive
+		// walker. It still expects --device/--arch + --flavor like the
+		// regular build so the chroot bring-up matches what the user
+		// would otherwise see.
+		if strings.TrimSpace(buildPackagesBisect) != "" {
+			return runBisect(strings.TrimSpace(buildPackagesBisect))
+		}
 
 		workDir := config.WorkDir()
 		if workDir == "" {
@@ -260,4 +269,5 @@ func init() {
 	buildPackagesCmd.Flags().StringVar(&buildPackagesUseQemu, "use-qemu", "auto", "Use qemu for foreign arch builds: auto|true|false")
 	buildPackagesCmd.Flags().StringVar(&buildPackagesCrossCompile, "cross-compile", "", "Cross compiler prefix (e.g. arm-none-eabi-)")
 	buildPackagesCmd.Flags().StringVar(&buildPackagesFlavor, "flavor", "arch", "Base-distro flavor: arch|debian|alpine")
+	buildPackagesCmd.Flags().StringVar(&buildPackagesBisect, "bisect", "", "Bisect-mode: walk the named port's local dep tree from leaves up, pausing interactively on the first failure")
 }
