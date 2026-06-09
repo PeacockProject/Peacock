@@ -237,6 +237,24 @@ const UNLOCK_BRANDS = {
   },
 };
 
+/* "Skip the guide" confirmation card. The copy adapts to Samsung's quirk —
+ * they need Download Mode, not fastboot, so we call that out by name. */
+function SkipCard({ brand }) {
+  const isSamsung = brand === "samsung";
+  return (
+    <div className="ff-skip-card">
+      <div className="ff-skip-icon">✓</div>
+      <div className="ff-skip-body">
+        <div className="ff-skip-h">Great — we'll skip the unlock guide.</div>
+        <p className="ff-skip-p">
+          Make sure your phone is in <b>{isSamsung ? "download mode" : "fastboot mode"}</b>
+          {isSamsung ? " (Samsung's flashing screen)" : ""} and connected, then continue.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 /* Renders the matched brand's instructions only. The maintainer dropped
  * the accordion-of-all-brands UI — showing four other brands' unlock guides
  * is noise. PinePhone / x86 get the brand's friendly "nothing to do" copy
@@ -262,6 +280,10 @@ function StepUnlock({ dev, build, onCancel, onBack, onNext }) {
   const info = UNLOCK_BRANDS[brand] || UNLOCK_BRANDS.oppo;
   /* PinePhone + x86 default-confirm since there's nothing for the user to actually do. */
   const [confirmed, setConfirmed] = React.useState(!!info.autoConfirm);
+  /* "Already unlocked" skip option — only relevant for brands with a real
+   * unlock dance (autoConfirm brands skip already, no point offering it). */
+  const canSkip = !info.autoConfirm;
+  const [skipUnlock, setSkipUnlock] = React.useState(false);
   const ready = confirmed && build.done;
   /* the user can ALWAYS click Continue once both gates are met. If the
    * build is still going, show "Still building…" instead of disabling
@@ -281,7 +303,20 @@ function StepUnlock({ dev, build, onCancel, onBack, onNext }) {
             install: most makers add a waiting period. Start it now and let
             it run in the background while we build your image.
           </p>
-          <BrandInstructions info={info} />
+          {canSkip && (
+            <label className={"ff-skip-toggle" + (skipUnlock ? " on" : "")}
+              onClick={() => setSkipUnlock(s => !s)}>
+              <span className="ff-check">{skipUnlock ? "✓" : ""}</span>
+              <span className="ff-skip-toggle-text">
+                <b>My bootloader is already unlocked</b>
+                <small>Skip the instructions and go straight to connecting my phone.</small>
+              </span>
+            </label>
+          )}
+          {skipUnlock
+            ? <SkipCard brand={brand} />
+            : <BrandInstructions info={info} />
+          }
           {!info.autoConfirm && (
             <label className={"ff-ack alone" + (confirmed ? " on" : "")}>
               <span className="ff-check" onClick={() => setConfirmed(c => !c)}>{confirmed ? "✓" : ""}</span>

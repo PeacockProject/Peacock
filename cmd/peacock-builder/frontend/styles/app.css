@@ -647,6 +647,32 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 .ff-brand-steps li{margin-bottom:9px;}
 .ff-brand-steps li::marker{color:var(--soft);font-family:var(--mono);font-size:12px;}
 
+/* "Already unlocked" skip toggle. Lives above the BrandInstructions / SkipCard;
+ * clicking it swaps the instructions for the green confirmation card below. */
+.ff-skip-toggle{display:flex;align-items:flex-start;gap:12px;padding:13px 16px;margin-bottom:14px;
+  background:var(--panel);border:1px solid var(--line);border-radius:11px;cursor:pointer;
+  transition:border-color .14s ease,background .14s ease,box-shadow .14s ease;}
+.ff-skip-toggle:hover{border-color:var(--soft);background:#fff;}
+.ff-skip-toggle.on{border-color:var(--green);background:#fff;box-shadow:0 0 0 1px var(--green);}
+.ff-skip-toggle .ff-check{width:20px;height:20px;border-radius:5px;border:1.6px solid var(--line2);flex:0 0 20px;display:grid;place-items:center;
+  font-size:13px;color:#fff;background:#fff;transition:.13s;margin-top:1px;}
+.ff-skip-toggle.on .ff-check{background:var(--green);border-color:var(--green);}
+.ff-skip-toggle-text{display:flex;flex-direction:column;gap:2px;}
+.ff-skip-toggle-text b{font-size:14px;font-weight:600;color:var(--ink);letter-spacing:-.002em;}
+.ff-skip-toggle-text small{font-size:12.5px;color:var(--soft);line-height:1.45;}
+
+/* Green confirmation card shown when the user opts to skip the unlock guide. */
+.ff-skip-card{display:flex;align-items:flex-start;gap:14px;padding:18px 20px;
+  background:#fff;border:1px solid var(--green);border-left:3px solid var(--green);
+  border-radius:0 14px 14px 0;box-shadow:0 8px 22px -18px rgba(31,138,91,.5);
+  animation:popin .26s cubic-bezier(.3,1.4,.5,1) both;}
+.ff-skip-icon{width:32px;height:32px;border-radius:50%;background:var(--green);color:#fff;
+  display:grid;place-items:center;font-size:16px;flex:0 0 32px;
+  box-shadow:0 0 0 4px rgba(31,138,91,.16);}
+.ff-skip-h{font-family:var(--serif);font-size:20px;line-height:1.15;color:var(--ink);margin-bottom:4px;letter-spacing:-.003em;}
+.ff-skip-p{font-size:13.5px;color:var(--ink2);margin:0;line-height:1.55;}
+.ff-skip-p b{color:var(--ink);font-weight:600;}
+
 .ff-ack.alone{margin-top:22px;background:#fff;}
 
 /* ===== F3: connect device ===== */
