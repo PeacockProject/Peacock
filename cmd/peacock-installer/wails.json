@@ -1,0 +1,19 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "peacock-installer",
+  "outputfilename": "peacock-installer",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "wailsjsdir": "./frontend/src",
+  "author": {
+    "name": "PeacockProject"
+  },
+  "info": {
+    "productName": "PeacockInstaller",
+    "productVersion": "0.1.0",
+    "copyright": "Copyright PeacockProject",
+    "comments": "Live-ISO installer GUI for PeacockOS"
+  }
+}
