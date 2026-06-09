@@ -1,75 +1,164 @@
-/* Run.jsx — shared live-progress screen + log scripts + done screens
+/* Run.jsx — shared live-progress screen + done screens.
  *
- * Phase 1: simulated buildScript / installScript so the UI runs standalone
- * via `npm run dev` with no backend. Phase 4 will replace these with
- * subscriptions to window.runtime.EventsOn("build:log", ...) once the
- * Wails app starts emitting real runner output. */
+ * Phase 4 (in-process pipeline call): when the Wails runtime is
+ * present, the Run screen subscribes to real backend events:
+ *
+ *   "build:log"   → append a log chunk to the scroll buffer
+ *   "build:phase" → update the phase pill / progress bar
+ *   "build:done"  → image path payload, terminal-success state
+ *   "build:error" → error string payload, terminal-failure state
+ *
+ *   (the installer side uses the same shapes with an "install:" prefix
+ *    — peacock-installer's install_runner.go already emits them.)
+ *
+ * Dev-mode fallback: when window.go is null (pure `npm run dev` outside
+ * Wails — the Cloudflare Workers preview friends are using) we serve
+ * the simulated buildScript / installScript from ./devMock.js so the
+ * wizard still demos end-to-end. The simulated arrays are intentionally
+ * not bundled into the Wails production build path; they're imported
+ * inside the dev-only branch and tree-shaken when unused.
+ *
+ * Compatibility: BUILD_PHASES / INSTALL_PHASES / buildScript /
+ * installScript are re-exported here so other files (FlashFlow.jsx,
+ * InstallFlow.jsx) that import them from "./Run.jsx" keep working
+ * unchanged. They're now sourced from ./devMock.js. */
+
 import React from "react";
 import { PK, Btn, FULL } from "./shared.jsx";
+import {
+  BUILD_PHASES,
+  INSTALL_PHASES,
+  buildScript,
+  installScript,
+  hasWails,
+} from "./devMock.jsx";
 
-const L = (t, prog, node) => ({ t, prog, node });
+export { BUILD_PHASES, INSTALL_PHASES, buildScript, installScript };
 
-export const BUILD_PHASES = [
-  { at: 0, label: "Resolving deps" }, { at: 18, label: "Building kernel" },
-  { at: 34, label: "Building busybox" }, { at: 48, label: "Initramfs" },
-  { at: 60, label: "Rootfs" }, { at: 80, label: "Configuring" }, { at: 92, label: "Disk image" },
-];
+/* useWailsScript — subscribe to a "<prefix>:log" / "<prefix>:phase" /
+ * "<prefix>:done" / "<prefix>:error" event stream and yield the same
+ * { lines, prog, phase, done, error } shape RunScreen consumes when
+ * driving the simulated path.
+ *
+ * eventPrefix is "build" or "install". When hasWails() is false this
+ * hook returns null so callers can fall back to the script-driven
+ * timer in RunScreen. */
+function useWailsScript(eventPrefix, phases) {
+  const [lines, setLines] = React.useState([]);
+  const [prog, setProg] = React.useState(0);
+  const [phase, setPhase] = React.useState(phases[0].label);
+  const [done, setDone] = React.useState(false);
+  const [errorMsg, setErrorMsg] = React.useState(null);
 
-export function buildScript(dev, desktop) {
-  return [
-    L("12:04:18", 6, <span>Resolving dependencies…</span>),
-    L("12:04:20", 12, <span>→ <span className="b">6</span> local ports · <span className="b">142</span> remote packages</span>),
-    L("12:04:26", 20, <span>building <span className="b">linux-{dev.code}</span> 3.4.0…</span>),
-    L("12:05:02", 30, <span><span className="g">✓</span> zImage <span className="y">(4.2 MB)</span></span>),
-    L("12:05:03", 34, <span><span className="g">✓</span> modules.tar.gz</span>),
-    L("12:05:10", 40, <span>building <span className="b">busybox</span> 1.36.1…</span>),
-    L("12:05:24", 46, <span><span className="g">✓</span> busybox</span>),
-    L("12:05:25", 50, <span>peacock-mkinitfs build --device {dev.code}</span>),
-    L("12:05:40", 56, <span><span className="g">✓</span> initramfs.cpio.gz</span>),
-    L("12:05:42", 60, <span>setting up image build chroot…</span>),
-    L("12:06:01", 66, <span>installing packages to rootfs…</span>),
-    L("12:06:03", 72, <span>&nbsp;&nbsp;→ {desktop === "none" ? "base" : desktop} mesa <span className="b">+142</span></span>),
-    L("12:06:30", 80, <span>enabling services · staging extlinux…</span>),
-    L("12:06:45", 88, <span>creating disk image (1920 MB)…</span>),
-    L("12:06:58", 96, <span>mkfs.ext4 · <span className="b">ROOT</span></span>),
-    L("12:07:05", 100, <span><span className="g">✓</span> build complete</span>),
-  ];
-}
-
-export const INSTALL_PHASES = [
-  { at: 0, label: "Partitioning" }, { at: 20, label: "Formatting" },
-  { at: 34, label: "Copying system" }, { at: 78, label: "Bootloader" }, { at: 92, label: "Finishing" },
-];
-
-export function installScript(disk, user) {
-  return [
-    L("·", 5, <span>Creating partition table on <span className="b">{disk.node}</span>…</span>),
-    L("·", 12, <span><span className="g">✓</span> {disk.node}1 boot · {disk.node}2 root</span>),
-    L("·", 20, <span>mkfs.ext4 -L ROOT {disk.node}2…</span>),
-    L("·", 30, <span><span className="g">✓</span> filesystems ready</span>),
-    L("·", 36, <span>Copying PeacockOS to target…</span>),
-    L("·", 52, <span>&nbsp;&nbsp;unpacking rootfs · 41,206 files</span>),
-    L("·", 68, <span>&nbsp;&nbsp;<span className="y">rsync</span> /usr /etc /var · 1.7 GB</span>),
-    L("·", 76, <span><span className="g">✓</span> system copied</span>),
-    L("·", 80, <span>Creating user <span className="b">{user || "peacock"}</span> · setting hostname</span>),
-    L("·", 86, <span>Installing bootloader (extlinux)…</span>),
-    L("·", 92, <span>Generating initramfs · fstab…</span>),
-    L("·", 100, <span><span className="g">✓</span> installation complete</span>),
-  ];
-}
-
-export function RunScreen({ script, title, meta, phases, onDone }) {
-  const [n, setN] = React.useState(0);
-  const prog = n > 0 ? script[n - 1].prog : 0;
   React.useEffect(() => {
+    if (!hasWails() || !window.runtime || typeof window.runtime.EventsOn !== "function") return;
+
+    const unsubs = [];
+    const subscribe = (name, cb) => {
+      const off = window.runtime.EventsOn(name, cb);
+      if (typeof off === "function") unsubs.push(off);
+    };
+
+    let nextT = "·";
+    const stamp = () => {
+      const d = new Date();
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mm = String(d.getMinutes()).padStart(2, "0");
+      const ss = String(d.getSeconds()).padStart(2, "0");
+      return `${hh}:${mm}:${ss}`;
+    };
+
+    subscribe(`${eventPrefix}:log`, (chunk) => {
+      // The pipeline writes chunks separated by newlines; split so the
+      // log scroll buffer doesn't render multi-line strings as one row.
+      const text = typeof chunk === "string" ? chunk : String(chunk);
+      const split = text.split("\n").filter(s => s.length > 0);
+      if (split.length === 0) return;
+      setLines(prev => {
+        const t = stamp();
+        const next = prev.slice();
+        for (const ln of split) {
+          next.push({ t, prog: prog, node: <span>{ln}</span> });
+        }
+        return next;
+      });
+    });
+
+    subscribe(`${eventPrefix}:phase`, (payload) => {
+      // peacock-installer emits a structured Progress object; the
+      // build side currently only ticks log lines but will gain a
+      // phase emitter alongside this skill. Defensive parsing handles
+      // both shapes.
+      let p = payload;
+      if (typeof payload === "string") {
+        try { p = JSON.parse(payload); } catch (_e) { p = { phase: payload }; }
+      }
+      if (p && typeof p === "object") {
+        if (typeof p.percent === "number") setProg(p.percent);
+        if (typeof p.phase === "string") setPhase(p.phase);
+      }
+    });
+
+    subscribe(`${eventPrefix}:done`, () => {
+      setDone(true);
+      setProg(100);
+    });
+
+    subscribe(`${eventPrefix}:error`, (payload) => {
+      const msg = typeof payload === "string" ? payload : "build failed";
+      setErrorMsg(msg);
+      setDone(true);
+    });
+
+    return () => {
+      for (const off of unsubs) {
+        try { off(); } catch (_e) { /* noop */ }
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventPrefix]);
+
+  if (!hasWails()) return null;
+  return { lines, prog, phase, done, errorMsg };
+}
+
+/* RunScreen — the shared progress-bar + scroll-buffer view. When
+ * driven by a real backend (Wails present), subscribes to the
+ * eventPrefix-keyed stream. When in dev-mode (no Wails), falls back to
+ * the script-driven simulated path the maintainer's preview deploy
+ * still needs.
+ *
+ * Backward-compatible: existing callers that pass `script` + `phases`
+ * keep working — they're treated as the dev-mode source of truth and
+ * the live path is opt-in via the `eventPrefix` prop. */
+export function RunScreen({ script, title, meta, phases, onDone, eventPrefix }) {
+  const live = useWailsScript(eventPrefix || "build", phases);
+
+  const [n, setN] = React.useState(0);
+  const simProg = n > 0 ? script[n - 1].prog : 0;
+  React.useEffect(() => {
+    if (live) return; // Wails events drive progress, no timer needed.
     if (n >= script.length) { const t = setTimeout(onDone, 900); return () => clearTimeout(t); }
     const t = setTimeout(() => setN(n + 1), n === 0 ? 300 : 300 + Math.random() * 240);
     return () => clearTimeout(t);
-  }, [n]);
-  const phase = phases.reduce((a, p) => (prog >= p.at ? p.label : a), phases[0].label);
-  const lines = script.slice(0, n);
+  }, [n, live]);
+
+  // Fire onDone once for the live path when the backend emits :done.
+  React.useEffect(() => {
+    if (!live || !live.done) return;
+    const t = setTimeout(onDone, 600);
+    return () => clearTimeout(t);
+  }, [live && live.done]);
+
+  const prog = live ? live.prog : simProg;
+  const phase = live
+    ? live.phase
+    : phases.reduce((a, p) => (prog >= p.at ? p.label : a), phases[0].label);
+  const lines = live ? live.lines : script.slice(0, n);
   const recent = lines.slice(-5);
   const [showLog, setShowLog] = React.useState(false);
+  const stillRunning = live ? !live.done : n < script.length;
+
   return (
     <div className="rprog">
       <div className="rpl">
@@ -84,6 +173,11 @@ export function RunScreen({ script, title, meta, phases, onDone }) {
           const done = prog > p.at && phase !== p.label || prog >= 100;
           return <span key={i} className={"stp" + (done ? " done" : cur ? " cur" : "")}><span className="d" />{p.label}</span>;
         })}</div>
+        {live && live.errorMsg && (
+          <div className="rerror" style={{ color: "#C2553B", fontSize: 12, marginTop: 8 }}>
+            error · {live.errorMsg}
+          </div>
+        )}
         <button className="loglink" onClick={() => setShowLog(s => !s)}>
           {showLog ? "Hide full log ‹" : "Show full log ›"}
         </button>
@@ -95,7 +189,7 @@ export function RunScreen({ script, title, meta, phases, onDone }) {
             <div className="topfade" />
             <div className="logwrap">
               {lines.map((l, i) => <div key={i} className="ln"><span className="t">{l.t} </span>{l.node}</div>)}
-              {n < script.length && <div className="ln"><span className="cur">▍</span></div>}
+              {stillRunning && <div className="ln"><span className="cur">▍</span></div>}
             </div>
           </React.Fragment>
         ) : (

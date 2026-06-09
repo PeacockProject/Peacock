@@ -231,6 +231,7 @@ function LiveOverlay({ dev, desktop, onBack }) {
         title="Building your image…"
         meta={meta}
         phases={BUILD_PHASES}
+        eventPrefix="build"
         onDone={onBack}
       />
     </div>
