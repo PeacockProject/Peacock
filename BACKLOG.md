@@ -59,6 +59,43 @@ file; leaving them here so it's clear what's underway vs. what's still untouched
 
 ## Untouched
 
+### PeacockBuilder Wails app (phase 5+ follow-ups)
+
+Phases 0–4 + bindings landed (`8409ffc`..`0df0cfe`). 9.8 MB Wails binary builds
+on Linux; frontend is the adapted React mock at
+`cmd/peacock-builder/frontend/`. Open items:
+
+- [ ] **In-process pipeline call.** The locked plan-decision was "in-process";
+      Phase 3's `StartBuild` ships as a **subprocess exec** of `peacock build`
+      instead, because `RunBuildPipeline` lives in `cmd/peacock` `package main`
+      and Go forbids importing main packages. To honour the original intent,
+      lift `RunBuildPipeline` + the 5 phase functions + their local types
+      (`buildSetup`, `packageOrchestrationResult`, `buildCleanup`, etc.) into a
+      non-main package like `internal/pipeline/` or `pkg/buildpipeline/`.
+      The DTO + Wails event shape (`build:log`, `build:error`, `build:done`)
+      stays stable so the swap is body-only inside `build_runner.go`.
+- [ ] **Phase 5 sudo handling.** `cmd/peacock-builder/sudo.go` — check
+      `sudo -n true` at startup; on Linux fall back to `pkexec sudo -v`,
+      macOS to `osascript` admin prompt, Windows to a UAC manifest. Today
+      the GUI launches and any sudo-needing step in the subprocess'd build
+      will hang waiting for terminal input.
+- [ ] **Phase 6 distribution targets.** `cmd/peacock-builder/Makefile`
+      wrapping `wails build -platform linux/amd64` → AppImage via
+      `appimagetool`, `darwin/universal` → `.dmg` via `create-dmg`,
+      `windows/amd64` → standalone `.exe`. Verify each on a clean platform
+      VM. CI matrix (see "CI / automation" below).
+- [ ] **Phase 7+ peacock-installer.** Calamares-style installer for the
+      live ISO. Greenfield `internal/installer/` (~500–800 LOC):
+      target disk detect, partition, format, rsync from `/run/live`,
+      bootloader install via grub-install or extlinux, user creation on
+      target system, reboot. Bundles into peacockos live ISO via the live
+      rootfs hook.
+- [ ] **Frontend simulated scripts.** `Run.jsx` still ships the mock
+      `buildScript` / `installScript` simulations. Phase 4 wired the real
+      `window.runtime.EventsOn("build:log", …)` subscriptions but the
+      simulated lines are still in the file as fallback for dev mode.
+      Strip them once the in-process path is live.
+
 ### CI / automation
 
 - [ ] GitHub Actions on every repo. Minimum job set per repo:
