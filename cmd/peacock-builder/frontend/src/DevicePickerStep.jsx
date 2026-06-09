@@ -21,9 +21,11 @@
  * passed in as the `supportMap` prop (defaults to {}). */
 import React from "react";
 import { Head, Btn } from "./shared.jsx";
+import { brandOf, brandSlug } from "./devices.js";
 
-/* Brand inference from codename. Order of BRAND_ORDER below also drives
- * the section render order — most-tested brands first. */
+/* Brand inference from codename lives in devices.js (brandOf /
+ * brandSlug). Order of BRAND_ORDER below drives the section render
+ * order — most-tested brands first. */
 const BRAND_ORDER = ["OPPO", "Xiaomi", "Samsung", "Pine64", "Fairphone", "PC / virtual", "Other"];
 
 /* Five status buckets. Each maps to a colored pill on the device card
@@ -41,18 +43,13 @@ function statusOf(dev) {
   const s = (dev.status || dev.tag || "").toLowerCase();
   return STATUS_META[s] ? s : "experimental";
 }
-function brandOf(dev) {
-  const c = (dev.code || dev.id || "").toLowerCase();
-  if (c.startsWith("samsung-")) return "Samsung";
-  if (c.startsWith("xiaomi-")) return "Xiaomi";
-  if (c.startsWith("oppo-")) return "OPPO";
-  if (c.startsWith("pine-") || c.startsWith("pine64-")) return "Pine64";
-  if (c.startsWith("fairphone-")) return "Fairphone";
-  if (c.startsWith("generic-x86") || c.startsWith("qemu-")) return "PC / virtual";
-  return "Other";
+/* deviceBrand / deviceBrandSlug — adapt devices.js's string-based
+ * brandOf/brandSlug to the device objects this component works with. */
+function deviceBrand(dev) {
+  return brandOf(dev.code || dev.id);
 }
-function brandSlug(dev) {
-  return brandOf(dev).toLowerCase().replace(/[^a-z0-9]+/g, "-");
+function deviceBrandSlug(dev) {
+  return brandSlug(deviceBrand(dev));
 }
 
 /* The 13 standard features displayed in the per-device "What works"
@@ -128,7 +125,7 @@ function summaryProse(device, support) {
 function fuzzMatch(dev, q) {
   if (!q) return true;
   const hay = [
-    dev.name, dev.code, dev.id, dev.soc, dev.arch, brandOf(dev),
+    dev.name, dev.code, dev.id, dev.soc, dev.arch, deviceBrand(dev),
   ].filter(Boolean).join(" ").toLowerCase();
   return hay.includes(q);
 }
@@ -171,7 +168,7 @@ export default function DevicePickerStep({ devices, dev, onPick, supportMap }) {
   const groups = React.useMemo(() => {
     const m = new Map();
     for (const d of filtered) {
-      const b = brandOf(d);
+      const b = deviceBrand(d);
       if (!m.has(b)) m.set(b, []);
       m.get(b).push(d);
     }
@@ -290,7 +287,7 @@ function DPKBrandSection({ brand, devices, collapsed, onToggle, selectedId, open
 }
 
 function DPKCard({ device, selected, open, support, onOpen }) {
-  const slug = brandSlug(device);
+  const slug = deviceBrandSlug(device);
   const st = statusOf(device);
   const meta = STATUS_META[st];
   const sum = summarize(support);
@@ -357,7 +354,7 @@ function DPKDrawer({ device, support, selected, onClose, onSelect }) {
   const shown = device || last;
   if (!shown) return null;
   const open = !!device;
-  const slug = brandSlug(shown);
+  const slug = deviceBrandSlug(shown);
   const st = statusOf(shown);
   const meta = STATUS_META[st];
   const prose = summaryProse(shown, support);
@@ -384,7 +381,7 @@ function DPKDrawer({ device, support, selected, onClose, onSelect }) {
         </header>
 
         <div className="dpk-drawer-meta">
-          <span><b>{brandOf(shown)}</b></span>
+          <span><b>{deviceBrand(shown)}</b></span>
           <span className="dpk-drawer-sep">·</span>
           <span className="dpk-drawer-mono">{shown.code}</span>
           <span className="dpk-drawer-sep">·</span>

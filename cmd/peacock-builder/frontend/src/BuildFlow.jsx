@@ -8,7 +8,8 @@
  * a sub-step of the flash flow rather than a destination of its own. */
 import React from "react";
 import { AppShell, PK, Btn, Head, SRow, Field, Seg, ModeChip, useMode, FULL, HEAD } from "./shared.jsx";
-import { ListDevices, DEFAULT_DEVICE_SUPPORT } from "./api.js";
+import { ListDevices } from "./api.js";
+import { FALLBACK_DEVICES, DEFAULT_DEVICE_SUPPORT } from "./devices.js";
 import DevicePickerStep from "./DevicePickerStep.jsx";
 import BaseStep from "./BaseStep.jsx";
 import DesktopStep from "./DesktopStep.jsx";
@@ -42,15 +43,6 @@ function buildSupportMap(devices) {
   return out;
 }
 
-const DEVICES_FALLBACK = [
-  { id: "samsung-jflte", name: "Galaxy S4", code: "samsung-jflte", soc: "msm8960", arch: "armv7h", tag: "stable", status: "stable" },
-  { id: "xiaomi-daisy", name: "Redmi 6A", code: "xiaomi-daisy", soc: "msm8953", arch: "aarch64", tag: "stable", status: "stable" },
-  { id: "oppo-a16", name: "Oppo A16", code: "oppo-a16", soc: "mt6765", arch: "aarch64", tag: "testing", status: "testing" },
-  { id: "pine-pp", name: "PinePhone", code: "pine64-pinephone", soc: "a64", arch: "aarch64", tag: "stable", status: "stable" },
-  { id: "fairphone-fp4", name: "Fairphone 4", code: "fairphone-fp4", soc: "sm7225", arch: "aarch64", tag: "testing", status: "testing" },
-  { id: "generic-x86", name: "x86 PC", code: "generic-x86_64", soc: "qemu / uefi", arch: "x86_64", tag: "stable", status: "stable" },
-];
-
 const DESKTOPS = [
   { id: "none", name: "None", m: "console only" },
   { id: "phosh", name: "Phosh", m: "GTK · GNOME mobile" },
@@ -63,7 +55,7 @@ const DMS = ["none", "sddm", "greetd", "lightdm"];
 const BSTEPS = ["Device", "Base", "Desktop", "Packages", "Review", "Build"];
 
 export default function BuildFlow({ onHome, startDevice, appClass }) {
-  const [devices, setDevices] = React.useState(DEVICES_FALLBACK);
+  const [devices, setDevices] = React.useState(FALLBACK_DEVICES);
   React.useEffect(() => {
     let alive = true;
     ListDevices().then(d => {

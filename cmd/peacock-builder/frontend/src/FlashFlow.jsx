@@ -29,30 +29,20 @@
 import React from "react";
 import { AppShell, PK, Btn, FULL, HEAD } from "./shared.jsx";
 import { buildScript, BUILD_PHASES, RunScreen } from "./Run.jsx";
+import { DEVICE_PORTS, brandOf, brandSlug } from "./devices.js";
 
-/* ===== per-device port wiring =====
- *
- * Mirrors peacock-ports/device/. Three independent flags so we can render
- * "skip this phase" for devices that don't have the asset yet.
- *   bootloader: which custom bootloader image is flashed first (or null).
- *   recovery:   PRP recovery ramdisk port (all supported devices have one).
- *   system:     the actual rootfs/system image baked by the build job.
- *
- * For the bootloader: OPPO/MTK uses minkernel (a tiny preloader stub),
- * Snapdragon devices use lk2nd (the community little-kernel fork). x86 and
- * PinePhone have no second-stage bootloader to flash here. Fairphone 4 is
- * listed as "TBD" because the port hasn't landed yet — we mock-skip it. */
-const PORTS = {
-  "oppo-a16":      { brand: "oppo",      bootloader: "minkernel-oppo-a16",   recovery: "prp-oppo-a16",      system: "linux-oppo-a16" },
-  "xiaomi-daisy":  { brand: "xiaomi",    bootloader: "lk2nd-xiaomi-daisy",   recovery: "prp-xiaomi-daisy",  system: "linux-xiaomi-daisy-prp" },
-  "samsung-jflte": { brand: "samsung",   bootloader: "lk2nd-samsung-jflte",  recovery: "prp-samsung-jflte", system: "linux-samsung-jflte" },
-  "pine-pp":       { brand: "pine",      bootloader: null,                   recovery: null,                system: "linux-pinephone" },
-  "fairphone-fp4": { brand: "fairphone", bootloader: null,                   recovery: null,                system: "linux-fairphone-fp4" },
-  "generic-x86":   { brand: "x86",       bootloader: null,                   recovery: null,                system: "linux-generic-x86" },
-};
+/* Per-device port wiring (bootloader / recovery / system images) lives
+ * in devices.js as DEVICE_PORTS, with `brand` derived there via
+ * brandOf(). portsFor() just resolves a device object to its entry,
+ * synthesizing a generic one for devices the table doesn't know. */
 function portsFor(dev) {
-  if (!dev) return PORTS["oppo-a16"];
-  return PORTS[dev.id] || PORTS[dev.code] || { brand: "generic", bootloader: null, recovery: null, system: "linux-" + (dev.code || "device") };
+  if (!dev) return DEVICE_PORTS["oppo-a16"];
+  return DEVICE_PORTS[dev.id] || DEVICE_PORTS[dev.code] || {
+    brand: brandOf(dev.code || dev.id),
+    bootloader: null,
+    recovery: null,
+    system: "linux-" + (dev.code || "device"),
+  };
 }
 
 /* ===== background build job (F0 kick-off, persistent banner, F3 gate) =====
@@ -283,7 +273,7 @@ const UNLOCK_BRANDS = {
       "Plug the phone into your computer with a USB cable. On first boot to Download Mode after enabling OEM unlocking, the phone itself shows a prompt — confirm OEM unlock there with Volume Up.",
     ],
   },
-  pine: {
+  pine64: {
     title: "PinePhone — nothing to do",
     blurb: "Good news — PinePhone ships unlocked from the factory. There's no bootloader to fight.",
     steps: [
@@ -303,7 +293,7 @@ const UNLOCK_BRANDS = {
       "Plug the phone in via USB. On your computer, run: fastboot oem unlock <the-code-they-sent-you>",
     ],
   },
-  x86: {
+  "pc-virtual": {
     title: "x86 PC — nothing to unlock",
     blurb: "A regular PC has no locked bootloader. Just make sure your BIOS lets you boot from USB.",
     steps: [
@@ -352,7 +342,9 @@ function BrandInstructions({ info }) {
 
 function StepUnlock({ dev, build, onCancel, onBack, onNext }) {
   const ports = portsFor(dev);
-  const brand = ports.brand;
+  /* ports.brand is the display brand ("OPPO", "Pine64", "PC / virtual");
+   * UNLOCK_BRANDS is keyed by its slug form. */
+  const brand = brandSlug(ports.brand);
   const info = UNLOCK_BRANDS[brand] || UNLOCK_BRANDS.oppo;
   /* PinePhone + x86 default-confirm since there's nothing for the user to actually do. */
   const [confirmed, setConfirmed] = React.useState(!!info.autoConfirm);
