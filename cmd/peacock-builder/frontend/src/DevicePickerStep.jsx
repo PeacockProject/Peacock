@@ -15,6 +15,22 @@ import { Head } from "./shared.jsx";
 /* Brand inference from codename. Order of BRAND_ORDER below also drives
  * the section render order — most-tested brands first. */
 const BRAND_ORDER = ["OPPO", "Xiaomi", "Samsung", "Pine64", "Fairphone", "PC / virtual", "Other"];
+
+/* Five status buckets. Each maps to a colored pill on the device card
+ * and an explanatory tooltip. Real backend will populate `status` per
+ * device from peacock-ports in a future round — for now the stub data
+ * in api.js hand-codes them. */
+const STATUS_META = {
+  stable:       { label: "Stable",       hint: "Daily-driveable. All major features work." },
+  testing:      { label: "Testing",      hint: "Mostly works. Some rough edges. Safe to try." },
+  experimental: { label: "Experimental", hint: "Basic boot works. Many features missing or unstable." },
+  partial:      { label: "Partial",      hint: "Only some features work. Don't use as daily phone." },
+  unsupported:  { label: "Unsupported",  hint: "Port abandoned or never finished. Listed for reference." },
+};
+function statusOf(dev) {
+  const s = (dev.status || dev.tag || "").toLowerCase();
+  return STATUS_META[s] ? s : "experimental";
+}
 function brandOf(dev) {
   const c = (dev.code || dev.id || "").toLowerCase();
   if (c.startsWith("samsung-")) return "Samsung";
@@ -166,13 +182,15 @@ function DPKBrandSection({ brand, devices, collapsed, onToggle, selectedId, onPi
 
 function DPKCard({ device, selected, onPick }) {
   const brandSlug = brandOf(device).toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const st = statusOf(device);
+  const meta = STATUS_META[st];
   return (
     <div className={"dpk-card brand-" + brandSlug + (selected ? " on" : "")}
       onClick={onPick}
       role="button" tabIndex={0}
       onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); onPick(); } }}>
       <div className="dpk-card-accent" aria-hidden="true" />
-      <div className="dpk-tag">{device.tag || "—"}</div>
+      <div className={"dpk-pill dpk-stat-" + st} title={meta.hint}>{meta.label}</div>
       <div className="dpk-card-name">{device.name}</div>
       <div className="dpk-card-code">{device.code}</div>
       <div className="dpk-card-soc">{device.soc} · {device.arch}</div>

@@ -19,13 +19,24 @@
 const HAS_WAILS_RT = typeof window !== "undefined"
   && window.go && window.go.main && window.go.main.App;
 
+// Each device carries an explicit `status` that drives the colored pill
+// and tooltip copy on the DevicePickerStep card. Five buckets:
+//
+//   stable        — green   — Daily-driveable. All major features work.
+//   testing       — amber   — Mostly works. Some rough edges. Safe to try.
+//   experimental  — orange  — Basic boot works. Many features missing or unstable.
+//   partial       — yellow  — Only some features work. Don't use as daily phone.
+//   unsupported   — grey    — Port abandoned or never finished. Listed for reference.
+//
+// `tag` is preserved for backward compat with anything still consuming
+// the legacy stable/testing two-bucket field.
 const DEFAULT_DEVICES = [
-  { id: "samsung-jflte", name: "Galaxy S4", code: "samsung-jflte", soc: "msm8960", arch: "armv7h", tag: "stable" },
-  { id: "xiaomi-daisy", name: "Xiaomi Mi A2 Lite", code: "xiaomi-daisy", soc: "msm8953", arch: "aarch64", tag: "stable" },
-  { id: "oppo-a16", name: "OPPO A16", code: "oppo-a16", soc: "mt6765", arch: "aarch64", tag: "testing" },
-  { id: "pine-pp", name: "PinePhone", code: "pine64-pinephone", soc: "a64", arch: "aarch64", tag: "stable" },
-  { id: "fairphone-fp4", name: "Fairphone 4", code: "fairphone-fp4", soc: "sm7225", arch: "aarch64", tag: "testing" },
-  { id: "generic-x86", name: "x86 PC", code: "generic-x86_64", soc: "qemu / uefi", arch: "x86_64", tag: "stable" },
+  { id: "samsung-jflte", name: "Galaxy S4", code: "samsung-jflte", soc: "msm8960", arch: "armv7h", tag: "stable", status: "stable" },
+  { id: "xiaomi-daisy", name: "Xiaomi Mi A2 Lite", code: "xiaomi-daisy", soc: "msm8953", arch: "aarch64", tag: "stable", status: "stable" },
+  { id: "oppo-a16", name: "OPPO A16", code: "oppo-a16", soc: "mt6765", arch: "aarch64", tag: "testing", status: "testing" },
+  { id: "pine-pp", name: "PinePhone", code: "pine64-pinephone", soc: "a64", arch: "aarch64", tag: "stable", status: "stable" },
+  { id: "fairphone-fp4", name: "Fairphone 4", code: "fairphone-fp4", soc: "sm7225", arch: "aarch64", tag: "testing", status: "testing" },
+  { id: "generic-x86", name: "x86 PC", code: "generic-x86_64", soc: "qemu / uefi", arch: "x86_64", tag: "stable", status: "stable" },
 ];
 
 // _appPromise lazily resolves to the generated wailsjs module if it

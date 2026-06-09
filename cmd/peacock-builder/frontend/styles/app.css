@@ -721,7 +721,15 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 .dpk-card.brand-pc-virtual{--dpk-acc:#7C7782;}
 .dpk-card.brand-other{--dpk-acc:#A6A2AC;}
 
-/* Status pill (top-right). Color set by .dpk-stat-<status>. */
-.dpk-tag{position:absolute;top:14px;right:13px;font-family:var(--mono);font-size:9px;letter-spacing:.06em;
-  text-transform:uppercase;color:var(--soft);border:1px solid var(--line2);border-radius:5px;padding:2px 6px;background:#fff;}
+/* Status pill (top-right). Color set by .dpk-stat-<status>. The legacy
+ * .dpk-tag class is kept as a fallback for any caller still passing
+ * .tag instead of .status — same shape. */
+.dpk-tag,.dpk-pill{position:absolute;top:14px;right:13px;font-family:var(--mono);font-size:9px;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--soft);border:1px solid var(--line2);border-radius:5px;padding:2px 6px;background:#fff;
+  cursor:default;line-height:1.2;}
+.dpk-stat-stable      {color:#0e5e3c;border-color:#a9d8c0;background:#e8f5ee;}
+.dpk-stat-testing     {color:#7a5a14;border-color:#e2cf9a;background:#fbf4df;}
+.dpk-stat-experimental{color:#9a4b1e;border-color:#e5b793;background:#fbeadc;}
+.dpk-stat-partial     {color:#7d6512;border-color:#e3d28b;background:#faf2d4;}
+.dpk-stat-unsupported {color:#5a575f;border-color:var(--line2);background:#ececea;}
 

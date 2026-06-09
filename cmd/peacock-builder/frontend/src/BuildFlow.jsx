@@ -17,12 +17,12 @@ import ReviewStep from "./ReviewStep.jsx";
 import FlashFlow from "./FlashFlow.jsx";
 
 const DEVICES_FALLBACK = [
-  { id: "samsung-jflte", name: "Galaxy S4", code: "samsung-jflte", soc: "msm8960", arch: "armv7h", tag: "stable" },
-  { id: "xiaomi-daisy", name: "Redmi 6A", code: "xiaomi-daisy", soc: "msm8953", arch: "aarch64", tag: "stable" },
-  { id: "oppo-a16", name: "Oppo A16", code: "oppo-a16", soc: "mt6765", arch: "aarch64", tag: "testing" },
-  { id: "pine-pp", name: "PinePhone", code: "pine64-pinephone", soc: "a64", arch: "aarch64", tag: "stable" },
-  { id: "fairphone-fp4", name: "Fairphone 4", code: "fairphone-fp4", soc: "sm7225", arch: "aarch64", tag: "testing" },
-  { id: "generic-x86", name: "x86 PC", code: "generic-x86_64", soc: "qemu / uefi", arch: "x86_64", tag: "stable" },
+  { id: "samsung-jflte", name: "Galaxy S4", code: "samsung-jflte", soc: "msm8960", arch: "armv7h", tag: "stable", status: "stable" },
+  { id: "xiaomi-daisy", name: "Redmi 6A", code: "xiaomi-daisy", soc: "msm8953", arch: "aarch64", tag: "stable", status: "stable" },
+  { id: "oppo-a16", name: "Oppo A16", code: "oppo-a16", soc: "mt6765", arch: "aarch64", tag: "testing", status: "testing" },
+  { id: "pine-pp", name: "PinePhone", code: "pine64-pinephone", soc: "a64", arch: "aarch64", tag: "stable", status: "stable" },
+  { id: "fairphone-fp4", name: "Fairphone 4", code: "fairphone-fp4", soc: "sm7225", arch: "aarch64", tag: "testing", status: "testing" },
+  { id: "generic-x86", name: "x86 PC", code: "generic-x86_64", soc: "qemu / uefi", arch: "x86_64", tag: "stable", status: "stable" },
 ];
 
 const DESKTOPS = [
