@@ -8,7 +8,41 @@ checklist) and `~/.claude/plans/linked-honking-treehouse.md` (meta-distro plan).
 These are the items we agreed to tackle and are landing as commits alongside this
 file; leaving them here so it's clear what's underway vs. what's still untouched.
 
-- [/] `peacock doctor` subcommand + pmbootstrap-style chroot-per-target build strategy.
+- [x] `peacock doctor` subcommand: human + `--json` output, filters by
+      `--flavor`, `--device`, `--use-host-chroot`. Probe table lives in
+      `internal/host/probe.go`; doctor renders results. Exits non-zero on
+      any missing/broken so CI can gate. Follow-ups:
+  - [ ] Expand device-family probe coverage beyond `oppo-a16`/`samsung-jflte`/
+        `xiaomi-daisy` as new ports land.
+  - [ ] Per-flavor `pacman-key`/`apt-key`/`apk-tools` keyring checks (today
+        we only check tool presence, not whether the keyrings can verify).
+- [/] pmbootstrap-style chroot-per-target build strategy (`peacock build
+      --use-host-chroot <flavor>` / `PEACOCK_HOST_CHROOT=<flavor>`). v0
+      scaffolding committed:
+  - CLI flag wired through `cmd/peacock/host_chroot.go` (no conflicts with
+    the in-flight `cmd/peacock/build.go` split — flag registration lives
+    in its own file).
+  - `internal/host/chroot.go` declares the on-disk layout
+    (`~/.local/var/peacock/host-chroots/<flavor>/`), supported-flavor
+    list, and bootstrap-tarball URL constants.
+  - `internal/host.EnsureHostChroot` is idempotent for an already-present
+    rootfs and returns a "not yet implemented" error otherwise.
+  - `peacock doctor --use-host-chroot <flavor>` collapses the probe set
+    to chroot/tar/curl + the host-chroot rootdir.
+
+  Follow-ups (deferred — not started in this round):
+  - [ ] `EnsureHostChroot` actual download path: arch needs the `latest`
+        index parsed to pick the dated tarball; debian + alpine URLs are
+        deterministic.
+  - [ ] First-time toolchain install inside the freshly extracted chroot
+        (pacstrap/debootstrap-second-stage/apk add build-base).
+  - [ ] Routing existing `runner.RunCmd` calls through the chroot. Cleanest
+        shape is a `runner.SetExecPrefix(prefix []string)` knob, but the
+        sibling agent splitting `cmd/peacock/build.go` may collide there;
+        defer until that split lands.
+  - [ ] Bind-mount management for `/dev`, `/proc`, `/sys`, the local
+        peacock-ports tree, and the workdir cache.
+  - [ ] Per-flavor tarball checksum verification (signed where available).
 - [/] Split `cmd/peacock/build.go` (~1.9k LOC) and `internal/builder/chroot_build.go`
       (~828 LOC) by build phase.
 - [/] `peacock build --bisect <port>` + table tests for `manifest.ResolvedLayout`,
