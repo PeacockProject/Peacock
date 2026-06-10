@@ -20,6 +20,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"peacock/internal/ports"
 )
 
 // Status is the outcome of a single probe.
@@ -380,6 +382,17 @@ func hostChrootRootRunner(flavor string) func(*Probe) (string, string, Status) {
 	}
 }
 
+// portsPresentRunner reports whether a peacock-ports checkout already
+// resolves on this host. Read-only: it stats candidate dirs via
+// ports.Resolve and never clones (doctor must not fetch). Path returned
+// is the resolved tree when found.
+func portsPresentRunner(_ *Probe) (string, string, Status) {
+	if root, ok := ports.Resolve(); ok {
+		return root, "", StatusOK
+	}
+	return "", "", StatusMissing
+}
+
 // --- the table -----------------------------------------------------------
 
 var probeTable = []Probe{
@@ -483,6 +496,14 @@ var probeTable = []Probe{
 		Why:         "library detection in ports' configure scripts",
 		InstallHint: "arch: pacman -S pkgconf | debian: apt install pkg-config | alpine: apk add pkgconf",
 		run:         lookPathFor("pkg-config"),
+	},
+	{
+		Group:       GroupCoreBuild,
+		Name:        "peacock-ports",
+		Why:         "device + base port manifests the build reads",
+		InstallHint: "run `peacock build` to fetch automatically, or set PEACOCK_PORTS_DIR",
+		run:         portsPresentRunner,
+		HostOnly:    true,
 	},
 
 	// cross-arch
