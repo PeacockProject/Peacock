@@ -62,17 +62,44 @@ Both kinds install into the same build chroot for a given mode (host-arch
 chroot for cross, target-arch chroot for qemu/native), so composition is
 trivial — no split install path.
 
-## Data: one file, triple-keyed
+## Principle: lean on the distro's own packages
 
-The target **triple** is the canonical key (as in Yocto/Buildroot/Debian
-multiarch). A single `peacock-ports/toolchains.toml`:
+Where a distro blesses a meta-package or group for a capability, **use
+it** rather than hand-enumerating its members. Distros already solved
+"what's the toolchain for arch X"; depending on their package means the
+distro maintains its contents and we never drift.
+
+| distro | native C toolchain | cross C toolchain (aarch64) |
+|---|---|---|
+| Debian/Ubuntu | `build-essential` (meta) | `crossbuild-essential-arm64` (meta) |
+| Arch | `base-devel` (group) | *no meta* → enumerate `aarch64-linux-gnu-gcc aarch64-linux-gnu-binutils` |
+| Alpine | `build-base` (meta) | none official → `unsupported` |
+| Fedora (future) | `@development-tools` | `gcc-aarch64-linux-gnu` |
+
+Rule: **prefer the distro's meta/group; enumerate individual packages
+only as a fallback** where the distro has none (Arch cross). This trims
+what we own to "the distro's blessed package name" plus the arch-naming
+tables below.
+
+## Data: one file, triple- and distro-arch-keyed
+
+The GNU **triple** is the canonical key for `CROSS_COMPILE` and for
+distros whose package names are triple-based (Arch). But distro
+meta-packages use the **distro's own arch name** (`arm64`, `armhf`), not
+the triple — so we also carry a per-distro arch table. A single
+`peacock-ports/toolchains.toml`:
 
 ```toml
-# Single source of arch → GNU triple truth.
+# GNU triple → CROSS_COMPILE + triple-based package names (Arch, Fedora).
 [triples]
 aarch64 = "aarch64-linux-gnu"
 armv7h  = "arm-linux-gnueabihf"
 x86_64  = "x86_64-pc-linux-gnu"
+
+# Debian/Ubuntu arch tags → their meta-packages (crossbuild-essential-*).
+[debarch]
+aarch64 = "arm64"
+armv7h  = "armhf"
 
 # C/C++ toolchain capability.
 [c-toolchain.native]      # qemu / native: native toolchain in the TARGET chroot
@@ -80,14 +107,20 @@ arch   = ["base-devel"]
 debian = ["build-essential"]
 alpine = ["build-base"]
 
-[c-toolchain.cross]       # cross: {triple}-templated toolchain in the HOST chroot
-arch   = ["{triple}-gcc", "{triple}-binutils"]
-debian = ["gcc-{triple}", "binutils-{triple}"]
+[c-toolchain.cross]       # cross: distro's blessed package, in the HOST chroot
+arch   = ["{triple}-gcc", "{triple}-binutils"]   # no meta on Arch → enumerate
+debian = ["crossbuild-essential-{debarch}"]      # lean on Debian's meta
 alpine = { unsupported = "Alpine ships no linux-gnu cross toolchain; use use_qemu=true" }
 ```
 
-- New distro → add a key to each block.
-- New arch → one line in `[triples]`.
+Substitution tokens available in any package string: `{triple}`
+(from `[triples]`) and `{debarch}` (from `[debarch]`). An entry uses
+whichever its distro's package naming wants.
+
+- New distro → add a key to each block (+ an arch-name table if its
+  packages aren't triple-based).
+- New arch → one line in `[triples]` (and `[debarch]` if Debian-family
+  support is wanted).
 - New capability → a new `[<name>.native]` / `[<name>.cross]` section
   (e.g. `[rust-toolchain]`, a future `[sysroot]`).
 - The real capability count stays tiny (C, maybe Rust, sysroot), so this
@@ -134,7 +167,11 @@ Algorithm, per capability:
 2. Pick block: `mode==cross` → `[cap.cross][flavor]`; else `[cap.native][flavor]`.
 3. If the block is `{ unsupported = "msg" }` → **error** with msg.
 4. If no block for `flavor` → **error** (`capability %q undefined for flavor %q`).
-5. Substitute `{triple}` in each package string; append to `pkgs`.
+5. Substitute `{triple}` (from `[triples]`) and `{debarch}` (from
+   `[debarch]`) in each package string; append to `pkgs`. A package
+   string that references `{debarch}` for an arch missing from the
+   `[debarch]` table is a **plan-time error** (`no debarch for arch %q`),
+   same fail-fast rule as the triple.
 
 `crossCompile` = `triples[targetArch] + "-"` when `mode==cross` (unless the
 port set `[build].cross_compile` explicitly). Returned so the build step
