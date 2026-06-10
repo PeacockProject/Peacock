@@ -80,12 +80,30 @@ Replace the three hand-rolled paths with `ftr install`:
   `ftr install <pkg>.feather --root <build-chroot>` (or `ftr install
   <name>` against the local `packages/<arch>/` repo). The toolchain/tool
   lands at its real prefix in the chroot; PATH picks it up normally.
-- **PRP**: the PRP build root runs `ftr install linux-<dev>`; the kernel
-  package's `files/` (zImage, zImage-prp, dtbs) land at a known installed
-  path. PRP reads from **where ftr installed it** — no
-  `resolve_kernel_image` cache/build-dir walking.
-- **`resolve_kernel_image`** shrinks to "the installed kernel path", or
-  is retired.
+- **PRP**: the PRP recovery port **build-depends on `linux-<dev>-prp`**;
+  its build root runs `ftr install linux-<dev>-prp --root <buildroot>`,
+  and reads `<buildroot>/boot/zImage`. No `resolve_kernel_image`
+  cache/build-dir walking.
+- **`resolve_kernel_image`** shrinks to "`$BUILDROOT/boot/zImage`", or is
+  retired.
+
+### Two packages from one kernel port (subpackages)
+
+The PRP kernel must **not** ship in the phone's OS rootfs — it's only
+needed to build PRP recovery images. So the single kernel port (shared
+source, two build passes) emits **two `.feather` packages**:
+
+- `linux-<dev>` — full kernel: `files/boot/zImage`, modules, dtbs.
+  Installed into the **OS rootfs**.
+- `linux-<dev>-prp` — the trimmed kernel as `files/boot/zImage` (it *is*
+  the kernel within this package). A **build dependency** of the PRP
+  recovery port only; **never installed on a phone**.
+
+This revives abuild-style *subpackages* (the build-phases spec deferred
+them) — but only here, driven by `prp_kernel_config`: one port, one
+source download/compile, two packaged outputs. `ResolveFlashSet` /
+`build_dep_packages` reference `linux-<dev>-prp`; the rootfs references
+`linux-<dev>`.
 
 ## #2 — delete build dirs after packaging
 
@@ -127,7 +145,9 @@ Each phase is shippable; the order is forced by the dependency chain
 3. Does feather need a `db`-per-root, so installing into a build chroot
    doesn't pollute the host feather DB? (Likely yes — the DB path must
    follow `--root`.)
-4. Kernel package layout: `system` (/usr) puts zImage where? The port
-   stages `zImage`/`zImage-prp` at the package root today — decide their
-   canonical installed path so PRP knows where to look (e.g.
-   `/usr/share/peacock/<dev>/zImage-prp` or `/boot`).
+4. ~~Kernel install path~~ **Resolved:** kernel packages (system layout)
+   install to **`/boot`** — `files/boot/zImage` (+ dtbs, modules under
+   `/usr/lib/modules`). The full kernel ships in the OS rootfs; the PRP
+   kernel is the separate build-dep package `linux-<dev>-prp` whose
+   `files/boot/zImage` PRP reads from `<buildroot>/boot/zImage` after
+   `ftr install`. Phones never install the PRP kernel.
