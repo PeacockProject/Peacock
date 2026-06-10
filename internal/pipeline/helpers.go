@@ -480,8 +480,8 @@ func boolPtr(v bool) *bool {
 // or fetched from a remote pacman repo.
 func LocalPackageManifestPath(name string) (string, bool) {
 	candidates := []string{
-		filepath.Join("peacock-ports", "device", name, "package.toml"),
-		filepath.Join("peacock-ports", "base", name, "package.toml"),
+		filepath.Join(portsRoot, "device", name, "package.toml"),
+		filepath.Join(portsRoot, "base", name, "package.toml"),
 	}
 	for _, c := range candidates {
 		if _, err := os.Stat(c); err == nil {
@@ -544,7 +544,7 @@ func locatePeacockMkinitfs(portBuildDir string) string {
 // to stdout). Callers MUST tolerate "" gracefully — the initramfs builder
 // falls back to host paths when the supplied dir is empty.
 func buildPortForInitramfs(b *builder.Builder, name, targetArch, workDir, useQemuFlag, crossCompileFlag string) string {
-	manifestPath := filepath.Join("peacock-ports", "base", name, "package.toml")
+	manifestPath := filepath.Join(portsRoot, "base", name, "package.toml")
 	pkg, err := manifest.LoadPackage(manifestPath)
 	if err != nil {
 		runner.Logf("Warning: skipping %s for initramfs (manifest load failed): %v\n", name, err)
@@ -631,8 +631,8 @@ func prepareBuildDepPackages(b *builder.Builder, pkg *manifest.Package, chrootRo
 	var extra preparedBuildDeps
 	for _, depPkg := range pkg.Build.BuildDepPackages {
 		candidates := []string{
-			filepath.Join("peacock-ports", "base", depPkg, "package.toml"),
-			filepath.Join("peacock-ports", "device", depPkg, "package.toml"),
+			filepath.Join(portsRoot, "base", depPkg, "package.toml"),
+			filepath.Join(portsRoot, "device", depPkg, "package.toml"),
 		}
 		var found string
 		for _, c := range candidates {

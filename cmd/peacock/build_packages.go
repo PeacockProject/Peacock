@@ -13,6 +13,7 @@ import (
 	"peacock/internal/config"
 	"peacock/internal/manifest"
 	"peacock/internal/pipeline"
+	"peacock/internal/ports"
 	"peacock/internal/runner"
 
 	"github.com/spf13/cobra"
@@ -133,6 +134,15 @@ var buildPackagesCmd = &cobra.Command{
 		defer cancel()
 		runner.SetContext(ctx)
 
+		// Resolve (auto-cloning if absent) the ports tree up front so the
+		// bisect short-circuit and the local-manifest helpers below see
+		// the same root. Primes the pipeline package var the helpers read.
+		portsRoot, err := ports.Ensure()
+		if err != nil {
+			return fmt.Errorf("peacock-ports: %w", err)
+		}
+		pipeline.SetPortsRoot(portsRoot)
+
 		// --bisect short-circuits the normal flow into the interactive
 		// walker. It still expects --device/--arch + --flavor like the
 		// regular build so the chroot bring-up matches what the user
@@ -174,7 +184,7 @@ var buildPackagesCmd = &cobra.Command{
 			if buildPackagesDevice == "" {
 				return fmt.Errorf("specify --device or --arch")
 			}
-			devPath := filepath.Join("peacock-ports", "device", buildPackagesDevice, "device.toml")
+			devPath := filepath.Join(portsRoot, "device", buildPackagesDevice, "device.toml")
 			dev, err := manifest.LoadDevice(devPath)
 			if err != nil {
 				return fmt.Errorf("failed loading device manifest %s: %w", devPath, err)

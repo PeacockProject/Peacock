@@ -9,6 +9,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
+	"peacock/internal/ports"
 	"peacock/internal/runner"
 )
 
@@ -40,7 +41,15 @@ var (
 func flavorAliasesPath(flavor string) string {
 	root := FlavorAliasesRoot
 	if root == "" {
-		root = "peacock-ports"
+		// Read-only path: use the resolved ports tree when one exists,
+		// else fall back to the bare relative dir so callers invoked
+		// outside a build (and tests that don't set FlavorAliasesRoot)
+		// keep their prior behavior.
+		if r, ok := ports.Resolve(); ok {
+			root = r
+		} else {
+			root = "peacock-ports"
+		}
 	}
 	return filepath.Join(root, "flavors", flavor, "aliases.toml")
 }

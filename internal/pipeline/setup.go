@@ -65,7 +65,7 @@ func (r *Runner) runBuildSetup(ctx context.Context, workDir string) (*buildSetup
 	runner.Logf("Base-distro flavor: %s\n", flavor)
 
 	// Load device profile from peacock-ports
-	devPath := filepath.Join("peacock-ports", "device", deviceName, "device.toml")
+	devPath := filepath.Join(portsRoot, "device", deviceName, "device.toml")
 	dev, err := manifest.LoadDevice(devPath)
 	if err != nil {
 		return nil, fmt.Errorf("error loading device manifest %s: %w", devPath, err)
@@ -101,7 +101,7 @@ func (r *Runner) runBuildSetup(ctx context.Context, workDir string) (*buildSetup
 	}
 
 	// Load package manifest
-	pkgPath := filepath.Join("peacock-ports", "device", deviceName, "package.toml")
+	pkgPath := filepath.Join(portsRoot, "device", deviceName, "package.toml")
 	pkg, err := manifest.LoadPackage(pkgPath)
 	if err != nil {
 		return nil, fmt.Errorf("error loading package manifest %s: %w", pkgPath, err)

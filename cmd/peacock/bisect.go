@@ -31,6 +31,7 @@ import (
 	"peacock/internal/config"
 	"peacock/internal/manifest"
 	"peacock/internal/pipeline"
+	"peacock/internal/ports"
 	"peacock/internal/runner"
 )
 
@@ -176,7 +177,13 @@ func runBisect(rootPort string) error {
 		if buildPackagesDevice == "" {
 			return fmt.Errorf("specify --device or --arch")
 		}
-		devPath := filepath.Join("peacock-ports", "device", buildPackagesDevice, "device.toml")
+		// The ports tree is already resolved (and cloned if needed) by the
+		// build-packages RunE that calls into runBisect; Resolve finds it.
+		root, _ := ports.Resolve()
+		if root == "" {
+			root = "peacock-ports"
+		}
+		devPath := filepath.Join(root, "device", buildPackagesDevice, "device.toml")
 		dev, err := manifest.LoadDevice(devPath)
 		if err != nil {
 			return fmt.Errorf("failed loading device manifest %s: %w", devPath, err)

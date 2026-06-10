@@ -36,6 +36,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"peacock/internal/ports"
 	"peacock/internal/runner"
 )
 
@@ -305,7 +306,13 @@ func resolveAliases(packages []string) []string {
 	if len(packages) == 0 {
 		return packages
 	}
-	path := filepath.Join("peacock-ports", "flavors", "alpine", "aliases.toml")
+	// Read-only lookup: prefer the resolved ports tree, else the bare
+	// relative dir (preserves behavior when called outside a build).
+	root := "peacock-ports"
+	if r, ok := ports.Resolve(); ok {
+		root = r
+	}
+	path := filepath.Join(root, "flavors", "alpine", "aliases.toml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		fmt.Fprintf(runner.LogWriter(), "warning: apk.resolveAliases: %s not found (using identity map): %v\n", path, err)

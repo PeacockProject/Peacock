@@ -30,9 +30,29 @@ import (
 
 	"peacock/internal/config"
 	"peacock/internal/host"
+	"peacock/internal/ports"
 	"peacock/internal/runner"
 	"peacock/pkg/buildconfig"
 )
+
+// portsRoot is the resolved peacock-ports tree for the current build. It
+// is set once by Run (via ports.Ensure) before any phase executes; the
+// phase code joins manifest paths against it instead of the bare
+// "peacock-ports" string. Defaults to "peacock-ports" so any direct phase
+// call in a test that skips Run still hits the dev-layout path.
+var portsRoot = "peacock-ports"
+
+// SetPortsRoot overrides the package-level ports root used by the helper
+// functions exported to cmd/peacock (LocalPackageManifestPath et al).
+// Run sets this itself via ports.Ensure; the bisect / build-packages
+// subcommands, which invoke those helpers without going through Run,
+// prime it after their own ports.Ensure so the shared lookup code sees
+// the resolved (possibly auto-cloned) tree.
+func SetPortsRoot(root string) {
+	if root != "" {
+		portsRoot = root
+	}
+}
 
 // RunnerOpts carries the cobra-flag-shaped knobs that used to live as
 // package-level globals on cmd/peacock (deviceName, useQemuFlag,
@@ -121,6 +141,16 @@ func (r *Runner) Run(ctx context.Context, cfg buildconfig.BuildPipelineConfig) (
 	// caller's intent. This is a temporary belt-and-braces — phase
 	// functions read from the Runner's own opts where possible.
 	pushConfig(cfg)
+
+	// Resolve (auto-cloning if necessary) the peacock-ports tree before
+	// any phase reads a manifest. Done before the host-chroot exec prefix
+	// is installed so the git clone runs on the host, not inside the
+	// chroot. portsRoot is read by every phase's manifest-path joins.
+	root, err := ports.Ensure()
+	if err != nil {
+		return "", fmt.Errorf("peacock-ports: %w", err)
+	}
+	SetPortsRoot(root)
 
 	// Push RunnerOpts from cfg fields where the GUI supplied them.
 	if cfg.UseQemu != "" {

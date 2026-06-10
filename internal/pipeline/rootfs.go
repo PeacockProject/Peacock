@@ -59,7 +59,7 @@ func (r *Runner) runRootfsPhase(
 
 	// 8. Build Kernel
 	runner.Logln("Building/Fetching Kernel...")
-	kernelManifest := filepath.Join("peacock-ports", "device", "linux-"+deviceName, "package.toml")
+	kernelManifest := filepath.Join(portsRoot, "device", "linux-"+deviceName, "package.toml")
 	kernelPkg, err := manifest.LoadPackage(kernelManifest)
 	if err != nil {
 		runner.Logf("Kernel manifest not found: %v. Skipping boot.img\n", err)

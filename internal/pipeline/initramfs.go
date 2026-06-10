@@ -34,7 +34,7 @@ func (r *Runner) runInitramfsPhase(
 
 	// Build Busybox (Generic)
 	runner.Logln("Building/Fetching Busybox...")
-	bbManifest := filepath.Join("peacock-ports", "base", "busybox", "package.toml")
+	bbManifest := filepath.Join(portsRoot, "base", "busybox", "package.toml")
 	bbPkg, err := manifest.LoadPackage(bbManifest)
 	if err != nil {
 		return "", fmt.Errorf("error loading busybox manifest: %w", err)
@@ -90,7 +90,7 @@ func (r *Runner) runInitramfsPhase(
 
 	// Build peacock-splash (for framebuffer splash screen)
 	runner.Logln("Building/Fetching peacock-splash...")
-	splashManifest := filepath.Join("peacock-ports", "base", "peacock-splash", "package.toml")
+	splashManifest := filepath.Join(portsRoot, "base", "peacock-splash", "package.toml")
 	splashPkg, err := manifest.LoadPackage(splashManifest)
 	if err != nil {
 		return "", fmt.Errorf("error loading peacock-splash manifest: %w", err)
