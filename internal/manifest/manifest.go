@@ -83,17 +83,24 @@ type Package struct {
 		UseQemu             *bool    `toml:"use_qemu"`
 		CrossCompile        string   `toml:"cross_compile"`
 		// TargetArch is the architecture this port's artifacts target
-		// (e.g. "aarch64" for a kernel). When set and the port builds in
-		// cross mode (use_qemu=false on a foreign target), Peacock injects
-		// an abstract `gcc-<target_arch>` build dep that the per-flavor
-		// alias table expands to the distro's cross toolchain. Ports list
-		// the generic native toolchain (base-devel) only; they never name
-		// distro-specific cross packages. Empty = no cross toolchain
-		// injected (host-native or qemu-native build).
+		// (e.g. "aarch64" for a kernel). Drives capability resolution
+		// (which triple / cross toolchain) and the derived CROSS_COMPILE.
+		// Empty = host-native build.
 		TargetArch string `toml:"target_arch"`
-		Script     string `toml:"script"`
-		Source     string `toml:"source"`
-		Checksum   string `toml:"checksum"`
+		// Capabilities are abstract build requirements (e.g. "c-toolchain")
+		// resolved per build mode × target arch × flavor via
+		// peacock-ports/toolchains.toml. Ports declare what they need;
+		// Peacock installs the right distro packages. See
+		// docs/design/toolchain-capabilities.md.
+		Capabilities []string `toml:"capabilities"`
+		// Triple overrides the GNU triple looked up from target_arch (e.g.
+		// a port that needs "arm-eabi" rather than the standard
+		// "arm-linux-gnueabihf"). Flows into both package resolution and
+		// the derived CROSS_COMPILE so they can't disagree.
+		Triple   string `toml:"triple"`
+		Script   string `toml:"script"`
+		Source   string `toml:"source"`
+		Checksum string `toml:"checksum"`
 	} `toml:"build"`
 
 	Install Install `toml:"install"`

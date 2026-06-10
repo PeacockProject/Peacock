@@ -1,6 +1,9 @@
 # Design: build capabilities + toolchain resolution
 
-Status: **proposed** (spec for review; no code yet)
+Status: **implemented** — peacock-ports `toolchains.toml` + `internal/toolchain`
+resolver + manifest `capabilities`/`triple` fields; daisy kernel ports migrated.
+The `[capabilities.<cap>.<mode>.<flavor>]` nested-table form below is the
+shipped shape (the earlier inline `{ unsupported = … }` was illustrative).
 Scope: `peacock-ports` (schema + data) and `Peacock` (manifest, resolver)
 Supersedes: the `gcc-<target_arch>` alias-injection shim
 (peacock-ports `02cf905`, Peacock `e93dfb5`)
@@ -101,16 +104,21 @@ x86_64  = "x86_64-pc-linux-gnu"
 aarch64 = "arm64"
 armv7h  = "armhf"
 
-# C/C++ toolchain capability.
-[c-toolchain.native]      # qemu / native: native toolchain in the TARGET chroot
-arch   = ["base-devel"]
-debian = ["build-essential"]
-alpine = ["build-base"]
+# C/C++ toolchain capability. Each [capabilities.<cap>.<mode>.<flavor>]
+# cell is a table with either `packages = [...]` or `unsupported = "..."`.
+[capabilities.c-toolchain.native.arch]    # qemu/native: native toolchain, TARGET chroot
+packages = ["base-devel"]
+[capabilities.c-toolchain.native.debian]
+packages = ["build-essential"]
+[capabilities.c-toolchain.native.alpine]
+packages = ["build-base"]
 
-[c-toolchain.cross]       # cross: distro's blessed package, in the HOST chroot
-arch   = ["{triple}-gcc", "{triple}-binutils"]   # no meta on Arch → enumerate
-debian = ["crossbuild-essential-{debarch}"]      # lean on Debian's meta
-alpine = { unsupported = "Alpine ships no linux-gnu cross toolchain; use use_qemu=true" }
+[capabilities.c-toolchain.cross.arch]     # cross: distro's blessed package, HOST chroot
+packages = ["{triple}-gcc", "{triple}-binutils"]   # no meta on Arch → enumerate
+[capabilities.c-toolchain.cross.debian]
+packages = ["crossbuild-essential-{debarch}"]      # lean on Debian's meta
+[capabilities.c-toolchain.cross.alpine]
+unsupported = "Alpine ships no linux-gnu cross toolchain; use use_qemu=true"
 ```
 
 Substitution tokens available in any package string: `{triple}`

@@ -13,6 +13,7 @@ import (
 	"peacock/internal/chroot"
 	"peacock/internal/manifest"
 	"peacock/internal/runner"
+	"peacock/internal/toolchain"
 )
 
 const (
@@ -120,8 +121,25 @@ func (b *Builder) BuildPackageInChroot(pkg *manifest.Package, targetArch string,
 	}
 
 	hostArch := HostArchString()
-	if !useQemu && opts.CrossCompile == "" && targetArch != hostArch {
-		return "", fmt.Errorf("cross-arch build requires qemu or cross compiler; set build.cross_compile or --cross-compile, or enable qemu")
+	cross := !useQemu && targetArch != hostArch
+
+	// Resolve the port's abstract build capabilities (e.g. "c-toolchain")
+	// into concrete distro packages + a derived CROSS_COMPILE. Pure (reads
+	// toolchains.toml on the host); fails fast on an unsupported combo
+	// before any chroot work. The packages get installed alongside
+	// build_deps after the chroot is mounted, below.
+	tcRes, err := toolchain.Resolve(pkg.Build.Capabilities, pkg.Build.TargetArch, pkg.Build.Triple, opts.Flavor, cross)
+	if err != nil {
+		return "", err
+	}
+	// An explicit [build].cross_compile wins; otherwise use the triple-
+	// derived prefix so it can never disagree with the toolchain packages.
+	if opts.CrossCompile == "" && tcRes.CrossCompile != "" {
+		opts.CrossCompile = tcRes.CrossCompile
+	}
+
+	if cross && opts.CrossCompile == "" {
+		return "", fmt.Errorf("cross-arch build requires a cross toolchain: set build.target_arch + capabilities (or build.cross_compile), or enable qemu")
 	}
 
 	chrootArch := targetArch
@@ -149,21 +167,11 @@ func (b *Builder) BuildPackageInChroot(pkg *manifest.Package, targetArch string,
 		_ = os.WriteFile(filepath.Join(root, "etc", "resolv.conf"), data, 0644)
 	}
 
-	// Cross-toolchain injection: when this port builds in cross mode
-	// (use_qemu=false) for a foreign target, it needs a cross compiler in
-	// the host-arch chroot. Rather than naming distro-specific cross
-	// packages in the port (aarch64-linux-gnu-gcc only exists on Arch-x86,
-	// breaks everywhere else), the port declares target_arch and we inject
-	// an abstract `gcc-<target_arch>` dep that the per-flavor alias table
-	// expands to the right packages for the active distro. In qemu/native
-	// mode the chroot is the target arch and base-devel suffices, so no
-	// injection.
-	deps := pkg.Build.BuildDeps
-	crossing := opts.UseQemu != nil && !*opts.UseQemu
-	if crossing && pkg.Build.TargetArch != "" && pkg.Build.TargetArch != HostArchString() {
-		deps = append([]string{"gcc-" + pkg.Build.TargetArch}, deps...)
-	}
-	resolvedDeps := ResolveBuildDeps(deps, opts.Flavor)
+	// Plain build_deps go through the per-flavor rename table; the
+	// capability-resolved toolchain packages (tcRes) are appended as-is
+	// (they're already concrete distro names from toolchains.toml).
+	resolvedDeps := ResolveBuildDeps(pkg.Build.BuildDeps, opts.Flavor)
+	resolvedDeps = append(resolvedDeps, tcRes.Packages...)
 	if err := b.installBuildDeps(root, resolvedDeps, masterRoot); err != nil {
 		return "", fmt.Errorf("failed to install build deps: %w", err)
 	}
