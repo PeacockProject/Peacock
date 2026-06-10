@@ -7,10 +7,7 @@ package pipeline
 // package-internal.
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -316,35 +313,19 @@ func packagesStoreDir(cacheDir string) string {
 func cachedArtifactPath(cacheDir, name, version, arch string) string {
 	pacArch := pacmanArch(arch)
 	archDir := filepath.Join(packagesStoreDir(cacheDir), pacArch)
-	// Preferred: per-arch package store (packages/<arch>/...), arch-name alt.
+	// .feather packages in the per-arch store (packages/<arch>/...),
+	// arch-name alt dir for back-compat with raw arch naming.
 	candidates := []string{
-		filepath.Join(archDir, fmt.Sprintf("%s-%s-1-%s.pkg.tar.gz", name, version, pacArch)),
-		filepath.Join(packagesStoreDir(cacheDir), arch, fmt.Sprintf("%s-%s-1-%s.pkg.tar.gz", name, version, arch)),
+		filepath.Join(archDir, fmt.Sprintf("%s-%s-1-%s.feather", name, version, pacArch)),
+		filepath.Join(packagesStoreDir(cacheDir), arch, fmt.Sprintf("%s-%s-1-%s.feather", name, version, arch)),
 	}
 	for _, path := range candidates {
 		if _, err := os.Stat(path); err == nil {
 			return path
 		}
 	}
-	// Legacy artifacts in the flat cache dir (pre package store, with or
-	// without pkgrel). Migrate the first hit into the per-arch store.
-	legacyCandidates := []string{
-		filepath.Join(cacheDir, fmt.Sprintf("%s-%s-1-%s.pkg.tar.gz", name, version, pacArch)),
-		filepath.Join(cacheDir, fmt.Sprintf("%s-%s-1-%s.pkg.tar.gz", name, version, arch)),
-		filepath.Join(cacheDir, fmt.Sprintf("%s-%s-%s.pkg.tar.gz", name, version, pacArch)),
-		filepath.Join(cacheDir, fmt.Sprintf("%s-%s-%s.pkg.tar.gz", name, version, arch)),
-	}
-	for _, legacy := range legacyCandidates {
-		if _, err := os.Stat(legacy); err == nil {
-			target := filepath.Join(archDir, fmt.Sprintf("%s-%s-1-%s.pkg.tar.gz", name, version, pacArch))
-			if err := os.MkdirAll(archDir, 0755); err == nil {
-				if err := os.Rename(legacy, target); err == nil {
-					return target
-				}
-			}
-			return legacy
-		}
-	}
+	// (Legacy pacman .pkg.tar.gz artifacts are a different format and are
+	// not reused — they get rebuilt as .feather on demand.)
 	return ""
 }
 
@@ -405,53 +386,6 @@ func extractRefresherFromPackage(pkgPath, workDir string) (string, error) {
 	return dest, nil
 }
 
-func packageArchMatches(pkgPath, expectedArch string) bool {
-	f, err := os.Open(pkgPath)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-
-	gzr, err := gzip.NewReader(f)
-	if err != nil {
-		return false
-	}
-	defer gzr.Close()
-
-	tr := tar.NewReader(gzr)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			return false
-		}
-		if err != nil {
-			return false
-		}
-		if hdr.Name != ".PKGINFO" {
-			continue
-		}
-		data, err := io.ReadAll(tr)
-		if err != nil {
-			return false
-		}
-		foundArch := ""
-		hasRel := false
-		pkgVer := ""
-		for _, line := range strings.Split(string(data), "\n") {
-			if strings.HasPrefix(line, "arch = ") {
-				foundArch = strings.TrimSpace(strings.TrimPrefix(line, "arch = "))
-			}
-			if strings.HasPrefix(line, "pkgrel = ") {
-				hasRel = true
-			}
-			if strings.HasPrefix(line, "pkgver = ") {
-				pkgVer = strings.TrimSpace(strings.TrimPrefix(line, "pkgver = "))
-			}
-		}
-		return foundArch == expectedArch && !hasRel && strings.HasSuffix(pkgVer, "-1")
-	}
-}
-
 func isMounted(path string) bool {
 	cmd := exec.Command("mountpoint", "-q", path)
 	return runner.RunCmd(cmd) == nil
@@ -504,20 +438,13 @@ func LocalPackageManifestPath(name string) (string, bool) {
 	return "", false
 }
 
-// FindCachedPackageArtifact returns a path to a cached .pkg.tar.gz for pkg+arch
-// when one exists and its embedded arch matches the expected pacman arch.
-// Returns "" when no usable cached artifact is found. Mismatched cache entries
-// are reported to stdout so the caller can rebuild transparently.
+// FindCachedPackageArtifact returns the path to a cached .feather package
+// for pkg+arch, or "" when none is present. The per-arch package store
+// (packages/<arch>/<name>-<ver>-1-<arch>.feather) encodes name, version,
+// and arch in the path, so a hit is already the right package — no need
+// to crack the archive open to re-check.
 func FindCachedPackageArtifact(b *builder.Builder, pkg *manifest.Package, targetArch string) string {
-	artifactPath := cachedArtifactPath(b.CacheDir, pkg.Package.Name, pkg.Package.Version, targetArch)
-	if artifactPath == "" {
-		return ""
-	}
-	if !packageArchMatches(artifactPath, pacmanArch(targetArch)) {
-		runner.Logf("Cached package %s has mismatched arch; rebuilding\n", artifactPath)
-		return ""
-	}
-	return artifactPath
+	return cachedArtifactPath(b.CacheDir, pkg.Package.Name, pkg.Package.Version, targetArch)
 }
 
 // locatePeacockMkinitfs returns the absolute path to the peacock-mkinitfs

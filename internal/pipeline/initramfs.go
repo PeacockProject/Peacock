@@ -42,7 +42,7 @@ func (r *Runner) runInitramfsPhase(
 
 	busyboxBuildDir := ""
 	busyboxCached := cachedArtifactPath(b.CacheDir, bbPkg.Package.Name, bbPkg.Package.Version, dev.Device.Architecture)
-	if busyboxCached != "" && packageArchMatches(busyboxCached, pacmanArch(dev.Device.Architecture)) {
+	if busyboxCached != "" {
 		extractedDir, err := extractBusyboxFromPackage(busyboxCached, workDir)
 		if err != nil {
 			return "", fmt.Errorf("error extracting busybox from cached package: %w", err)
@@ -98,7 +98,7 @@ func (r *Runner) runInitramfsPhase(
 
 	splashBuildDir := ""
 	splashCached := cachedArtifactPath(b.CacheDir, splashPkg.Package.Name, splashPkg.Package.Version, dev.Device.Architecture)
-	if splashCached != "" && packageArchMatches(splashCached, pacmanArch(dev.Device.Architecture)) {
+	if splashCached != "" {
 		tmpExtract, err := os.MkdirTemp("", "peacock-splash-extract-")
 		if err == nil {
 			defer os.RemoveAll(tmpExtract)

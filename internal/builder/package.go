@@ -6,15 +6,71 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"peacock/internal/manifest"
-	"peacock/internal/runner"
 )
 
-// PackageArtifact creates a simple .pkg.tar.gz that pacman can install (pacman -U)
-// specific to the prototype needs.
+// featherManifest renders the manifest.toml that goes at the root of a
+// .feather archive, from the port's metadata. ftr requires [package].name,
+// [package].version, and [install].layout; the rest is optional.
+func featherManifest(pkg *manifest.Package, version string) string {
+	var b strings.Builder
+	b.WriteString("[package]\n")
+	fmt.Fprintf(&b, "name = %q\n", pkg.Package.Name)
+	fmt.Fprintf(&b, "version = %q\n", version)
+	if pkg.Package.Description != "" {
+		fmt.Fprintf(&b, "description = %q\n", pkg.Package.Description)
+	}
+	if rt := pkg.Package.Runtime; rt != "" {
+		fmt.Fprintf(&b, "runtime = %q\n", rt)
+	}
+	if deps := nonEmpty(pkg.Package.Depends); len(deps) > 0 {
+		b.WriteString("depends = [")
+		for i, d := range deps {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(&b, "%q", d)
+		}
+		b.WriteString("]\n")
+	}
+
+	b.WriteString("\n[install]\n")
+	fmt.Fprintf(&b, "layout = %q\n", pkg.ResolvedLayout())
+	if pkg.Install.Prefix != "" {
+		fmt.Fprintf(&b, "prefix = %q\n", pkg.Install.Prefix)
+	}
+
+	if len(pkg.Provides) > 0 {
+		b.WriteString("\n[provides]\n")
+		for cap, ver := range pkg.Provides {
+			fmt.Fprintf(&b, "%q = %q\n", cap, ver)
+		}
+	}
+	if len(pkg.Conflicts) > 0 {
+		b.WriteString("\n[conflicts]\n")
+		for cap, ver := range pkg.Conflicts {
+			fmt.Fprintf(&b, "%q = %q\n", cap, ver)
+		}
+	}
+	return b.String()
+}
+
+func nonEmpty(in []string) []string {
+	out := in[:0:0]
+	for _, s := range in {
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// PackageArtifact creates a .feather package (a gzip tarball of
+// manifest.toml + the staged tree under files/) in the per-arch package
+// store. `ftr install` consumes it. Returns the archive path.
 func (b *Builder) PackageArtifact(buildDir string, pkg *manifest.Package, arch string) (string, error) {
 	pkgRoot := buildDir
 	stageDir := filepath.Join(buildDir, "stage")
@@ -22,64 +78,20 @@ func (b *Builder) PackageArtifact(buildDir string, pkg *manifest.Package, arch s
 		pkgRoot = stageDir
 	}
 
-	// Normalize arch for pacman compatibility.
+	// Normalize arch (armv7 -> armv7h).
 	pacmanArch := arch
 	if arch == "armv7" {
 		pacmanArch = "armv7h"
 	}
 
-	// Create a .PKGINFO file (pkgver includes pkgrel, per pacman format).
 	pkgrel := "1"
-	pkgVer := fmt.Sprintf("%s-%s", pkg.Package.Version, pkgrel)
-	pkgInfo := fmt.Sprintf(`pkgname = %s
-pkgver = %s
-pkgdesc = %s
-url = verify
-builddate = 0
-packager = Peacock
-size = 1000
-arch = %s
-license = GPL
-`, pkg.Package.Name, pkgVer, pkg.Package.Description, pacmanArch)
+	version := fmt.Sprintf("%s-%s", pkg.Package.Version, pkgrel)
 
-	for _, p := range pkg.Package.Provides {
-		pkgInfo += fmt.Sprintf("provides = %s\n", p)
-	}
-	for _, d := range pkg.Package.Depends {
-		if d == "" {
-			continue
-		}
-		pkgInfo += fmt.Sprintf("depend = %s\n", d)
-	}
-
-	pkgInfoPath := filepath.Join(pkgRoot, ".PKGINFO")
-	tmpFile, err := os.CreateTemp("", "peacock-pkginfo-")
-	if err != nil {
-		return "", err
-	}
-	if _, writeErr := tmpFile.Write([]byte(pkgInfo)); writeErr != nil {
-		tmpFile.Close()
-		os.Remove(tmpFile.Name())
-		return "", writeErr
-	}
-	tmpFile.Close()
-	defer os.Remove(tmpFile.Name())
-	cpCmd := exec.Command("sudo", "install", "-m", "0644", tmpFile.Name(), pkgInfoPath)
-	cpCmd.Stdout = runner.LogWriter()
-	cpCmd.Stderr = runner.LogWriter()
-	if runErr := runner.RunCmd(cpCmd); runErr != nil {
-		return "", runErr
-	}
-
-	// TarGz the package into the per-arch package store
-	// (<var>/packages/<arch>/), the feather-facing repo — distinct from
-	// peacock-cache, which holds only source downloads + build-dep
-	// staging. Grouping built packages by arch makes lookup trivial.
 	archStoreDir := filepath.Join(b.PackagesDir(), pacmanArch)
 	if err := os.MkdirAll(archStoreDir, 0755); err != nil {
 		return "", err
 	}
-	tarPath := filepath.Join(archStoreDir, fmt.Sprintf("%s-%s-%s-%s.pkg.tar.gz", pkg.Package.Name, pkg.Package.Version, pkgrel, pacmanArch))
+	tarPath := filepath.Join(archStoreDir, fmt.Sprintf("%s-%s-%s.feather", pkg.Package.Name, version, pacmanArch))
 	file, err := os.Create(tarPath)
 	if err != nil {
 		return "", err
@@ -91,43 +103,59 @@ license = GPL
 	tw := tar.NewWriter(gw)
 	defer tw.Close()
 
-	// Recursively add package contents
+	// manifest.toml at the archive root.
+	manifestBytes := []byte(featherManifest(pkg, version))
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "manifest.toml",
+		Mode: 0644,
+		Size: int64(len(manifestBytes)),
+	}); err != nil {
+		return "", err
+	}
+	if _, err := tw.Write(manifestBytes); err != nil {
+		return "", err
+	}
+
+	// files/ — the staged tree feather overlays onto the install prefix.
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "files/",
+		Typeflag: tar.TypeDir,
+		Mode:     0755,
+	}); err != nil {
+		return "", err
+	}
+
 	err = filepath.Walk(pkgRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-
 		relPath, _ := filepath.Rel(pkgRoot, path)
 		if relPath == "." {
 			return nil
 		}
+		archiveName := filepath.Join("files", relPath)
 
-		// Handle symlinks safely to avoid missing-target errors.
 		if info.Mode()&os.ModeSymlink != 0 {
 			linkTarget, err := os.Readlink(path)
 			if err != nil {
 				return err
 			}
-			header := &tar.Header{
-				Name:     relPath,
+			return tw.WriteHeader(&tar.Header{
+				Name:     archiveName,
 				Typeflag: tar.TypeSymlink,
 				Linkname: linkTarget,
 				Mode:     int64(info.Mode().Perm()),
-			}
-			if err := tw.WriteHeader(header); err != nil {
-				return err
-			}
-			return nil
+			})
 		}
 
-		// Create header
 		header, err := tar.FileInfoHeader(info, info.Name())
 		if err != nil {
 			return err
 		}
-
-		header.Name = relPath
-
+		header.Name = archiveName
+		if info.IsDir() {
+			header.Name += "/"
+		}
 		if err := tw.WriteHeader(header); err != nil {
 			return err
 		}
