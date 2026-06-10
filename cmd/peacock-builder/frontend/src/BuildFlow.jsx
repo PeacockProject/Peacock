@@ -10,6 +10,7 @@ import React from "react";
 import { AppShell, PK, Btn, Head, SRow, Field, Seg, ModeChip, useMode, FULL, HEAD } from "./shared.jsx";
 import { ListDevices } from "./api.js";
 import { FALLBACK_DEVICES, DEFAULT_DEVICE_SUPPORT } from "./devices.js";
+import { hasWails } from "./devMock.jsx";
 import DevicePickerStep from "./DevicePickerStep.jsx";
 import BaseStep from "./BaseStep.jsx";
 import DesktopStep from "./DesktopStep.jsx";
@@ -56,11 +57,19 @@ const BSTEPS = ["Device", "Base", "Desktop", "Packages", "Review", "Build"];
 
 export default function BuildFlow({ onHome, startDevice, appClass }) {
   const [devices, setDevices] = React.useState(FALLBACK_DEVICES);
+  /* In the real GUI (Wails runtime present), silently showing the sample
+   * devices when the backend can't deliver a list is misleading — a build
+   * against a sample device will fail later. Surface a warning banner in
+   * the picker instead. In pure dev mode (no Wails) the samples ARE the
+   * point of the preview, so the fallback stays silent there. */
+  const [listError, setListError] = React.useState(false);
   React.useEffect(() => {
     let alive = true;
     ListDevices().then(d => {
-      if (alive && Array.isArray(d) && d.length) setDevices(d);
-    }).catch(() => { /* keep fallback */ });
+      if (!alive) return;
+      if (Array.isArray(d) && d.length) { setDevices(d); return; }
+      if (hasWails()) setListError(true);
+    }).catch(() => { if (alive && hasWails()) setListError(true); });
     return () => { alive = false; };
   }, []);
 
@@ -130,6 +139,7 @@ export default function BuildFlow({ onHome, startDevice, appClass }) {
             devices={devices}
             dev={dev}
             onPick={pick}
+            listError={listError}
             supportMap={buildSupportMap(devices)} />}
 
           {step === 1 && <BaseStep

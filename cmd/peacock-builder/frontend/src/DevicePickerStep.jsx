@@ -130,7 +130,7 @@ function fuzzMatch(dev, q) {
   return hay.includes(q);
 }
 
-export default function DevicePickerStep({ devices, dev, onPick, supportMap }) {
+export default function DevicePickerStep({ devices, dev, onPick, supportMap, listError }) {
   const [query, setQuery] = React.useState("");
   const [collapsedBrands, setCollapsedBrands] = React.useState({});
   // Device whose details the drawer is currently showing. Distinct from
@@ -209,6 +209,17 @@ export default function DevicePickerStep({ devices, dev, onPick, supportMap }) {
               : <span><b>{totalAll}</b> {totalAll === 1 ? "device" : "devices"}</span>}
           </div>
         </div>
+
+        {listError && (
+          <div className="dpk-warnbar" role="alert">
+            <span className="dpk-warnbar-ic" aria-hidden="true">!</span>
+            <span>
+              Couldn't read the device list from peacock-ports. Showing sample
+              devices — builds won't work until this is fixed.
+              (Is <span className="dpk-warnbar-mono">PEACOCK_PORTS_DIR</span> set?)
+            </span>
+          </div>
+        )}
 
         {totalShown === 0 ? (
           <DPKEmpty query={query} />
