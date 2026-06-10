@@ -104,10 +104,19 @@ type Package struct {
 		// overlay (the feather domain); true integrates it into the base
 		// system tree at /usr. Either way its bin/lib/include are wired
 		// into the build env (PATH / LD_LIBRARY_PATH).
-		Integrate bool   `toml:"integrate"`
-		Script    string `toml:"script"`
-		Source    string `toml:"source"`
-		Checksum  string `toml:"checksum"`
+		Integrate bool `toml:"integrate"`
+		// KernelConfig / PRPKernelConfig name the in-port config files a
+		// kernel build script consumes, exposed to the script as
+		// $KERNEL_CONFIG / $PRP_KERNEL_CONFIG. A kernel port that sets
+		// PRPKernelConfig builds a second, PRP-trimmed kernel in the same
+		// source tree (staged as zImage-prp), so the recovery reuses the
+		// already-downloaded source + toolchain instead of a separate
+		// linux-<dev>-prp port. Empty = no kernel config / no PRP variant.
+		KernelConfig    string `toml:"kernel_config"`
+		PRPKernelConfig string `toml:"prp_kernel_config"`
+		Script          string `toml:"script"`
+		Source          string `toml:"source"`
+		Checksum        string `toml:"checksum"`
 	} `toml:"build"`
 
 	Install Install `toml:"install"`

@@ -289,6 +289,16 @@ func (b *Builder) BuildPackageInChroot(pkg *manifest.Package, targetArch string,
 		if opts.CrossCompile != "" {
 			envLines = append(envLines, "export CROSS_COMPILE="+opts.CrossCompile)
 		}
+		// Kernel config file names from the manifest, so the build script
+		// references `$KERNEL_CONFIG` / `$PRP_KERNEL_CONFIG` instead of
+		// hardcoding filenames. PRP_KERNEL_CONFIG present => build the
+		// PRP-trimmed second kernel pass too.
+		if pkg.Build.KernelConfig != "" {
+			envLines = append(envLines, "export KERNEL_CONFIG="+pkg.Build.KernelConfig)
+		}
+		if pkg.Build.PRPKernelConfig != "" {
+			envLines = append(envLines, "export PRP_KERNEL_CONFIG="+pkg.Build.PRPKernelConfig)
+		}
 		if jobsStr := strings.TrimSpace(os.Getenv("PEACOCK_JOBS")); jobsStr != "" {
 			if jobs, err := strconv.Atoi(jobsStr); err == nil && jobs > 0 {
 				envLines = append(envLines, fmt.Sprintf("export PEACOCK_JOBS=%d", jobs))

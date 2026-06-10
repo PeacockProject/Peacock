@@ -10,6 +10,8 @@ package ports
 import (
 	"os"
 	"path/filepath"
+
+	"peacock/internal/manifest"
 )
 
 // FlashSet names the ports that make up a device's flashable artifacts,
@@ -19,9 +21,22 @@ import (
 // PinePhone/x86 have no MTK/qcom bootloader).
 type FlashSet struct {
 	Device     string // device codename
-	PRPKernel  string // linux-<dev>-prp, or "" — built before Recovery
+	PRPKernel  string // kernel port that yields a PRP kernel — built before Recovery
 	Bootloader string // minkernel-<dev> | lk2nd-<dev> | ""
 	Recovery   string // prp-<dev> | ""
+}
+
+// kernelHasPRPVariant reports whether the main kernel port for the device
+// builds a PRP-trimmed second kernel (it sets [build].prp_kernel_config).
+// Such a port stages a zImage-prp alongside the full zImage, so the
+// recovery reuses it instead of a separate linux-<dev>-prp port.
+func kernelHasPRPVariant(root, kernelPort string) bool {
+	p := filepath.Join(root, "device", kernelPort, "package.toml")
+	pkg, err := manifest.LoadPackage(p)
+	if err != nil {
+		return false
+	}
+	return pkg.Build.PRPKernelConfig != ""
 }
 
 // portExists reports whether device/<name>/package.toml is present under
@@ -45,8 +60,10 @@ func ResolveFlashSet(device string) (set FlashSet, found bool) {
 	}
 	set.Device = device
 
-	// PRP-specific kernel (only some devices: daisy ships one).
-	if name := "linux-" + device + "-prp"; portExists(root, name) {
+	// PRP kernel: the main kernel port builds a PRP-trimmed variant in the
+	// same source tree (it declares prp_kernel_config) and stages it as
+	// zImage-prp. No separate linux-<dev>-prp port — that pattern is gone.
+	if name := "linux-" + device; kernelHasPRPVariant(root, name) {
 		set.PRPKernel = name
 	}
 
