@@ -82,9 +82,18 @@ type Package struct {
 		BuildDepPackages    []string `toml:"build_dep_packages"`
 		UseQemu             *bool    `toml:"use_qemu"`
 		CrossCompile        string   `toml:"cross_compile"`
-		Script              string   `toml:"script"`
-		Source              string   `toml:"source"`
-		Checksum            string   `toml:"checksum"`
+		// TargetArch is the architecture this port's artifacts target
+		// (e.g. "aarch64" for a kernel). When set and the port builds in
+		// cross mode (use_qemu=false on a foreign target), Peacock injects
+		// an abstract `gcc-<target_arch>` build dep that the per-flavor
+		// alias table expands to the distro's cross toolchain. Ports list
+		// the generic native toolchain (base-devel) only; they never name
+		// distro-specific cross packages. Empty = no cross toolchain
+		// injected (host-native or qemu-native build).
+		TargetArch string `toml:"target_arch"`
+		Script     string `toml:"script"`
+		Source     string `toml:"source"`
+		Checksum   string `toml:"checksum"`
 	} `toml:"build"`
 
 	Install Install `toml:"install"`

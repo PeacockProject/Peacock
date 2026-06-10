@@ -149,7 +149,21 @@ func (b *Builder) BuildPackageInChroot(pkg *manifest.Package, targetArch string,
 		_ = os.WriteFile(filepath.Join(root, "etc", "resolv.conf"), data, 0644)
 	}
 
-	resolvedDeps := ResolveBuildDeps(pkg.Build.BuildDeps, opts.Flavor)
+	// Cross-toolchain injection: when this port builds in cross mode
+	// (use_qemu=false) for a foreign target, it needs a cross compiler in
+	// the host-arch chroot. Rather than naming distro-specific cross
+	// packages in the port (aarch64-linux-gnu-gcc only exists on Arch-x86,
+	// breaks everywhere else), the port declares target_arch and we inject
+	// an abstract `gcc-<target_arch>` dep that the per-flavor alias table
+	// expands to the right packages for the active distro. In qemu/native
+	// mode the chroot is the target arch and base-devel suffices, so no
+	// injection.
+	deps := pkg.Build.BuildDeps
+	crossing := opts.UseQemu != nil && !*opts.UseQemu
+	if crossing && pkg.Build.TargetArch != "" && pkg.Build.TargetArch != HostArchString() {
+		deps = append([]string{"gcc-" + pkg.Build.TargetArch}, deps...)
+	}
+	resolvedDeps := ResolveBuildDeps(deps, opts.Flavor)
 	if err := b.installBuildDeps(root, resolvedDeps, masterRoot); err != nil {
 		return "", fmt.Errorf("failed to install build deps: %w", err)
 	}
