@@ -17,38 +17,26 @@ import (
 	"path/filepath"
 
 	"peacock/internal/chroot"
+	"peacock/internal/ports"
 	"peacock/internal/runner"
 )
 
-// portsDir resolves the peacock-ports tree using the same precedence as
-// the rest of the codebase: $PEACOCK_PORTS_DIR → ./peacock-ports →
-// sibling of the binary. Returns "" if none is found (the ports bind is
-// then skipped — it is an optimization, not a hard requirement for the
-// toolchain install).
+// portsDir resolves the peacock-ports tree via ports.Resolve (the shared
+// resolution order). Returns "" if none is found (the ports bind is then
+// skipped — it is an optimization, not a hard requirement for the
+// toolchain install). This never clones: bind-mounting is a mount-time
+// optimization, and a fetch belongs to the build path, not the mount
+// helper. The resolved path is made absolute so the bind source is valid
+// regardless of the chroot's cwd.
 func portsDir() string {
-	if v := os.Getenv("PEACOCK_PORTS_DIR"); v != "" {
-		if _, err := os.Stat(v); err == nil {
-			return v
-		}
+	root, ok := ports.Resolve()
+	if !ok {
+		return ""
 	}
-	if _, err := os.Stat("peacock-ports"); err == nil {
-		abs, err := filepath.Abs("peacock-ports")
-		if err == nil {
-			return abs
-		}
-		return "peacock-ports"
+	if abs, err := filepath.Abs(root); err == nil {
+		return abs
 	}
-	if exe, err := os.Executable(); err == nil {
-		for _, c := range []string{
-			filepath.Join(filepath.Dir(exe), "..", "peacock-ports"),
-			filepath.Join(filepath.Dir(exe), "..", "..", "..", "..", "peacock-ports"),
-		} {
-			if _, err := os.Stat(c); err == nil {
-				return c
-			}
-		}
-	}
-	return ""
+	return root
 }
 
 // workdirCache returns the peacock workdir cache path

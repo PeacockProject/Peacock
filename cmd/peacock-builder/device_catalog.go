@@ -14,6 +14,7 @@ import (
 	"sort"
 
 	"peacock/internal/manifest"
+	"peacock/internal/ports"
 )
 
 // DeviceMeta is the JSON-friendly shape the frontend consumes. Field
@@ -36,34 +37,17 @@ type DeviceMeta struct {
 	Support map[string]string `json:"support,omitempty"`
 }
 
-// portsRoot finds the peacock-ports tree. Resolution order:
-//  1. $PEACOCK_PORTS_DIR
-//  2. ./peacock-ports relative to cwd (matches build_setup.go)
-//  3. ../peacock-ports relative to the binary's dir (handy when the
-//     GUI is launched outside the Peacock repo, but the maintainer's
-//     dev layout is Peacock + peacock-ports as siblings)
+// portsRoot finds the peacock-ports tree via ports.Resolve (the shared
+// resolution order: $PEACOCK_PORTS_DIR → ./peacock-ports → the auto-clone
+// target → exe-relative siblings). ListDevices is a passive GUI binding,
+// so this deliberately does NOT auto-clone — a missing tree returns an
+// actionable error instead of triggering a multi-second network fetch
+// from a device-picker render.
 func portsRoot() (string, error) {
-	if v := os.Getenv("PEACOCK_PORTS_DIR"); v != "" {
-		if _, err := os.Stat(v); err == nil {
-			return v, nil
-		}
+	if root, ok := ports.Resolve(); ok {
+		return root, nil
 	}
-	if _, err := os.Stat("peacock-ports"); err == nil {
-		return "peacock-ports", nil
-	}
-	if exe, err := os.Executable(); err == nil {
-		candidate := filepath.Join(filepath.Dir(exe), "..", "peacock-ports")
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate, nil
-		}
-		// Also try a sibling of the Peacock repo (../../peacock-ports
-		// from a binary in cmd/peacock-builder/build/bin/).
-		candidate = filepath.Join(filepath.Dir(exe), "..", "..", "..", "..", "peacock-ports")
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate, nil
-		}
-	}
-	return "", fmt.Errorf("peacock-ports not found; set PEACOCK_PORTS_DIR or launch from a Peacock checkout")
+	return "", fmt.Errorf("peacock-ports not found; set PEACOCK_PORTS_DIR or launch from a Peacock checkout — run `peacock build` to fetch it, or set PEACOCK_PORTS_DIR")
 }
 
 // ListDevices returns the user-selectable device catalog. Only ports
