@@ -606,59 +606,58 @@ func prepareBuildDepPackages(b *builder.Builder, pkg *manifest.Package, chrootRo
 			}
 		}
 
-		// Default: keep our own build-dep packages in the /peacock overlay
-		// (the feather domain). A port that sets [build].integrate = true
-		// is merged into the base system tree at /usr instead. Either way
-		// the bin/lib/include detected below get wired into the build env.
-		destRoot := filepath.Join(chrootRoot, "peacock")
-		if depManifest.Build.Integrate {
-			destRoot = filepath.Join(chrootRoot, "usr")
+		// Install the dep package into the build chroot via feather, at its
+		// layout prefix (system -> /usr, peacock -> /peacock). The DB is
+		// sandboxed under the chroot via FTR_DB_ROOT. The build then finds
+		// the dep's tools on the standard PATH.
+		ftr, err := ftrBinary()
+		if err != nil {
+			return preparedBuildDeps{}, err
 		}
-		if err := execCommand("sudo", "mkdir", "-p", destRoot); err != nil {
-			return preparedBuildDeps{}, fmt.Errorf("failed to create build_dep_package dest %s: %w", destRoot, err)
+		dbRoot := filepath.Join(chrootRoot, "var", "lib", "feather")
+		if err := execCommand("sudo", "env", "FTR_DB_ROOT="+dbRoot,
+			ftr, "install", "--root", chrootRoot, "--allow-unsigned", artifactPath); err != nil {
+			return preparedBuildDeps{}, fmt.Errorf("failed to ftr-install build_dep_package %s: %w", depPkg, err)
 		}
 
-		if err := execCommand("sudo", "tar", "-xzf", artifactPath, "-C", destRoot); err != nil {
-			return preparedBuildDeps{}, fmt.Errorf("failed to install build_dep_package %s: %w", depPkg, err)
-		}
-
-		bins, err := findPaths(destRoot, map[string]struct{}{"bin": {}})
-		if err != nil {
-			return preparedBuildDeps{}, fmt.Errorf("failed to detect bin paths for %s: %w", depPkg, err)
-		}
-		incs, err := findPaths(destRoot, map[string]struct{}{"include": {}})
-		if err != nil {
-			return preparedBuildDeps{}, fmt.Errorf("failed to detect include paths for %s: %w", depPkg, err)
-		}
-		libs, err := findPaths(destRoot, map[string]struct{}{"lib": {}, "lib64": {}})
-		if err != nil {
-			return preparedBuildDeps{}, fmt.Errorf("failed to detect lib paths for %s: %w", depPkg, err)
-		}
-		for _, p := range bins {
-			rel, err := filepath.Rel(chrootRoot, p)
-			if err != nil {
-				return preparedBuildDeps{}, fmt.Errorf("failed to relativize bin path %s: %w", p, err)
-			}
-			extra.Bin = append(extra.Bin, filepath.Join(string(os.PathSeparator), rel))
-		}
-		for _, p := range incs {
-			rel, err := filepath.Rel(chrootRoot, p)
-			if err != nil {
-				return preparedBuildDeps{}, fmt.Errorf("failed to relativize include path %s: %w", p, err)
-			}
-			extra.Inc = append(extra.Inc, filepath.Join(string(os.PathSeparator), rel))
-		}
-		for _, p := range libs {
-			rel, err := filepath.Rel(chrootRoot, p)
-			if err != nil {
-				return preparedBuildDeps{}, fmt.Errorf("failed to relativize lib path %s: %w", p, err)
-			}
-			extra.Lib = append(extra.Lib, filepath.Join(string(os.PathSeparator), rel))
-			extra.LD = append(extra.LD, filepath.Join(string(os.PathSeparator), rel))
-		}
+		// Wire the dep's install prefix onto the build env search paths so
+		// its bin/lib/include are found (a no-op for /usr, already standard;
+		// needed for /peacock-layout deps).
+		prefix := depManifest.ResolvedPrefix()
+		extra.Bin = appendUnique(extra.Bin, filepath.Join(prefix, "bin"), filepath.Join(prefix, "sbin"))
+		extra.Inc = appendUnique(extra.Inc, filepath.Join(prefix, "include"))
+		extra.Lib = appendUnique(extra.Lib, filepath.Join(prefix, "lib"), filepath.Join(prefix, "lib64"))
+		extra.LD = appendUnique(extra.LD, filepath.Join(prefix, "lib"), filepath.Join(prefix, "lib64"))
 	}
 
 	return extra, nil
+}
+
+// ftrBinary locates the feather (ftr) CLI: $PEACOCK_FTR, then PATH.
+func ftrBinary() (string, error) {
+	if p := strings.TrimSpace(os.Getenv("PEACOCK_FTR")); p != "" {
+		return p, nil
+	}
+	if p, err := exec.LookPath("ftr"); err == nil {
+		return p, nil
+	}
+	return "", fmt.Errorf("feather (ftr) not found: set PEACOCK_FTR or install ftr on PATH")
+}
+
+func appendUnique(dst []string, vals ...string) []string {
+	for _, v := range vals {
+		seen := false
+		for _, e := range dst {
+			if e == v {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			dst = append(dst, v)
+		}
+	}
+	return dst
 }
 
 func ensureBuildDepBootstrap(b *builder.Builder, root string) error {
