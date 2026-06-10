@@ -81,8 +81,15 @@ export const RunDoctor = async (opts) => {
 };
 
 export const StartBuild = async (cfg) => {
+  // In Wails mode a null/empty result means the binding rejected (e.g.
+  // config validation) — surface it so the caller can show build:error
+  // instead of sitting at 0% forever. Only fall back to the mock id when
+  // there's genuinely no backend (dev preview).
   const real = await callApp("StartBuild", cfg || {});
   if (typeof real === "string" && real) return real;
+  if (HAS_WAILS_RT) {
+    throw new Error("StartBuild returned no build id — the backend rejected the request");
+  }
   return "fake-build-id";
 };
 

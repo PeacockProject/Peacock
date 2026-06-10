@@ -18,6 +18,18 @@ func GenerateConfigContent(arch string) string {
 		arch = "armv7h"
 	}
 
+	// Arch Linux ARM has no geo-CDN like mainline Arch's
+	// geo.mirror.pkgbuild.com — the canonical mirror.archlinuxarm.org is a
+	// redirector that load-balances to regional mirrors, several of which
+	// are dead or <1 byte/sec (it sent us to nj.us, which stalls builds).
+	// So we list a curated failover set, fastest-first (measured): pacman
+	// tries each Server top-down per repo and moves to the next when one
+	// errors or stalls past libcurl's low-speed timeout. The redirector
+	// stays last as a catch-all. Refresh this list if mirrors rot.
+	armServers := `Server = https://de3.mirror.archlinuxarm.org/$arch/$repo
+Server = https://ca.us.mirror.archlinuxarm.org/$arch/$repo
+Server = http://mirror.archlinuxarm.org/$arch/$repo`
+
 	conf := `
 [options]
 HoldPkg     = pacman glibc
@@ -26,16 +38,16 @@ CheckSpace
 SigLevel    = Never
 
 [core]
-Server = http://mirror.archlinuxarm.org/$arch/$repo
+` + armServers + `
 
 [extra]
-Server = http://mirror.archlinuxarm.org/$arch/$repo
+` + armServers + `
 
 [alarm]
-Server = http://mirror.archlinuxarm.org/$arch/$repo
+` + armServers + `
 
 [aur]
-Server = http://mirror.archlinuxarm.org/$arch/$repo
+` + armServers + `
 `
 	// Adjust for x86_64
 	if arch == "x86_64" {

@@ -102,6 +102,7 @@ export default function BuildFlow({ onHome, startDevice, appClass }) {
   if (running) {
     return <FlashFlow
       dev={dev} flavor={flavor} initSys={initSys} desktop={desktop}
+      dm={dm} pkgs={pkgs} arch={arch} buildMode={buildMode}
       onHome={onHome} appClass={appClass} />;
   }
 

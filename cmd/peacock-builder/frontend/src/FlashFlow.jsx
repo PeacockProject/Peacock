@@ -31,6 +31,33 @@ import React from "react";
 import { AppShell, PK, Btn, FULL, HEAD } from "./shared.jsx";
 import { buildScript, BUILD_PHASES, RunScreen, useWailsScript } from "./Run.jsx";
 import { DEVICE_PORTS, brandOf, brandSlug } from "./devices.js";
+import { hasWails } from "./devMock.jsx";
+import { StartBuild } from "./api.js";
+
+/* buildDTO maps the wizard selections to the BuildRequestDTO the Go
+ * StartBuild binding expects (see cmd/peacock-builder/build_runner.go).
+ * buildMode drives qemu/cross: "qemu-user" forces qemu, otherwise we let
+ * the pipeline auto-resolve (it cross-compiles foreign arches by default
+ * when a cross toolchain alias exists for the flavor). */
+function buildDTO(cfg) {
+  const c = cfg || {};
+  return {
+    device: (c.dev && c.dev.code) || "",
+    flavor: c.flavor || "arch",
+    initSystem: c.initSys || "openrc",
+    desktop: c.desktop || "none",
+    displayManager: c.dm || "none",
+    extras: c.pkgs || [],
+    userName: "",
+    userPassword: "",
+    imageSizeMB: 0,
+    emptyRootfs: false,
+    useQemu: c.buildMode === "qemu-user" ? "true" : "auto",
+    crossCompile: "",
+    workDir: "",
+    architecture: c.arch || (c.dev && c.dev.arch) || "",
+  };
+}
 
 /* Per-device port wiring (bootloader / recovery / system images) lives
  * in devices.js as DEVICE_PORTS, with `brand` derived there via
@@ -59,10 +86,30 @@ function portsFor(dev) {
  *
  * Dev / preview mode (no Wails): drives the same simulated buildScript()
  * lines used in Run.jsx with a local timer. */
-function useBuildJob(dev, desktop, armed) {
+function useBuildJob(cfg, armed) {
+  const dev = cfg && cfg.dev;
+  const desktop = cfg && cfg.desktop;
   const live = useWailsScript("build", BUILD_PHASES); // null when no Wails runtime
   const [n, setN] = React.useState(0);
   const script = React.useMemo(() => buildScript(dev || { code: "x" }, desktop), [dev && dev.code, desktop]);
+
+  /* Kick the REAL build exactly once when armed under Wails. Without
+   * this the subscription (useWailsScript) sits at 0% forever because
+   * nothing ever invokes the pipeline. Mock mode (no Wails) skips this
+   * and animates the simulated script below instead. Errors come back
+   * through the build:error event, surfaced via live.errorMsg. */
+  const startedRef = React.useRef(false);
+  const [startErr, setStartErr] = React.useState("");
+  React.useEffect(() => {
+    if (!armed || startedRef.current || !hasWails()) return;
+    startedRef.current = true;
+    StartBuild(buildDTO(cfg)).catch((e) => {
+      // The build never started (e.g. config rejected) so no build:error
+      // event will ever fire — surface the rejection ourselves.
+      setStartErr(String(e && e.message ? e.message : e));
+    });
+  }, [armed]);
+
   React.useEffect(() => {
     if (live || !armed) return;
     if (n >= script.length) return;
@@ -71,12 +118,14 @@ function useBuildJob(dev, desktop, armed) {
   }, [live, armed, n, script.length]);
   if (live) {
     /* useWailsScript flips `done` on :error too (to stop spinners); here
-     * `done` means SUCCESS — it gates auto-advance into F3 — so mask it. */
+     * `done` means SUCCESS — it gates auto-advance into F3 — so mask it.
+     * startErr (a StartBuild rejection that never produced a build:error
+     * event) takes precedence so a failed kickoff doesn't hang at 0%. */
     return {
       progress: live.prog,
       phase: live.phase,
-      done: live.done && !live.errorMsg,
-      error: live.errorMsg,
+      done: live.done && !live.errorMsg && !startErr,
+      error: startErr || live.errorMsg,
       lines: live.lines,
     };
   }
@@ -921,7 +970,7 @@ function StopFlashModal({ open, onKeep, onStop }) {
  * background build job is armed at mount (splash entry) so it runs in
  * parallel with the user reading the warning + unlock instructions. F0 owns
  * its own splash → dock animation, and F5 has its own celebratory screen. */
-export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appClass }) {
+export default function FlashFlow({ dev, flavor, initSys, desktop, dm, pkgs, arch, buildMode, onHome, appClass }) {
   const [sub, setSub] = React.useState("splash");
   const [discardOpen, setDiscardOpen] = React.useState(false);
   const [stopOpen, setStopOpen] = React.useState(false);
@@ -934,7 +983,12 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appCl
    * When the build completes we auto-advance them into F3. Cleared if
    * they back out to F2 instead of waiting. */
   const [waitingOnBuild, setWaitingOnBuild] = React.useState(false);
-  const build = useBuildJob(dev, desktop, true); // armed immediately at F0 entry
+  // Full wizard config → drives the real StartBuild and the mock script.
+  const buildCfg = React.useMemo(
+    () => ({ dev, flavor, initSys, desktop, dm, pkgs, arch, buildMode }),
+    [dev, flavor, initSys, desktop, dm, pkgs, arch, buildMode]
+  );
+  const build = useBuildJob(buildCfg, true); // armed immediately at F0 entry
   const ports = portsFor(dev);
 
   /* F2 → next: build done means straight to F3 (connect); build still
