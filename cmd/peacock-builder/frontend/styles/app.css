@@ -93,7 +93,7 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 .rail .wk{position:absolute;left:-30px;bottom:-30px;width:200px;height:230px;opacity:.05;pointer-events:none;}
 .rail .rfoot{margin-top:auto;padding:18px 26px;font-family:var(--mono);font-size:10.5px;color:var(--faint);position:relative;z-index:2;}
 
-.main{display:flex;flex-direction:column;min-height:0;position:relative;}
+.main{display:flex;flex-direction:column;min-height:0;min-width:0;position:relative;}
 
 /* basic/advanced mode toggle chip (top-right of every wizard step) */
 .modechip{position:absolute;top:18px;right:22px;z-index:5;display:inline-flex;align-items:center;gap:8px;
@@ -990,6 +990,34 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
   .basicbase{grid-template-columns:1fr;max-width:640px;}
   .summary{grid-template-columns:1fr;}
   .rprog{grid-template-columns:1fr;grid-template-rows:auto minmax(160px,1fr);}
-  .rpl{border-right:none;border-bottom:1px solid var(--line);}
+  .rpl{border-right:none;border-bottom:1px solid var(--line);padding:28px 26px;}
+  /* 46px gutters breathe down to 20px so fixed max-width content blocks
+   * (.basicbase 920px, .rvbasic 640px, .ff-unlock 760px) keep room. */
+  .mhead,.mbody,.mfoot{padding-left:20px;padding-right:20px;}
+  .ff-top,.ff-foot,.ff-flash-top{padding-left:20px;padding-right:20px;}
+  .ff-unlock,.ff-connect{padding-left:20px;padding-right:20px;}
+  .ff-warn{max-width:min(640px,calc(100% - 40px));padding:30px 26px 24px;}
+}
+
+@media (max-height:700px){
+  /* Vertical-cramped windows: shave headroom, let tall flows scroll. */
+  .mhead{padding-top:20px;}
+  .ff-warn{margin-top:16px;padding-top:24px;padding-bottom:20px;}
+  .ff-warn-icon{width:58px;height:67px;margin:2px 0 10px;}
+  .ff-connect{margin-top:14px;}
+  .ff-cable{width:110px;height:126px;}
+  /* Run screen progress block: smaller percent figure, scroll instead of
+   * clipping when the centered column no longer fits. */
+  .bigpct{font-size:96px;}
+  .rpl{justify-content:flex-start;overflow:auto;padding-top:24px;padding-bottom:24px;}
+  .rtrack{margin-top:16px;}
+  .loglink{margin-top:18px;}
+  /* Finish screens flow from the top and scroll rather than clip. */
+  .finscr{justify-content:flex-start;overflow:auto;padding-top:24px;padding-bottom:24px;}
+  .ff-done{justify-content:flex-start;padding-top:20px;padding-bottom:20px;}
+  /* F4 flash header: trim the percent display so the live log keeps room. */
+  .ff-flash-top{padding-top:14px;padding-bottom:12px;}
+  .ff-flash-pct{font-size:56px;}
+  .ff-flash-pct .pp{font-size:26px;}
 }
 
