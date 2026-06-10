@@ -24,11 +24,19 @@ file; leaving them here so it's clear what's underway vs. what's still untouched
       command through the chroot; the pipeline sets it around the phases
       and clears it after. Host's pacman/apt/apk/qemu/cross-gcc
       requirements collapse to chroot+tar+curl.
-  - `internal/host/chroot_bootstrap.go` — `resolveArchBootstrapURL`
-    (parses the `latest/` index for the dated tarball), `downloadTarball`,
-    `verifyChecksum` + `expectedHashFor` (fail-closed; Arch/Alpine
-    sha256sums.txt + Debian SHA256SUMS formats), `extractTarball` with
-    per-flavor strip-components (arch=1, debian/alpine=0).
+  - `internal/host/chroot_bootstrap.go` — `resolveTarballURL`
+    (arch + alpine use stable upstream URLs; debian comes from
+    `$PEACOCK_DEBIAN_ROOTFS_URL` or a clear error — Debian has no stable
+    rootfs tarball, the cloud genericcloud image is a disk image not a
+    chroot), `downloadTarball`, `verifyChecksum` + `expectedHashFor`
+    (fail-closed; matches by basename out of multi-line manifests).
+    Sums: arch = fixed `geo.mirror.pkgbuild.com/iso/latest/sha256sums.txt`,
+    alpine = per-file `<tarball>.sha256` sidecar, debian =
+    `$PEACOCK_DEBIAN_ROOTFS_SHA256URL` (or skip via
+    `PEACOCK_INSECURE_SKIP_VERIFY=1`). `extractTarball` picks the
+    decompress flag by extension (.tar.zst→--zstd, .tar.xz→-J,
+    .tar.gz→-z) with per-flavor strip-components (arch=1, alpine/debian=0).
+    Arch's bootstrap is the stable `archlinux-bootstrap-x86_64.tar.zst`.
   - `internal/host/chroot_setup.go` — `installToolchain` runs
     pacman-key+base-devel / apt build-essential / apk build-base inside
     the chroot, gated by a `.peacock-toolchain-ready` sentinel.

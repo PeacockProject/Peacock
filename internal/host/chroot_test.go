@@ -196,6 +196,24 @@ func TestResolveTarballURLDebian(t *testing.T) {
 	}
 }
 
+func TestDecompressFlag(t *testing.T) {
+	tests := map[string]string{
+		"archlinux-bootstrap-x86_64.tar.zst":     "--zstd",
+		"/tmp/x.ZST":                             "--zstd",
+		"debian-rootfs.tar.xz":                   "-J",
+		"foo.xz":                                 "-J",
+		"alpine-minirootfs-3.20.0-x86_64.tar.gz": "-z",
+		"thing.tgz":                              "-z",
+		"/tmp/peacock-host-arch-123.tar":         "", // no ext → tar auto-detects
+		"noextension":                            "",
+	}
+	for path, want := range tests {
+		if got := decompressFlag(path); got != want {
+			t.Errorf("decompressFlag(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
 func TestIsSupportedHostChrootFlavor(t *testing.T) {
 	for _, f := range []string{"arch", "debian", "alpine"} {
 		if !IsSupportedHostChrootFlavor(f) {

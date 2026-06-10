@@ -217,15 +217,44 @@ func sha256File(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// decompressFlag returns the explicit tar decompression flag for a
+// tarball path based on its extension:
+//   - .tar.zst / .zst → --zstd
+//   - .tar.xz  / .xz  → -J
+//   - .tar.gz  / .gz  / .tgz → -z
+//
+// Returns "" for an unrecognized extension; modern GNU tar (≥1.31)
+// auto-detects in that case, so an empty flag is a safe fallback.
+// Passing the explicit flag avoids relying on auto-detection for zstd,
+// which older/leaner tar builds may not have compiled in.
+func decompressFlag(tarballPath string) string {
+	lower := strings.ToLower(tarballPath)
+	switch {
+	case strings.HasSuffix(lower, ".tar.zst"), strings.HasSuffix(lower, ".zst"):
+		return "--zstd"
+	case strings.HasSuffix(lower, ".tar.xz"), strings.HasSuffix(lower, ".xz"):
+		return "-J"
+	case strings.HasSuffix(lower, ".tar.gz"), strings.HasSuffix(lower, ".gz"), strings.HasSuffix(lower, ".tgz"):
+		return "-z"
+	default:
+		return ""
+	}
+}
+
 // extractTarball untars tarballPath into destRoot with the per-flavor
-// --strip-components applied. Uses sudo because the rootfs entries carry
-// privileged ownership/permissions (-p preserves them); destRoot lives
-// under the peacock workdir.
+// --strip-components applied and an explicit decompression flag selected
+// by extension (.tar.zst → --zstd, .tar.xz → -J, .tar.gz → -z). Uses
+// sudo because the rootfs entries carry privileged ownership/permissions
+// (-p preserves them); destRoot lives under the peacock workdir.
 func extractTarball(tarballPath, destRoot, flavor string) error {
 	if err := os.MkdirAll(destRoot, 0o755); err != nil {
 		return fmt.Errorf("host: cannot create chroot root %s: %w", destRoot, err)
 	}
-	args := []string{"tar", "-xpf", tarballPath, "-C", destRoot}
+	args := []string{"tar"}
+	if flag := decompressFlag(tarballPath); flag != "" {
+		args = append(args, flag)
+	}
+	args = append(args, "-xpf", tarballPath, "-C", destRoot)
 	if n := stripComponentsFor(flavor); n > 0 {
 		args = append(args, fmt.Sprintf("--strip-components=%d", n))
 	}
