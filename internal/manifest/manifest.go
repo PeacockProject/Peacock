@@ -98,13 +98,6 @@ type Package struct {
 		// "arm-linux-gnueabihf"). Flows into both package resolution and
 		// the derived CROSS_COMPILE so they can't disagree.
 		Triple string `toml:"triple"`
-		// Integrate controls where this package lands when staged as a
-		// build_dep_package (a port we build ourselves — device-specific or
-		// not in the distro). Default (false) keeps it in the /peacock
-		// overlay (the feather domain); true integrates it into the base
-		// system tree at /usr. Either way its bin/lib/include are wired
-		// into the build env (PATH / LD_LIBRARY_PATH).
-		Integrate bool `toml:"integrate"`
 		// KernelConfig / PRPKernelConfig name the in-port config files a
 		// kernel build script consumes, exposed to the script as
 		// $KERNEL_CONFIG / $PRP_KERNEL_CONFIG. A kernel port that sets
