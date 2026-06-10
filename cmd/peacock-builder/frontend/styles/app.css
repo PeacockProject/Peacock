@@ -546,10 +546,19 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
   animation:ffsplash-in .55s cubic-bezier(.2,.7,.2,1) both;}
 @keyframes ffsplash-in{from{transform:scale(.6);opacity:0;}to{transform:scale(1);opacity:1;}}
 /* Dock target: small circle, top-left, at the same coordinates as the
- * future persistent TopBanner's left edge. Translate from current center
- * (50vw,50vh) to top-left (60px,60px) while scaling down to ~18%. */
-.ff-splash.docking .ff-splash-pk{transform:translate(calc(-50vw + 60px),calc(-50vh + 60px)) scale(.18);
+ * future persistent TopBanner's dot. The translation is FLIP-measured in
+ * FlashFlow.jsx (StepSplash measures the peacock rect + the .ff-dock-target
+ * marker rect with getBoundingClientRect and sets --dock-dx/--dock-dy/
+ * --dock-scale as inline custom props) so it lands correctly at any window
+ * size. The calc() fallbacks reproduce the old viewport-center math in case
+ * measurement was impossible. */
+.ff-splash.docking .ff-splash-pk{
+  transform:translate(var(--dock-dx,calc(-50vw + 60px)),var(--dock-dy,calc(-50vh + 60px))) scale(var(--dock-scale,.18));
   filter:drop-shadow(0 4px 10px rgba(46,134,200,.45));}
+/* Invisible marker at the TopBanner dot's resting coordinates: banner sits
+ * at top:14px/left:28px with 16px/10px padding; its 10px dot centers at
+ * roughly (49,40) within .ffwrap. Used only as a measurement target. */
+.ff-dock-target{position:absolute;left:44px;top:35px;width:10px;height:10px;pointer-events:none;visibility:hidden;}
 .ff-splash-line{margin-top:18px;font-family:var(--serif);font-size:30px;letter-spacing:-.003em;color:var(--ink);
   background:var(--irid);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
   animation:ffsplash-line-in .65s ease .15s both;transition:opacity .35s ease;}

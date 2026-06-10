@@ -97,6 +97,7 @@ const SPLASH_BUFFER_MS = 80;
 
 function StepSplash({ onDone }) {
   const [docking, setDocking] = React.useState(false);
+  const rootRef = React.useRef(null);
   const dockTimerRef = React.useRef(null);
   const doneTimerRef = React.useRef(null);
   const rafRef = React.useRef(null);
@@ -123,6 +124,29 @@ function StepSplash({ onDone }) {
      * entirely (manifests as "splash disappears in 0ms"). */
     dockTimerRef.current = setTimeout(() => {
       rafRef.current = requestAnimationFrame(() => {
+        /* FLIP measurement: the old CSS used viewport-center math
+         * (translate(calc(-50vw + 60px), calc(-50vh + 60px))) which only
+         * landed near the dock target at the original window size. Instead,
+         * measure where the peacock actually is and where the dock target
+         * (an invisible marker at the TopBanner dot's coordinates) actually
+         * is, and feed the delta to the CSS transition via custom props.
+         * The CSS keeps a viewport-math fallback in case measurement is
+         * impossible (element gone mid-frame). Timing is unchanged — the
+         * deterministic timer chain below remains the state driver. */
+        const root = rootRef.current;
+        if (root) {
+          const pk = root.querySelector(".ff-splash-pk");
+          const tgt = root.querySelector(".ff-dock-target");
+          if (pk && tgt) {
+            const a = pk.getBoundingClientRect();
+            const b = tgt.getBoundingClientRect();
+            const dx = (b.left + b.width / 2) - (a.left + a.width / 2);
+            const dy = (b.top + b.height / 2) - (a.top + a.height / 2);
+            root.style.setProperty("--dock-dx", dx + "px");
+            root.style.setProperty("--dock-dy", dy + "px");
+            root.style.setProperty("--dock-scale", "0.18");
+          }
+        }
         setDocking(true);
       });
     }, SPLASH_HOLD_MS);
@@ -159,10 +183,14 @@ function StepSplash({ onDone }) {
      * the wizard's Cancel chrome that sits underneath it. The splash has
      * no interactive elements of its own. */
     <div
+      ref={rootRef}
       className={"ff-splash" + (docking ? " docking" : "")}
       style={{ pointerEvents: "none" }}
       onTransitionEnd={onTransitionEnd}
     >
+      {/* Invisible FLIP dock target: sits at the same coordinates as the
+        * TopBanner's pulsing dot (which isn't mounted yet during F0). */}
+      <span className="ff-dock-target" aria-hidden="true" />
       <div className="ff-splash-stage">
         <div className="ff-splash-aura" />
         <PK src={FULL} className="ff-splash-pk pkgrad" />
