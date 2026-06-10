@@ -27,10 +27,24 @@ func NewBuilder(cacheDir string) (*Builder, error) {
 	return &Builder{CacheDir: cacheDir}, nil
 }
 
+// sourceCachePath returns the cache path for a source URL. The key is a
+// hash of the FULL url (not just the basename) so the many GitHub
+// `…/master.tar.gz` sources don't collide on one file — that collision
+// previously made a port silently reuse another's cached source. The
+// basename is kept as a suffix for readability + the archive extension.
+func (b *Builder) sourceCachePath(url string) string {
+	h := sha256.Sum256([]byte(url))
+	name := fmt.Sprintf("%x-%s", h[:6], filepath.Base(url))
+	return filepath.Join(b.CacheDir, "sources", name)
+}
+
 // Download fetches a file from url and caches it. Returns path to cached file.
 func (b *Builder) Download(url string, expectedChecksum string) (string, error) {
 	filename := filepath.Base(url)
-	destPath := filepath.Join(b.CacheDir, filename)
+	destPath := b.sourceCachePath(url)
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return "", fmt.Errorf("failed to create source cache dir: %w", err)
+	}
 
 	// Check if exists
 	if _, err := os.Stat(destPath); err == nil {
