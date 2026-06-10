@@ -47,11 +47,11 @@ func IsSupportedHostChrootFlavor(flavor string) bool {
 // Tarball URLs per flavor. Constants live here so the BACKLOG entry
 // has one obvious place to point at when the implementation lands.
 //
-// Arch's `latest` resolves to a dated archlinux-bootstrap-<date>-x86_64.tar.gz;
-// the implementation will need to fetch the directory listing and pick
-// the newest. For now these constants stand as documentation.
+// Arch publishes a STABLE-named bootstrap tarball under the geo mirror's
+// iso/latest/ that resolves to the newest dated build, so no listing
+// scrape is needed for the happy path. Note the compression is .tar.zst.
 const (
-	ArchBootstrapURL  = "https://archive.archlinux.org/iso/latest/archlinux-bootstrap-x86_64.tar.gz"
+	ArchBootstrapURL  = "https://geo.mirror.pkgbuild.com/iso/latest/archlinux-bootstrap-x86_64.tar.zst"
 	DebianRootfsURL   = "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.tar.xz"
 	AlpineMinirootURL = "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.0-x86_64.tar.gz"
 )

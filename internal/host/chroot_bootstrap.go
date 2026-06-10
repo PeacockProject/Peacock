@@ -30,16 +30,19 @@ import (
 	"peacock/internal/runner"
 )
 
-// archBootstrapListingURL is the directory whose listing we scrape to
-// find the current dated archlinux-bootstrap tarball. Kept as a var so
-// tests can document intent; the parse itself is pure (see
-// parseArchBootstrapListing).
-const archBootstrapListingURL = "https://archive.archlinux.org/iso/latest/"
+// archSumsURL is Arch's published sha256sums manifest alongside the
+// stable bootstrap tarball on the geo mirror. It lists both the stable
+// and the dated filenames (same hash); expectedHashFor matches by
+// basename.
+const archSumsURL = "https://geo.mirror.pkgbuild.com/iso/latest/sha256sums.txt"
 
 // archBootstrapFilePattern matches the dated bootstrap tarball filename
-// inside the latest/ directory listing, e.g.
-// archlinux-bootstrap-2024.06.01-x86_64.tar.gz.
-var archBootstrapFilePattern = regexp.MustCompile(`archlinux-bootstrap-[0-9.]+-x86_64\.tar\.gz`)
+// inside a latest/ directory listing, e.g.
+// archlinux-bootstrap-2024.06.01-x86_64.tar.zst. The happy path uses the
+// stable .tar.zst URL directly (see ArchBootstrapURL); this pattern +
+// parseArchBootstrapListing are retained as a pure, tested fallback for
+// any future listing-scrape use.
+var archBootstrapFilePattern = regexp.MustCompile(`archlinux-bootstrap-[0-9.]+-x86_64\.tar\.(?:zst|gz)`)
 
 // stripComponentsFor returns the tar --strip-components value for a
 // flavor's bootstrap tarball layout:
@@ -66,7 +69,9 @@ func sumsURLFor(flavor, tarballURL string) string {
 		dir = tarballURL[:i+1]
 	}
 	switch flavor {
-	case "arch", "alpine":
+	case "arch":
+		return archSumsURL
+	case "alpine":
 		return dir + "sha256sums.txt"
 	case "debian":
 		return dir + "SHA256SUMS"
@@ -76,34 +81,15 @@ func sumsURLFor(flavor, tarballURL string) string {
 }
 
 // resolveTarballURL returns the concrete download URL for a flavor.
-// Debian + Alpine are deterministic; Arch requires a directory scrape
-// because TarballURL("arch") points at a non-existent stable filename.
+// Arch uses the stable .tar.zst URL directly (the geo mirror resolves it
+// to the newest dated build — no listing scrape); debian + alpine are
+// deterministic.
 func resolveTarballURL(flavor string) (string, error) {
-	if flavor == "arch" {
-		return resolveArchBootstrapURL()
-	}
 	url := TarballURL(flavor)
 	if url == "" {
 		return "", fmt.Errorf("host: no bootstrap tarball URL known for flavor %q", flavor)
 	}
 	return url, nil
-}
-
-// resolveArchBootstrapURL fetches the archive.archlinux.org latest/
-// directory listing and extracts the current dated bootstrap tarball,
-// returning its full URL. The HTML parse is delegated to the pure
-// parseArchBootstrapListing so it can be table-tested offline.
-func resolveArchBootstrapURL() (string, error) {
-	runner.Logf("Resolving arch bootstrap from %s\n", archBootstrapListingURL)
-	out, err := runner.RunOutput(exec.Command("curl", "-fsSL", archBootstrapListingURL))
-	if err != nil {
-		return "", fmt.Errorf("host: failed to fetch arch bootstrap listing: %w", err)
-	}
-	name, err := parseArchBootstrapListing(out)
-	if err != nil {
-		return "", err
-	}
-	return archBootstrapListingURL + name, nil
 }
 
 // parseArchBootstrapListing extracts the dated bootstrap tarball

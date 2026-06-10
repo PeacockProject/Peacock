@@ -2,9 +2,9 @@ package host
 
 import "testing"
 
-// archListingFixture is a realistic snippet of the
-// archive.archlinux.org/iso/latest/ directory listing. The real page is
-// an Apache autoindex; we only need enough to exercise the regex.
+// archListingFixture is a realistic snippet of a geo-mirror
+// iso/latest/ directory listing. The happy path no longer scrapes this,
+// but parseArchBootstrapListing is retained + tested as a pure fallback.
 const archListingFixture = `<!DOCTYPE html>
 <html>
  <head><title>Index of /iso/latest/</title></head>
@@ -12,9 +12,9 @@ const archListingFixture = `<!DOCTYPE html>
 <h1>Index of /iso/latest/</h1>
 <table>
 <tr><td><a href="../">../</a></td></tr>
-<tr><td><a href="archlinux-2024.06.01-x86_64.iso">archlinux-2024.06.01-x86_64.iso</a></td></tr>
-<tr><td><a href="archlinux-bootstrap-2024.06.01-x86_64.tar.gz">archlinux-bootstrap-2024.06.01-x86_64.tar.gz</a></td></tr>
-<tr><td><a href="archlinux-bootstrap-2024.06.01-x86_64.tar.gz.sig">archlinux-bootstrap-2024.06.01-x86_64.tar.gz.sig</a></td></tr>
+<tr><td><a href="archlinux-bootstrap-x86_64.tar.zst">archlinux-bootstrap-x86_64.tar.zst</a></td></tr>
+<tr><td><a href="archlinux-bootstrap-2024.06.01-x86_64.tar.zst">archlinux-bootstrap-2024.06.01-x86_64.tar.zst</a></td></tr>
+<tr><td><a href="archlinux-bootstrap-2024.06.01-x86_64.tar.zst.sig">archlinux-bootstrap-2024.06.01-x86_64.tar.zst.sig</a></td></tr>
 <tr><td><a href="sha256sums.txt">sha256sums.txt</a></td></tr>
 </table>
 </body>
@@ -30,14 +30,14 @@ func TestParseArchBootstrapListing(t *testing.T) {
 		{
 			name: "realistic listing",
 			html: archListingFixture,
-			want: "archlinux-bootstrap-2024.06.01-x86_64.tar.gz",
+			want: "archlinux-bootstrap-2024.06.01-x86_64.tar.zst",
 		},
 		{
 			name: "picks newest of several dates",
-			html: `archlinux-bootstrap-2023.01.01-x86_64.tar.gz
-archlinux-bootstrap-2024.12.01-x86_64.tar.gz
-archlinux-bootstrap-2024.06.01-x86_64.tar.gz`,
-			want: "archlinux-bootstrap-2024.12.01-x86_64.tar.gz",
+			html: `archlinux-bootstrap-2023.01.01-x86_64.tar.zst
+archlinux-bootstrap-2024.12.01-x86_64.tar.zst
+archlinux-bootstrap-2024.06.01-x86_64.tar.zst`,
+			want: "archlinux-bootstrap-2024.12.01-x86_64.tar.zst",
 		},
 		{
 			name:    "no match",
@@ -66,8 +66,13 @@ archlinux-bootstrap-2024.06.01-x86_64.tar.gz`,
 
 func TestExpectedHashFor(t *testing.T) {
 	// Arch/Alpine form: "<hash>  <file>" (two-space separator).
-	archSums := `abc123def456  archlinux-bootstrap-2024.06.01-x86_64.tar.gz
+	archSums := `abc123def456  archlinux-bootstrap-2024.06.01-x86_64.tar.zst
 0000000000000000  archlinux-2024.06.01-x86_64.iso`
+	// Arch's real sha256sums.txt lists BOTH the stable and the dated
+	// filename, with the SAME hash. We must resolve the stable name by
+	// basename out of a multi-line manifest.
+	archStableAndDatedSums := `9f9f9f9f9f9f  archlinux-bootstrap-x86_64.tar.zst
+9f9f9f9f9f9f  archlinux-bootstrap-2026.06.01-x86_64.tar.zst`
 	// Debian SHA256SUMS form: same shape, sometimes with "./" prefix or
 	// a binary-mode "*" marker.
 	debianSums := `deadbeefcafe *./debian-12-genericcloud-amd64.tar.xz
@@ -82,8 +87,10 @@ func TestExpectedHashFor(t *testing.T) {
 		want     string
 		wantErr  bool
 	}{
-		{"arch double-space", archSums, "archlinux-bootstrap-2024.06.01-x86_64.tar.gz", "abc123def456", false},
-		{"arch by basename", archSums, "https://x/archlinux-bootstrap-2024.06.01-x86_64.tar.gz", "abc123def456", false},
+		{"arch double-space", archSums, "archlinux-bootstrap-2024.06.01-x86_64.tar.zst", "abc123def456", false},
+		{"arch by basename", archSums, "https://x/archlinux-bootstrap-2024.06.01-x86_64.tar.zst", "abc123def456", false},
+		{"arch stable name from multi-line manifest", archStableAndDatedSums, "archlinux-bootstrap-x86_64.tar.zst", "9f9f9f9f9f9f", false},
+		{"arch dated name from same manifest", archStableAndDatedSums, "archlinux-bootstrap-2026.06.01-x86_64.tar.zst", "9f9f9f9f9f9f", false},
 		{"debian star and dotslash", debianSums, "debian-12-genericcloud-amd64.tar.xz", "deadbeefcafe", false},
 		{"alpine", alpineSums, "alpine-minirootfs-3.20.0-x86_64.tar.gz", "feedface9999", false},
 		{"missing entry fails closed", archSums, "not-present.tar.gz", "", true},
@@ -130,8 +137,8 @@ func TestSumsURLFor(t *testing.T) {
 	}{
 		{
 			flavor:  "arch",
-			tarball: "https://archive.archlinux.org/iso/latest/archlinux-bootstrap-2024.06.01-x86_64.tar.gz",
-			want:    "https://archive.archlinux.org/iso/latest/sha256sums.txt",
+			tarball: ArchBootstrapURL,
+			want:    archSumsURL,
 		},
 		{
 			flavor:  "alpine",
