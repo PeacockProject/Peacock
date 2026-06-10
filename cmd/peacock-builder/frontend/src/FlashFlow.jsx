@@ -28,7 +28,7 @@
 
 import React from "react";
 import { AppShell, PK, Btn, FULL, HEAD } from "./shared.jsx";
-import { buildScript, BUILD_PHASES, RunScreen } from "./Run.jsx";
+import { buildScript, BUILD_PHASES, RunScreen, useWailsScript } from "./Run.jsx";
 import { DEVICE_PORTS, brandOf, brandSlug } from "./devices.js";
 
 /* Per-device port wiring (bootloader / recovery / system images) lives
@@ -45,35 +45,43 @@ function portsFor(dev) {
   };
 }
 
-/* ===== background build job (F0 kick-off, persistent banner, F3 gate) =====
+/* ===== background build job (F0 kick-off, persistent banner, F2 gate) =====
  *
- * A custom hook that drives the same simulated buildScript() lines used in
- * Run.jsx, but emits {progress, phase, done} so callers can render a small
- * banner instead of the full RunScreen layout. Once we have real Wails
- * events this is the single place to swap in EventsOn("build:log",…). */
+ * THE single source of truth for build state in this flow. The driver owns
+ * exactly one instance and feeds it to both the persistent TopBanner and
+ * the full-page live build view (LiveOverlay → RunScreen in controlled
+ * mode), so they can never disagree on percent / phase / log / done.
+ *
+ * Real-Wails mode: useWailsScript("build", …) holds the ONLY set of
+ * EventsOn("build:log"/"build:phase"/"build:done"/"build:error")
+ * subscriptions; both views are pure renderers of its state.
+ *
+ * Dev / preview mode (no Wails): drives the same simulated buildScript()
+ * lines used in Run.jsx with a local timer. */
 function useBuildJob(dev, desktop, armed) {
+  const live = useWailsScript("build", BUILD_PHASES); // null when no Wails runtime
   const [n, setN] = React.useState(0);
-  /* Populated by the Wails "build:error" event once the real pipeline is
-   * wired in; the simulated script never fails so it stays null in dev.
-   * TopBanner renders a tappable failure state when this is set. */
-  const [error, setError] = React.useState(null);
-  React.useEffect(() => {
-    if (typeof window === "undefined" || !window.runtime || typeof window.runtime.EventsOn !== "function") return;
-    const off = window.runtime.EventsOn("build:error", (payload) => {
-      setError(typeof payload === "string" && payload ? payload : "build failed");
-    });
-    return () => { if (typeof off === "function") { try { off(); } catch (_e) { /* noop */ } } };
-  }, []);
   const script = React.useMemo(() => buildScript(dev || { code: "x" }, desktop), [dev && dev.code, desktop]);
   React.useEffect(() => {
-    if (!armed || error) return;
+    if (live || !armed) return;
     if (n >= script.length) return;
     const t = setTimeout(() => setN(n + 1), n === 0 ? 400 : 380 + Math.random() * 300);
     return () => clearTimeout(t);
-  }, [armed, n, script.length, error]);
+  }, [live, armed, n, script.length]);
+  if (live) {
+    /* useWailsScript flips `done` on :error too (to stop spinners); here
+     * `done` means SUCCESS — it gates auto-advance into F3 — so mask it. */
+    return {
+      progress: live.prog,
+      phase: live.phase,
+      done: live.done && !live.errorMsg,
+      error: live.errorMsg,
+      lines: live.lines,
+    };
+  }
   const prog = n > 0 ? script[n - 1].prog : 0;
   const phase = BUILD_PHASES.reduce((a, p) => (prog >= p.at ? p.label : a), BUILD_PHASES[0].label);
-  return { progress: prog, phase, done: !error && prog >= 100, error, lines: script.slice(0, n), script };
+  return { progress: prog, phase, done: prog >= 100, error: null, lines: script.slice(0, n) };
 }
 
 /* ===== F0: splash → top-bar morph =======================================
@@ -251,11 +259,12 @@ function TopBanner({ build, onOpenLive }) {
 }
 
 /* The live overlay: full-stage RunScreen with a small "Back to flash setup"
- * pill at the top-right. We re-use RunScreen unchanged, then absolute-overlay
- * the pill on top. RunScreen drives its own internal timer; we pass an
- * onDone that the user typically never hits — they click the pill first. */
-function LiveOverlay({ dev, desktop, onBack }) {
-  const script = React.useMemo(() => buildScript(dev || { code: "x" }, desktop), [dev && dev.code, desktop]);
+ * pill at the top-right. RunScreen runs in controlled mode — it renders the
+ * driver-owned build job (the same object TopBanner reads), so the banner
+ * and this full-page view always agree on percent / phase / log / errors.
+ * No timer, no subscriptions of its own. Completion routing (auto-advance
+ * to F3 when the user is waiting on the build) lives in the driver. */
+function LiveOverlay({ dev, build, onBack }) {
   const meta = (
     <span>{(dev && dev.code) || "build"} · <span>live build</span></span>
   );
@@ -265,12 +274,18 @@ function LiveOverlay({ dev, desktop, onBack }) {
         ‹ Back to flash setup
       </button>
       <RunScreen
-        script={script}
+        job={{
+          lines: build.lines,
+          prog: build.progress,
+          phase: build.phase,
+          /* RunScreen's `done` just stops the log cursor — include the
+           * failure case so an errored build doesn't blink forever. */
+          done: build.done || !!build.error,
+          errorMsg: build.error,
+        }}
         title="Building your image…"
         meta={meta}
         phases={BUILD_PHASES}
-        eventPrefix="build"
-        onDone={onBack}
         onBack={onBack}
       />
     </div>
@@ -956,7 +971,7 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appCl
         {sub === "connect" && <StepConnect dev={dev} onCancel={cancel} onBack={() => setSub("unlock")} onNext={() => setSub("flash")} />}
         {sub === "flash" && <StepFlash dev={dev} onCancel={cancel} onBack={() => setSub("connect")} onDone={() => setSub("done")} onWriteState={setFlashWriting} />}
         {sub === "done" && <StepDone dev={dev} onHome={onHome} onBuildAnother={onHome} />}
-        {liveOpen && <LiveOverlay dev={dev} desktop={desktop} onBack={() => setLiveOpen(false)} />}
+        {liveOpen && <LiveOverlay dev={dev} build={build} onBack={() => setLiveOpen(false)} />}
         <DiscardModal open={discardOpen} onKeep={keep} onDiscard={discard} />
         <StopFlashModal open={stopOpen} onKeep={keepFlashing} onStop={stopAnyway} />
       </div>

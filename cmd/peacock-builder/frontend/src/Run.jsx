@@ -37,13 +37,19 @@ export { BUILD_PHASES, INSTALL_PHASES, buildScript, installScript };
 
 /* useWailsScript — subscribe to a "<prefix>:log" / "<prefix>:phase" /
  * "<prefix>:done" / "<prefix>:error" event stream and yield the same
- * { lines, prog, phase, done, error } shape RunScreen consumes when
+ * { lines, prog, phase, done, errorMsg } shape RunScreen consumes when
  * driving the simulated path.
  *
  * eventPrefix is "build" or "install". When hasWails() is false this
  * hook returns null so callers can fall back to the script-driven
- * timer in RunScreen. */
-function useWailsScript(eventPrefix, phases) {
+ * timer in RunScreen.
+ *
+ * `enabled` (default true): pass false when some OTHER hook instance
+ * already owns the event subscriptions and the caller is a pure
+ * renderer of that shared state (RunScreen's controlled `job` mode —
+ * see FlashFlow's driver-owned useBuildJob). This guarantees exactly
+ * one EventsOn set per stream. Exported for FlashFlow. */
+export function useWailsScript(eventPrefix, phases, enabled = true) {
   const [lines, setLines] = React.useState([]);
   const [prog, setProg] = React.useState(0);
   const [phase, setPhase] = React.useState(phases[0].label);
@@ -51,7 +57,7 @@ function useWailsScript(eventPrefix, phases) {
   const [errorMsg, setErrorMsg] = React.useState(null);
 
   React.useEffect(() => {
-    if (!hasWails() || !window.runtime || typeof window.runtime.EventsOn !== "function") return;
+    if (!enabled || !hasWails() || !window.runtime || typeof window.runtime.EventsOn !== "function") return;
 
     const unsubs = [];
     const subscribe = (name, cb) => {
@@ -116,9 +122,9 @@ function useWailsScript(eventPrefix, phases) {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [eventPrefix]);
+  }, [eventPrefix, enabled]);
 
-  if (!hasWails()) return null;
+  if (!enabled || !hasWails()) return null;
   return { lines, prog, phase, done, errorMsg };
 }
 
@@ -130,14 +136,24 @@ function useWailsScript(eventPrefix, phases) {
  *
  * Backward-compatible: existing callers that pass `script` + `phases`
  * keep working — they're treated as the dev-mode source of truth and
- * the live path is opt-in via the `eventPrefix` prop. */
-export function RunScreen({ script, title, meta, phases, onDone, onBack, eventPrefix }) {
-  const live = useWailsScript(eventPrefix || "build", phases);
+ * the live path is opt-in via the `eventPrefix` prop.
+ *
+ * Controlled mode: pass `job` ({ lines, prog, phase, done, errorMsg })
+ * and RunScreen becomes a pure renderer of that external state — it
+ * runs no internal timer, makes NO Wails subscriptions of its own
+ * (the job's owner holds the single EventsOn set), and never fires
+ * onDone (the controller owns completion routing). FlashFlow's live
+ * build overlay uses this so the top banner and the full-page view
+ * always show identical state. Standalone self-driving mode is
+ * unchanged — InstallFlow still relies on it. */
+export function RunScreen({ script, title, meta, phases, onDone, onBack, eventPrefix, job }) {
+  const wails = useWailsScript(eventPrefix || "build", phases, !job);
+  const live = job || wails;
 
   const [n, setN] = React.useState(0);
   const simProg = n > 0 ? script[n - 1].prog : 0;
   React.useEffect(() => {
-    if (live) return; // Wails events drive progress, no timer needed.
+    if (live) return; // external job / Wails events drive progress, no timer needed.
     if (n >= script.length) { const t = setTimeout(onDone, 900); return () => clearTimeout(t); }
     const t = setTimeout(() => setN(n + 1), n === 0 ? 300 : 300 + Math.random() * 240);
     return () => clearTimeout(t);
@@ -145,9 +161,10 @@ export function RunScreen({ script, title, meta, phases, onDone, onBack, eventPr
 
   // Fire onDone once for the live path when the backend emits :done —
   // but NOT on :error (it also flips `done` to stop the spinner; the
-  // failure banner below owns that state instead of the success screen).
+  // failure banner below owns that state instead of the success screen),
+  // and NOT in controlled mode (the job's owner routes on completion).
   React.useEffect(() => {
-    if (!live || !live.done || live.errorMsg) return;
+    if (job || !live || !live.done || live.errorMsg) return;
     const t = setTimeout(onDone, 600);
     return () => clearTimeout(t);
   }, [live && live.done]);
