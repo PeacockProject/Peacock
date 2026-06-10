@@ -53,31 +53,54 @@ func installToolchain(root, flavor string) error {
 		}
 	}
 
-	var steps [][]string
+	// Each step is a shell command run inside the chroot. We route
+	// through `/bin/sh -c` with an explicit PATH because `sudo chroot
+	// <root> <cmd>` does a PATH lookup using sudo's sanitized PATH
+	// (typically /usr/bin:/bin), which misses package managers that
+	// live in /sbin — Alpine's apk is at /sbin/apk, for instance. A
+	// fixed PATH covering the usual bin/sbin dirs resolves the binary
+	// uniformly across flavors. apt-get also wants DEBIAN_FRONTEND set
+	// so it never blocks on an interactive prompt.
+	const chrootPath = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+	var cmds []string
 	switch flavor {
 	case "arch":
-		// Arch bootstrap ships pacman but an empty keyring.
-		steps = [][]string{
-			{"chroot", root, "pacman-key", "--init"},
-			{"chroot", root, "pacman-key", "--populate", "archlinux"},
-			{"chroot", root, "pacman", "-Sy", "--noconfirm", "base-devel", "git"},
+		// Arch bootstrap ships pacman with an empty keyring AND an empty
+		// mirrorlist (every Server line commented out), so `pacman -Sy`
+		// fails with "no servers configured" until we write one. The geo
+		// mirror resolves to a nearby CDN node. Single quotes keep the
+		// shell from expanding pacman's $repo/$arch placeholders.
+		cmds = []string{
+			"printf 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch\\n' > /etc/pacman.d/mirrorlist",
+			// pacman's CheckSpace statvfs's the install root, but inside a
+			// chroot the mount table doesn't reflect the real backing fs,
+			// so it spuriously reports "not enough free disk space" even
+			// with hundreds of GB free. arch-install-scripts / pmbootstrap
+			// disable it the same way when installing into a chroot.
+			"sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf",
+			"pacman-key --init",
+			"pacman-key --populate archlinux",
+			"pacman -Sy --noconfirm base-devel git",
 		}
 	case "debian":
-		steps = [][]string{
-			{"chroot", root, "apt-get", "update"},
-			{"chroot", root, "apt-get", "install", "-y", "build-essential", "git"},
+		cmds = []string{
+			"export DEBIAN_FRONTEND=noninteractive; apt-get update",
+			"export DEBIAN_FRONTEND=noninteractive; apt-get install -y build-essential git",
 		}
 	case "alpine":
-		steps = [][]string{
-			{"chroot", root, "apk", "add", "--no-cache", "build-base", "git"},
+		cmds = []string{
+			"apk add --no-cache build-base git",
 		}
 	default:
 		return fmt.Errorf("host: no toolchain recipe for flavor %q", flavor)
 	}
 
-	for _, step := range steps {
-		if err := runner.RunCmd(exec.Command("sudo", step...)); err != nil {
-			return fmt.Errorf("host: toolchain step %v failed: %w", step, err)
+	for _, c := range cmds {
+		shc := chrootPath + " " + c
+		cmd := exec.Command("sudo", "chroot", root, "/bin/sh", "-c", shc)
+		if err := runner.RunCmd(cmd); err != nil {
+			return fmt.Errorf("host: toolchain step [%s] failed: %w", c, err)
 		}
 	}
 
