@@ -38,17 +38,23 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 .sbar .live{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 0 3px rgba(31,138,91,.16);}
 .sbar .crumb{color:var(--ink2);}
 
-/* ---- home poster ---- */
+/* ---- home poster ----
+ * Fluid below 1280px wide, frozen at the approved poster above it:
+ * 13vw = 166.4px at 1280, so the 164px cap engages exactly there and the
+ * poster type, peacock, and text-stack offsets are pixel-identical at the
+ * approved 1280×800. The lede/acts offsets are derived from the type size
+ * (big top 84px + two .82-line-height lines = 84 + 1.64×F, plus the same
+ * 39px / 133px gaps as the original 392px / 486px values). */
 .home{position:relative;height:100%;overflow:hidden;}
 .home .kick{position:absolute;left:50px;top:38px;font-family:var(--mono);font-size:11px;letter-spacing:.26em;color:var(--soft);z-index:3;}
-.home .pkhero{position:absolute;right:-92px;top:-16px;width:660px;height:748px;z-index:1;pointer-events:none;
+.home .pkhero{position:absolute;right:clamp(-92px,-7.2vw,-46px);top:-16px;width:min(660px,55vw);aspect-ratio:660 / 748;z-index:1;pointer-events:none;
   filter:saturate(.97) drop-shadow(0 30px 60px rgba(46,134,200,.16));}
 .home .big{position:absolute;left:46px;top:84px;z-index:2;}
-.home .l1{font-family:var(--serif);font-size:164px;line-height:.82;letter-spacing:-.01em;}
-.home .l2{font-family:var(--serif);font-style:italic;font-size:164px;line-height:.82;
+.home .l1{font-family:var(--serif);font-size:clamp(72px,13vw,164px);line-height:.82;letter-spacing:-.01em;}
+.home .l2{font-family:var(--serif);font-style:italic;font-size:clamp(72px,13vw,164px);line-height:.82;
   background:var(--irid);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;}
-.home .lede{position:absolute;left:50px;top:392px;max-width:33ch;font-size:15.5px;line-height:1.5;color:var(--ink2);z-index:3;}
-.home .acts{position:absolute;left:50px;top:486px;z-index:4;display:flex;gap:12px;}
+.home .lede{position:absolute;left:50px;top:calc(123px + 1.64*clamp(72px,13vw,164px));max-width:33ch;font-size:15.5px;line-height:1.5;color:var(--ink2);z-index:3;}
+.home .acts{position:absolute;left:50px;top:calc(217px + 1.64*clamp(72px,13vw,164px));z-index:4;display:flex;gap:12px;flex-wrap:wrap;}
 .home .recent{position:absolute;left:50px;bottom:30px;z-index:3;font-family:var(--mono);font-size:11.5px;color:var(--soft);
   display:flex;align-items:center;gap:10px;}
 .home .recent a{color:var(--ink2);border-bottom:1px solid var(--line2);padding-bottom:1px;cursor:pointer;}
@@ -100,7 +106,7 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 .modechip.on .dot{background:var(--blue);box-shadow:0 0 0 3px rgba(46,134,200,.18);}
 .mhead{padding:34px 46px 0;}
 .mcount{font-family:var(--mono);font-size:11px;letter-spacing:.16em;color:var(--soft);text-transform:uppercase;}
-.mtitle{font-family:var(--serif);font-size:50px;line-height:.98;margin:7px 0 6px;letter-spacing:-.005em;}
+.mtitle{font-family:var(--serif);font-size:clamp(32px,4.5vw,50px);line-height:.98;margin:7px 0 6px;letter-spacing:-.005em;}
 .msub{color:var(--soft);font-size:15px;line-height:1.5;max-width:56ch;}
 .mbody{flex:1;min-height:0;overflow:auto;padding:26px 46px 30px;}
 .mbody::-webkit-scrollbar{width:9px;}
@@ -319,10 +325,10 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 
 /* ---- compact density ---- */
 .app.compact .mhead{padding-top:24px;}
-.app.compact .mtitle{font-size:40px;}
+.app.compact .mtitle{font-size:clamp(32px,4.5vw,40px);}
 .app.compact .mbody{padding-top:18px;padding-bottom:20px;}
 .app.compact .mfoot{padding-top:13px;padding-bottom:13px;}
-.app.compact .home .l1,.app.compact .home .l2{font-size:132px;}
+.app.compact .home .l1,.app.compact .home .l2{font-size:clamp(72px,13vw,132px);}
 .app.compact .home .big{top:72px;}
 .app.compact .run .pct{font-size:108px;}
 
