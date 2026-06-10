@@ -35,6 +35,10 @@ func TestResolve_EnvWithoutDevice(t *testing.T) {
 	// Run from a temp cwd with no ./peacock-ports so we don't pick up
 	// the dev-layout symlink and report a false negative.
 	t.Chdir(t.TempDir())
+	// Redirect HOME to an empty dir so the <varDir>/peacock-ports
+	// candidate (#3) can't resolve to a real checkout that happens to
+	// exist on the test machine (~/.local/var/peacock/peacock-ports).
+	t.Setenv("HOME", t.TempDir())
 
 	if _, found := Resolve(); found {
 		t.Fatalf("Resolve() found=true for a dir without device/, want false")
