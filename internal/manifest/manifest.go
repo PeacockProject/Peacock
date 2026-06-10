@@ -114,9 +114,24 @@ type Package struct {
 		// linux-<dev>-prp port. Empty = no kernel config / no PRP variant.
 		KernelConfig    string `toml:"kernel_config"`
 		PRPKernelConfig string `toml:"prp_kernel_config"`
-		Script          string `toml:"script"`
-		Source          string `toml:"source"`
-		Checksum        string `toml:"checksum"`
+		// Type selects the default build phase set (lib/build/<type>.sh):
+		// raw | make | autotools | kernel. Empty defaults to raw. A port's
+		// build.sh overrides individual phases. Replaces inline Script.
+		Type string `toml:"type"`
+		// Phase-default knobs consumed by the lib/build phases, exposed to
+		// the build as $-vars of the same name.
+		Prefix          string `toml:"prefix"`
+		ConfigureArgs   string `toml:"configure_args"`
+		MakeArgs        string `toml:"make_args"`
+		MakeInstallArgs string `toml:"make_install_args"`
+		Patches         string `toml:"patches"`
+		Strip           string `toml:"strip"`
+		// Script is the legacy inline build script. Deprecated and being
+		// migrated to build.sh + Type; retained only until the sweep
+		// completes so unconverted ports keep building.
+		Script   string `toml:"script"`
+		Source   string `toml:"source"`
+		Checksum string `toml:"checksum"`
 	} `toml:"build"`
 
 	Install Install `toml:"install"`

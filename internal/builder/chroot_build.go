@@ -236,19 +236,55 @@ func (b *Builder) BuildPackageInChroot(pkg *manifest.Package, targetArch string,
 
 	runner.Logf("Building package %s %s for %s in %s (chroot)\n", pkg.Package.Name, pkg.Package.Version, targetArch, buildDir)
 
-	// Extract source if provided
+	// Build model: new (build.sh + phase library) vs legacy inline script.
+	hasBuildSh := false
+	if pkg.ManifestDir != "" {
+		if _, err := os.Stat(filepath.Join(pkg.ManifestDir, "build.sh")); err == nil {
+			hasBuildSh = true
+		}
+	}
+	buildType := pkg.Build.Type
+	if buildType == "" {
+		buildType = "raw"
+	}
+	useNewModel := hasBuildSh || buildType != "raw"
+	if !useNewModel && pkg.Build.Script == "" {
+		return "", fmt.Errorf("package %s has no build: set [build].type (make|autotools|kernel) or add a build.sh", pkg.Package.Name)
+	}
+
+	// Source delivery. The new model leaves extraction to prepare(); the
+	// legacy path pre-extracts in place as before.
 	if tarball != "" {
-		cmd := exec.Command("tar", "-xf", tarball, "-C", buildDir, "--strip-components=1")
-		cmd.Stdout = runner.LogWriter()
-		cmd.Stderr = runner.LogWriter()
-		if err := runner.RunCmd(cmd); err != nil {
-			return "", fmt.Errorf("failed to extract source: %w", err)
+		if useNewModel {
+			dst := filepath.Join(buildDir, archiveBasename(pkg.Build.Source, tarball))
+			if err := copyFileLocal(tarball, dst); err != nil {
+				return "", fmt.Errorf("failed to stage source archive: %w", err)
+			}
+		} else {
+			cmd := exec.Command("tar", "-xf", tarball, "-C", buildDir, "--strip-components=1")
+			cmd.Stdout = runner.LogWriter()
+			cmd.Stderr = runner.LogWriter()
+			if err := runner.RunCmd(cmd); err != nil {
+				return "", fmt.Errorf("failed to extract source: %w", err)
+			}
 		}
 	}
 
-	if pkg.Build.Script != "" {
+	// Stage the shared phase library into the build dir (new model only).
+	if useNewModel {
+		if err := stageBuildLib(buildDir); err != nil {
+			return "", fmt.Errorf("failed to stage build library: %w", err)
+		}
+	}
+
+	if useNewModel || pkg.Build.Script != "" {
 		scriptPath := filepath.Join(buildDir, "peacock-build.sh")
-		scriptContent := "#!/bin/sh\nset -e\n" + pkg.Build.Script + "\n"
+		var scriptContent string
+		if useNewModel {
+			scriptContent = newModelScript(pkg, buildType, hasBuildSh)
+		} else {
+			scriptContent = "#!/bin/sh\nset -e\n" + pkg.Build.Script + "\n"
+		}
 		if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
 			return "", err
 		}
