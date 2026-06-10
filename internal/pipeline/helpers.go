@@ -610,7 +610,7 @@ func prepareBuildDepPackages(b *builder.Builder, pkg *manifest.Package, chrootRo
 		// layout prefix (system -> /usr, peacock -> /peacock). The DB is
 		// sandboxed under the chroot via FTR_DB_ROOT. The build then finds
 		// the dep's tools on the standard PATH.
-		ftr, err := ftrBinary()
+		ftr, err := builder.FtrBinary()
 		if err != nil {
 			return preparedBuildDeps{}, err
 		}
@@ -631,17 +631,6 @@ func prepareBuildDepPackages(b *builder.Builder, pkg *manifest.Package, chrootRo
 	}
 
 	return extra, nil
-}
-
-// ftrBinary locates the feather (ftr) CLI: $PEACOCK_FTR, then PATH.
-func ftrBinary() (string, error) {
-	if p := strings.TrimSpace(os.Getenv("PEACOCK_FTR")); p != "" {
-		return p, nil
-	}
-	if p, err := exec.LookPath("ftr"); err == nil {
-		return p, nil
-	}
-	return "", fmt.Errorf("feather (ftr) not found: set PEACOCK_FTR or install ftr on PATH")
 }
 
 func appendUnique(dst []string, vals ...string) []string {

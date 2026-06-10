@@ -1,10 +1,7 @@
 package builder
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -294,10 +291,16 @@ func (b *Builder) InstallPackagesToRootfs(imageChrootRoot, rootfsPath string, pa
 	var repoPkgs []string
 	var localPkgs []string
 
+	// Locally-built packages are .feather in the per-arch store; everything
+	// else comes from the base distro's repos (we sit on top of a distro,
+	// not replace its package manager).
+	storeArch := arch
+	if arch == "armv7" {
+		storeArch = "armv7h"
+	}
 	runner.Logln("Identifying package locations...")
 	for _, pkg := range packages {
-		// Check if package file exists in host CacheDir
-		pattern := filepath.Join(b.CacheDir, pkg+"-*.pkg.tar.gz")
+		pattern := filepath.Join(b.PackagesDir(), storeArch, pkg+"-*.feather")
 		matches, err := filepath.Glob(pattern)
 		if err != nil {
 			runner.Logf("Glob error for %s: %v\n", pkg, err)
@@ -305,39 +308,27 @@ func (b *Builder) InstallPackagesToRootfs(imageChrootRoot, rootfsPath string, pa
 
 		var selected string
 		var selectedMtime time.Time
-		if len(matches) > 0 {
-			// Filter matches to avoid architecture mismatch (e.g. picking x86_64 bash when building for arm)
-			for _, m := range matches {
-				base := filepath.Base(m)
-				// Skip x86_64 artifacts if we are not targeting x86_64
-				if arch != "x86_64" && strings.Contains(base, "x86_64") {
-					continue
-				}
-				if !packageNameMatches(m, pkg) {
-					continue
-				}
-
-				// Prefer the newest artifact by mtime. Lexical version sorting is wrong for
-				// dotted versions (e.g. 1.0.12 sorts before 1.0.6), and the build pipeline
-				// may leave old artifacts in the cache dir.
-				fi, err := os.Stat(m)
-				if err != nil {
-					continue
-				}
-				if selected == "" || fi.ModTime().After(selectedMtime) {
-					selected = m
-					selectedMtime = fi.ModTime()
-				}
+		for _, m := range matches {
+			if featherPackageName(m) != pkg {
+				continue
+			}
+			// Prefer the newest artifact by mtime (dotted versions don't
+			// sort lexically, and stale artifacts may linger).
+			fi, err := os.Stat(m)
+			if err != nil {
+				continue
+			}
+			if selected == "" || fi.ModTime().After(selectedMtime) {
+				selected = m
+				selectedMtime = fi.ModTime()
 			}
 		}
 
 		if selected != "" {
-			// Found local file
-			filename := filepath.Base(selected)
-			runner.Logf(" [LOCAL] Found %s -> %s\n", pkg, filename)
-			localPkgs = append(localPkgs, filepath.Join(internalCache, filename))
+			runner.Logf(" [LOCAL] %s -> %s\n", pkg, filepath.Base(selected))
+			localPkgs = append(localPkgs, selected) // host path; ftr installs with --root
 		} else {
-			runner.Logf(" [REPO]  Assume %s is in repo (no local file matched pattern: %s)\n", pkg, pattern)
+			runner.Logf(" [REPO]  %s from distro repo\n", pkg)
 			repoPkgs = append(repoPkgs, pkg)
 		}
 	}
@@ -406,16 +397,23 @@ func (b *Builder) InstallPackagesToRootfs(imageChrootRoot, rootfsPath string, pa
 		}
 	}
 
-	// 3. Install Local Packages (using -U)
+	// 3. Install our own (locally-built) packages via feather, overlaying
+	// each .feather onto the rootfs at its layout prefix. DB sandboxed
+	// under the rootfs via FTR_DB_ROOT.
 	if len(localPkgs) > 0 {
-		// Use -U for local files
-		installArgs := append(commonArgs, "-U", "--overwrite", "*")
-		installArgs = append(installArgs, localPkgs...)
-		cmd := exec.Command("sudo", installArgs...)
-		cmd.Stdout = runner.LogWriter()
-		cmd.Stderr = runner.LogWriter()
-		if err := runner.RunCmd(cmd); err != nil {
-			return fmt.Errorf("failed to install local packages: %w", err)
+		ftr, err := FtrBinary()
+		if err != nil {
+			return err
+		}
+		dbRoot := filepath.Join(rootfsPath, "var", "lib", "feather")
+		for _, fea := range localPkgs {
+			cmd := exec.Command("sudo", "env", "FTR_DB_ROOT="+dbRoot,
+				ftr, "install", "--root", rootfsPath, "--allow-unsigned", fea)
+			cmd.Stdout = runner.LogWriter()
+			cmd.Stderr = runner.LogWriter()
+			if err := runner.RunCmd(cmd); err != nil {
+				return fmt.Errorf("failed to ftr-install %s: %w", filepath.Base(fea), err)
+			}
 		}
 	}
 
@@ -523,43 +521,28 @@ func (b *Builder) CreateDiskImage(imageChrootRoot, rootfsPath, outputPath string
 	return nil
 }
 
-func packageNameMatches(pkgPath, expected string) bool {
-	f, err := os.Open(pkgPath)
-	if err != nil {
-		return false
+// featherPackageName extracts the package name from a store filename
+// <name>-<version>-<rel>-<arch>.feather. The version starts with a digit,
+// so the name is everything before the first "-<digit>".
+func featherPackageName(path string) string {
+	base := strings.TrimSuffix(filepath.Base(path), ".feather")
+	for i := 0; i+1 < len(base); i++ {
+		if base[i] == '-' && base[i+1] >= '0' && base[i+1] <= '9' {
+			return base[:i]
+		}
 	}
-	defer f.Close()
+	return base
+}
 
-	gzr, err := gzip.NewReader(f)
-	if err != nil {
-		return false
+// FtrBinary locates the feather (ftr) CLI: $PEACOCK_FTR, then PATH.
+func FtrBinary() (string, error) {
+	if p := strings.TrimSpace(os.Getenv("PEACOCK_FTR")); p != "" {
+		return p, nil
 	}
-	defer gzr.Close()
-
-	tr := tar.NewReader(gzr)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			return false
-		}
-		if err != nil {
-			return false
-		}
-		if hdr.Name != ".PKGINFO" {
-			continue
-		}
-		data, err := io.ReadAll(tr)
-		if err != nil {
-			return false
-		}
-		for _, line := range strings.Split(string(data), "\n") {
-			if strings.HasPrefix(line, "pkgname = ") {
-				name := strings.TrimSpace(strings.TrimPrefix(line, "pkgname = "))
-				return name == expected
-			}
-		}
-		return false
+	if p, err := exec.LookPath("ftr"); err == nil {
+		return p, nil
 	}
+	return "", fmt.Errorf("feather (ftr) not found: set PEACOCK_FTR or install ftr on PATH")
 }
 
 // setupLoopDevice attaches the image file to a loop device
