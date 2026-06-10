@@ -9,7 +9,32 @@ import { AppShell } from "./shared.jsx";
 import Home from "./Home.jsx";
 import BuildFlow from "./BuildFlow.jsx";
 import InstallFlow from "./InstallFlow.jsx";
+import PortsSync from "./PortsSync.jsx";
+import { PortsStatus } from "./api.js";
 import { APP_VERSION } from "./meta.js";
+
+/* BuildGate — peacock-ports must be present before the build wizard is
+ * usable (the device picker, the build itself, all read it). On entering
+ * the build view we check PortsStatus(); if absent, show the PortsSync
+ * clone screen until it's fetched, then mount BuildFlow. In dev mode the
+ * PortsStatus stub reports present=true, so the gate is invisible. */
+function BuildGate({ onHome, startDevice, appClass }) {
+  // null = checking, true = ready, false = needs sync
+  const [ready, setReady] = React.useState(null);
+  React.useEffect(() => {
+    let alive = true;
+    PortsStatus()
+      .then((st) => { if (alive) setReady(!!(st && st.present)); })
+      .catch(() => { if (alive) setReady(false); });
+    return () => { alive = false; };
+  }, []);
+
+  if (ready === null) return <div className="viewwrap" />; // brief blank while checking
+  if (!ready) {
+    return <div className="viewwrap"><PortsSync onReady={() => setReady(true)} onHome={onHome} /></div>;
+  }
+  return <div className="viewwrap"><BuildFlow key="b" onHome={onHome} startDevice={startDevice} appClass={appClass} /></div>;
+}
 
 const TWEAK_DEFAULTS = {
   accent: "iridescent",
@@ -47,7 +72,7 @@ export default function App() {
   const appClass = t.compact ? "compact" : "";
 
   if (view === "build") {
-    return <div className="viewwrap"><BuildFlow key="b" onHome={home} startDevice={startDevice} appClass={appClass} /></div>;
+    return <BuildGate onHome={home} startDevice={startDevice} appClass={appClass} />;
   }
   if (view === "install") {
     /* previewNote: in the BUILDER this flow is a demo — the real install

@@ -90,3 +90,22 @@ export const CancelBuild = async (buildID) => {
   const real = await callApp("CancelBuild", buildID || "");
   return real === true;
 };
+
+// PortsStatus reports whether a peacock-ports checkout is present.
+// Read-only. In dev mode (no Wails backend) we report present=true so
+// the first-time-setup clone screen never appears — the Cloudflare
+// preview runs entirely on FALLBACK_DEVICES.
+export const PortsStatus = async () => {
+  const real = await callApp("PortsStatus");
+  if (real && typeof real === "object") return real;
+  return { present: true, root: "" };
+};
+
+// SyncPorts kicks off the clone (when absent) and streams progress via
+// the "ports:log" / "ports:done" / "ports:error" Wails events. In dev
+// mode it resolves immediately as present so nothing blocks.
+export const SyncPorts = async () => {
+  const real = await callApp("SyncPorts");
+  if (real && typeof real === "object") return real;
+  return { present: true, root: "" };
+};

@@ -347,6 +347,24 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 
 .empty{color:var(--faint);font-family:var(--mono);font-size:13px;text-align:center;padding:40px 0;}
 
+/* ---- first-time ports sync (clone screen) ---- */
+.psync{height:100%;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;overflow:hidden;padding:0 40px;}
+.psync-aura{position:absolute;inset:0;background:radial-gradient(50% 45% at 50% 42%,rgba(46,134,200,.14),transparent 70%),radial-gradient(40% 40% at 60% 60%,rgba(108,99,216,.12),transparent 72%);pointer-events:none;}
+.psync-pk{width:180px;height:206px;position:relative;margin-bottom:12px;filter:drop-shadow(0 20px 40px rgba(46,134,200,.2));animation:psyncfloat 3.2s ease-in-out infinite;}
+@keyframes psyncfloat{0%,100%{transform:translateY(0);}50%{transform:translateY(-7px);}}
+.psync-tag{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--soft);position:relative;}
+.psync-tag.err{color:#c2543b;}
+.psync-h1{font-family:var(--serif);font-size:46px;line-height:1.06;margin:10px 0 8px;position:relative;}
+.psync-body{color:var(--ink2);font-size:15.5px;max-width:44ch;line-height:1.55;position:relative;margin:0 0 22px;}
+.psync-hint{color:var(--soft);font-size:13px;max-width:46ch;line-height:1.5;position:relative;margin:0 0 22px;}
+.psync-hint code{font-family:var(--mono);font-size:12px;background:#1a182010;border-radius:5px;padding:1px 5px;}
+.psync-track{width:min(360px,80%);height:3px;border-radius:2px;background:#0000000f;position:relative;overflow:hidden;margin:2px 0 16px;}
+.psync-track i{position:absolute;top:0;left:-40%;width:40%;height:100%;border-radius:2px;background:var(--irid);animation:psyncbar 1.25s ease-in-out infinite;}
+@keyframes psyncbar{0%{left:-40%;}100%{left:100%;}}
+.psync-log{font-family:var(--mono);font-size:12px;color:var(--soft);max-width:80%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative;}
+.psync-acts{display:flex;gap:12px;position:relative;}
+@media (prefers-reduced-motion:reduce){.psync-pk{animation:none;}.psync-track i{animation-duration:2.4s;}}
+
 /* ---- compact density ---- */
 .app.compact .mhead{padding-top:24px;}
 .app.compact .mtitle{font-size:clamp(32px,4.5vw,40px);}
