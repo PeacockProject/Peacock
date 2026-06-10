@@ -143,16 +143,17 @@ func TestHostChrootRoot(t *testing.T) {
 	}
 }
 
-func TestEnsureHostChrootUnimplemented(t *testing.T) {
-	// We can't safely test the bootstrap path, but we can confirm
-	// that for an empty rootfs target EnsureHostChroot returns the
-	// "not yet implemented" error rather than silently succeeding.
-	_, err := EnsureHostChroot("alpine")
-	if err == nil {
-		t.Skip("EnsureHostChroot returned nil — chroot may already exist on this host")
-	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Errorf("expected not-yet-implemented error, got %v", err)
+func TestEnsureHostChrootRejectsUnsupportedFlavor(t *testing.T) {
+	// The real bootstrap path needs network + root, so it is
+	// integration-only. What we CAN assert hermetically is that an
+	// unsupported flavor is rejected up front (via HostChrootRoot)
+	// without any download/extract side effects, and that the
+	// now-implemented entrypoint no longer surfaces the old
+	// "not yet implemented" sentinel.
+	if _, err := EnsureHostChroot("freebsd"); err == nil {
+		t.Errorf("expected error for unsupported flavor")
+	} else if strings.Contains(err.Error(), "not yet implemented") {
+		t.Errorf("EnsureHostChroot still returns the stale not-implemented error: %v", err)
 	}
 }
 
