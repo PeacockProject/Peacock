@@ -954,3 +954,36 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 .dpk-drawer-fbtn:focus-visible{outline:2px solid var(--blue);outline-offset:3px;}
 .dpk-drawer .dpk-mx-row:focus-visible{outline:2px solid var(--blue);outline-offset:2px;border-radius:4px;}
 
+/* ===================== RESPONSIVE BREAKPOINTS =====================
+ * The design is approved at 1280×800 and must stay pixel-identical there.
+ * A small, principled set of breakpoints adds graceful degradation for the
+ * 800×600 … 2560×1440 window range:
+ *   max-width:1024px — wizard rail collapses to a numbers-only 64px column;
+ *                      device drawer always leaves a clickable backdrop strip
+ *   max-width:860px  — two-column grids stack; 46px gutters shrink
+ *   max-height:700px — vertical-cramped adjustments (short windows)
+ * (The pre-existing max-width:760px drawer-matrix collapse lives with the
+ * drawer rules above.) */
+
+@media (max-width:1024px){
+  /* Rail → number-only strip. Labels, watermark and workdir footer hide;
+   * the active-step accent bar and done-checkmarks still read clearly. */
+  .wiz{grid-template-columns:64px 1fr;}
+  .rail .rt{padding:0;text-align:center;letter-spacing:.08em;}
+  .rstep{padding:10px 0;justify-content:center;gap:0;}
+  .rstep .rn{width:auto;flex:0 0 auto;text-align:center;}
+  .rstep .rl{display:none;}
+  .rail .wk,.rail .rfoot{display:none;}
+  /* Drawer: never wider than the viewport minus a 48px backdrop strip,
+   * so the click-to-dismiss backdrop stays visible and clickable. */
+  .dpk-drawer{width:min(420px,calc(100vw - 48px));}
+}
+
+@media (max-width:860px){
+  /* Two-column layouts stack. */
+  .basicbase{grid-template-columns:1fr;max-width:640px;}
+  .summary{grid-template-columns:1fr;}
+  .rprog{grid-template-columns:1fr;grid-template-rows:auto minmax(160px,1fr);}
+  .rpl{border-right:none;border-bottom:1px solid var(--line);}
+}
+
