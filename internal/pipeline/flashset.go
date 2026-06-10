@@ -93,7 +93,13 @@ func BuildFlashSet(device, workDir, useQemuFlag, crossCompileFlag string, progre
 	// 2. Bootloader (minkernel / lk2nd).
 	if set.Bootloader != "" {
 		emit("Building bootloader", 40)
-		buildDir, err := buildOnePort(b, set.Bootloader, targetArch, workDir, useQemuFlag, crossCompileFlag)
+		// Bootloaders are bare-metal firmware (lk2nd, lk, minkernel): always
+		// cross-compiled from the host, never qemu — there's no libc to run a
+		// native compiler against, and the bare-metal toolchain (arm-none-eabi)
+		// only exists in the host-arch repos. Force cross regardless of the
+		// user's qemu/native selection, which applies to the OS image, not
+		// firmware.
+		buildDir, err := buildOnePort(b, set.Bootloader, targetArch, workDir, "false", crossCompileFlag)
 		if err != nil {
 			return arts, fmt.Errorf("flashset: bootloader %s: %w", set.Bootloader, err)
 		}
