@@ -165,6 +165,137 @@ func TestRunOutputReturnsAndLogsStdout(t *testing.T) {
 	}
 }
 
+// clearExecPrefix restores direct exec at the end of a test so a stray
+// prefix can't leak into other tests (runner keeps it in package state).
+func clearExecPrefixOnCleanup(t *testing.T) {
+	t.Helper()
+	t.Cleanup(ClearExecPrefix)
+}
+
+func TestSetExecPrefixRoundTrip(t *testing.T) {
+	clearExecPrefixOnCleanup(t)
+	if got := ExecPrefix(); got != nil {
+		t.Fatalf("ExecPrefix() default = %v, want nil", got)
+	}
+	SetExecPrefix([]string{"sudo", "chroot", "/host"})
+	got := ExecPrefix()
+	want := []string{"sudo", "chroot", "/host"}
+	if len(got) != len(want) {
+		t.Fatalf("ExecPrefix() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ExecPrefix()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSetExecPrefixDefensiveCopy(t *testing.T) {
+	clearExecPrefixOnCleanup(t)
+	src := []string{"sudo", "chroot", "/host"}
+	SetExecPrefix(src)
+	src[2] = "/tampered" // mutate caller's slice after the set
+	if got := ExecPrefix(); got[2] != "/host" {
+		t.Fatalf("ExecPrefix()[2] = %q, want %q (set must copy defensively)", got[2], "/host")
+	}
+	// ExecPrefix's return must also be a copy.
+	ret := ExecPrefix()
+	ret[0] = "tampered"
+	if got := ExecPrefix(); got[0] != "sudo" {
+		t.Fatalf("ExecPrefix()[0] = %q, want %q (getter must return a copy)", got[0], "sudo")
+	}
+}
+
+// TestRunWithExecPrefixBuildsRightArgv uses an `echo` prefix so the
+// wrapped command actually executes: Run("hello", "world") becomes
+// `echo hello world`, and we assert the captured output.
+func TestRunWithExecPrefixBuildsRightArgv(t *testing.T) {
+	buf := swapLogWriter(t)
+	clearExecPrefixOnCleanup(t)
+	SetExecPrefix([]string{"echo"})
+	if err := Run("hello", "world"); err != nil {
+		t.Fatalf("Run with echo prefix error = %v", err)
+	}
+	if got := strings.TrimSpace(buf.String()); got != "hello world" {
+		t.Fatalf("echo-prefixed Run wrote %q, want %q", got, "hello world")
+	}
+}
+
+func TestRunCmdWithExecPrefixBuildsRightArgv(t *testing.T) {
+	buf := swapLogWriter(t)
+	clearExecPrefixOnCleanup(t)
+	SetExecPrefix([]string{"echo"})
+	if err := RunCmd(exec.Command("hi", "there")); err != nil {
+		t.Fatalf("RunCmd with echo prefix error = %v", err)
+	}
+	if got := strings.TrimSpace(buf.String()); got != "hi there" {
+		t.Fatalf("echo-prefixed RunCmd wrote %q, want %q", got, "hi there")
+	}
+}
+
+func TestRunOutputWithExecPrefixBuildsRightArgv(t *testing.T) {
+	swapLogWriter(t)
+	clearExecPrefixOnCleanup(t)
+	SetExecPrefix([]string{"echo"})
+	out, err := RunOutput(exec.Command("captured", "value"))
+	if err != nil {
+		t.Fatalf("RunOutput with echo prefix error = %v", err)
+	}
+	if got := strings.TrimSpace(out); got != "captured value" {
+		t.Fatalf("echo-prefixed RunOutput returned %q, want %q", got, "captured value")
+	}
+}
+
+func TestClearExecPrefixRestoresDirectExec(t *testing.T) {
+	buf := swapLogWriter(t)
+	clearExecPrefixOnCleanup(t)
+	SetExecPrefix([]string{"echo"})
+	ClearExecPrefix()
+	if got := ExecPrefix(); got != nil {
+		t.Fatalf("ExecPrefix() after clear = %v, want nil", got)
+	}
+	// With the prefix cleared, sh runs directly (not echoed).
+	if err := Run("sh", "-c", "echo direct-exec"); err != nil {
+		t.Fatalf("Run after ClearExecPrefix error = %v", err)
+	}
+	if got := strings.TrimSpace(buf.String()); got != "direct-exec" {
+		t.Fatalf("after ClearExecPrefix got %q, want direct exec output %q", got, "direct-exec")
+	}
+}
+
+func TestSetExecPrefixEmptyClears(t *testing.T) {
+	clearExecPrefixOnCleanup(t)
+	SetExecPrefix([]string{"echo"})
+	SetExecPrefix(nil)
+	if got := ExecPrefix(); got != nil {
+		t.Fatalf("ExecPrefix() after SetExecPrefix(nil) = %v, want nil", got)
+	}
+	SetExecPrefix([]string{"echo"})
+	SetExecPrefix([]string{})
+	if got := ExecPrefix(); got != nil {
+		t.Fatalf("ExecPrefix() after SetExecPrefix([]) = %v, want nil", got)
+	}
+}
+
+// TestSetExecPrefixRaceFree hammers SetExecPrefix/ExecPrefix/Clear from
+// multiple goroutines so `go test -race` proves the mutex coverage.
+func TestSetExecPrefixRaceFree(t *testing.T) {
+	clearExecPrefixOnCleanup(t)
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				SetExecPrefix([]string{"sudo", "chroot", "/host"})
+				_ = ExecPrefix()
+				ClearExecPrefix()
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
 func TestSetContextNilIsNoOp(t *testing.T) {
 	SetContext(nil)
 	swapLogWriter(t)
