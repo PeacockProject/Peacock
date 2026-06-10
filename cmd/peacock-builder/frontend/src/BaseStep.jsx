@@ -42,7 +42,7 @@ const FLAVORS = [
   },
 ];
 
-const DEFAULTS = { initSys: "openrc", mode: "qemu-user" };
+const DEFAULTS = { initSys: "openrc", mode: "auto" };
 
 export default function BaseStep({
   mode, flavor, setFlavor, initSys, setInitSys, arch, setArch, buildMode, setBuildMode,
@@ -114,8 +114,8 @@ export default function BaseStep({
           <Seg v={initSys} set={setInitSys} opts={["systemd", "openrc"]} /></Field>
         <Field l="Architecture" sub="from device">
           <Seg v={arch} set={setArch} opts={["aarch64", "armv7h", "x86_64"]} /></Field>
-        <Field l="Build mode" sub="cross-compile">
-          <Seg v={buildMode} set={setBuildMode} opts={["qemu-user", "native", "cross"]} /></Field>
+        <Field l="Build mode" sub="auto picks per-port">
+          <Seg v={buildMode} set={setBuildMode} opts={["auto", "qemu-user", "native", "cross"]} /></Field>
       </div>
     </React.Fragment>
   );

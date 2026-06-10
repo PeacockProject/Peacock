@@ -51,7 +51,13 @@ func TestNewRunnerRetainsOpts(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := NewRunner(tc.in).Opts()
-			if got != tc.want {
+			// RunnerOpts carries a Progress func field (non-comparable),
+			// so compare the scalar fields individually rather than ==.
+			if got.Device != tc.want.Device ||
+				got.UseQemu != tc.want.UseQemu ||
+				got.CrossCompile != tc.want.CrossCompile ||
+				got.EmptyRootfs != tc.want.EmptyRootfs ||
+				got.HostChrootFlavor != tc.want.HostChrootFlavor {
 				t.Fatalf("Opts() = %+v, want %+v", got, tc.want)
 			}
 		})
@@ -161,14 +167,10 @@ func TestRunMergesConfigIntoOpts(t *testing.T) {
 	}
 
 	got := r.Opts()
-	want := RunnerOpts{
-		Device:       "oppo-a16",
-		UseQemu:      "false",
-		CrossCompile: "arm-none-eabi-",
-		EmptyRootfs:  true,
-	}
-	if got != want {
-		t.Fatalf("Opts() after Run = %+v, want %+v", got, want)
+	// RunnerOpts carries a non-comparable Progress func; check scalars.
+	if got.Device != "oppo-a16" || got.UseQemu != "false" ||
+		got.CrossCompile != "arm-none-eabi-" || !got.EmptyRootfs {
+		t.Fatalf("Opts() after Run = %+v", got)
 	}
 }
 

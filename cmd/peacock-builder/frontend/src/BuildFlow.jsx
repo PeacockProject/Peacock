@@ -79,7 +79,7 @@ export default function BuildFlow({ onHome, startDevice, appClass }) {
   const [flavor, setFlavor] = React.useState("arch");
   const [initSys, setInitSys] = React.useState("openrc");
   const [arch, setArch] = React.useState(init0 ? init0.arch : "aarch64");
-  const [buildMode, setBuildMode] = React.useState("qemu-user");
+  const [buildMode, setBuildMode] = React.useState("auto");
   const [desktop, setDesktop] = React.useState("phosh");
   const [dm, setDm] = React.useState("sddm");
   const [pkgs, setPkgs] = React.useState(["firefox-esr", "mpv"]);

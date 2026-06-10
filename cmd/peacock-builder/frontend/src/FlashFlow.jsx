@@ -52,7 +52,14 @@ function buildDTO(cfg) {
     userPassword: "",
     imageSizeMB: 0,
     emptyRootfs: false,
-    useQemu: c.buildMode === "qemu-user" ? "true" : "auto",
+    // "auto" (default) lets each port's use_qemu/cross_compile decide —
+    // critical because e.g. the daisy kernel cross-compiles (x86 chroot +
+    // aarch64-linux-gnu toolchain) and forcing qemu would try to install
+    // that x86 cross toolchain into an aarch64 chroot. Only an explicit
+    // qemu-user/native/cross choice overrides the port.
+    useQemu: c.buildMode === "qemu-user" ? "true"
+      : (c.buildMode === "native" || c.buildMode === "cross") ? "false"
+      : "auto",
     crossCompile: "",
     workDir: "",
     architecture: c.arch || (c.dev && c.dev.arch) || "",

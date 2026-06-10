@@ -84,6 +84,13 @@ type RunnerOpts struct {
 	// chroot via host.EnsureHostChroot and routes every runner shell-out
 	// through `sudo chroot <root>` for the duration of the build.
 	HostChrootFlavor string
+
+	// Progress, when set, is called at each phase boundary with a
+	// human-facing phase label and a rough completion percent (0-100).
+	// The GUI wires this to emit "build:phase" Wails events so its
+	// progress ticker advances; the CLI leaves it nil. Labels match the
+	// frontend's BUILD_PHASES so the matching step lights up.
+	Progress func(phase string, percent int)
 }
 
 // Runner drives a single build pipeline end-to-end. Construct via
@@ -117,6 +124,14 @@ func NewRunner(opts RunnerOpts) *Runner {
 // can introspect the device name without threading it separately.
 func (r *Runner) Opts() RunnerOpts {
 	return r.opts
+}
+
+// progress reports a phase boundary to the optional Progress callback.
+// No-op when unset (the CLI), so build behavior is unchanged there.
+func (r *Runner) progress(phase string, percent int) {
+	if r.opts.Progress != nil {
+		r.opts.Progress(phase, percent)
+	}
 }
 
 // Run drives the five phase functions in order using cfg, and returns
@@ -183,6 +198,7 @@ func (r *Runner) Run(ctx context.Context, cfg buildconfig.BuildPipelineConfig) (
 
 	workDir := cfg.WorkDir
 
+	r.progress("Resolving deps", 4)
 	runSetup := r.runBuildSetup
 	if r.setupFn != nil {
 		runSetup = r.setupFn
@@ -192,6 +208,7 @@ func (r *Runner) Run(ctx context.Context, cfg buildconfig.BuildPipelineConfig) (
 		return "", fmt.Errorf("build setup: %w", err)
 	}
 
+	r.progress("Building kernel", 18)
 	pkgRes, err := r.runPackageOrchestration(
 		setup.b, setup.pkg, setup.dev,
 		setup.flavor, setup.initSystem, setup.desktopChoice, setup.displayManagerChoice,
@@ -201,6 +218,7 @@ func (r *Runner) Run(ctx context.Context, cfg buildconfig.BuildPipelineConfig) (
 		return "", fmt.Errorf("package orchestration: %w", err)
 	}
 
+	r.progress("Building busybox", 34)
 	initramfsPath, err := r.runInitramfsPhase(
 		setup.b, setup.pkg, setup.dev,
 		pkgRes.depBuildDirs, pkgRes.depPackagePaths,
@@ -217,6 +235,7 @@ func (r *Runner) Run(ctx context.Context, cfg buildconfig.BuildPipelineConfig) (
 	cleanup := &Cleanup{workDir: workDir}
 	defer cleanup.Run()
 
+	r.progress("Rootfs", 60)
 	rootfsRes, err := r.runRootfsPhase(
 		setup.b, setup.pkg, setup.dev,
 		pkgRes.depBuildDirs, pkgRes.depPackagePaths,
@@ -229,6 +248,7 @@ func (r *Runner) Run(ctx context.Context, cfg buildconfig.BuildPipelineConfig) (
 		return "", fmt.Errorf("rootfs: %w", err)
 	}
 
+	r.progress("Disk image", 92)
 	imagePath, err := r.runImageAssemblyPhase(
 		setup.b, setup.dev,
 		rootfsRes.imageChrootRoot, rootfsRes.rootfsPath, rootfsRes.kernelBuildDir,

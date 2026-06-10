@@ -15,6 +15,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -142,6 +143,22 @@ func (a *App) runBuild(ctx context.Context, buildID string, cfg buildconfig.Buil
 
 	fmt.Fprintf(writer, "[peacock-builder] starting build %s (log: %s)\n", buildID, logPath)
 	fmt.Fprintf(writer, "[peacock-builder] device=%s flavor=%s init=%s\n", cfg.Device, cfg.Flavor, cfg.InitSystem)
+
+	// Emit structured phase ticks so the React progress ring + step
+	// list advance (the log pane fills from build:log; this drives the
+	// percentage + which step is lit). Payload shape matches what
+	// useWailsScript parses: {"phase","percent"}.
+	opts.Progress = func(phase string, percent int) {
+		if a.ctx == nil {
+			return
+		}
+		if b, err := json.Marshal(struct {
+			Phase   string `json:"phase"`
+			Percent int    `json:"percent"`
+		}{phase, percent}); err == nil {
+			wailsruntime.EventsEmit(a.ctx, "build:phase", string(b))
+		}
+	}
 
 	r := pipeline.NewRunner(opts)
 	imagePath, err := r.Run(ctx, cfg)
