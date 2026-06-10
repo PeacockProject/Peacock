@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"peacock/internal/config"
+	"peacock/internal/host"
 	"peacock/internal/pipeline"
 	"peacock/internal/runner"
 	"peacock/internal/userland"
@@ -131,11 +132,22 @@ This process involves:
 			WorkDir:        workDir,
 		}
 
+		// Resolve --use-host-chroot (or PEACOCK_HOST_CHROOT) and validate
+		// the flavor early, before any host work, so an invalid flavor is
+		// a clean fast error rather than a mid-build surprise. Empty =
+		// host-chroot mode off; the build shells out directly as today.
+		hostChroot := hostChrootFlavor()
+		if hostChroot != "" && !host.IsSupportedHostChrootFlavor(hostChroot) {
+			fmt.Printf("--use-host-chroot=%s: unsupported flavor (supported: %v)\n", hostChroot, host.SupportedHostChrootFlavors)
+			fatal()
+		}
+
 		runnerOpts := pipeline.RunnerOpts{
-			Device:       buildDeviceName,
-			UseQemu:      buildUseQemuFlag,
-			CrossCompile: buildCrossCompileFlag,
-			EmptyRootfs:  buildEmptyRootfsFlag,
+			Device:           buildDeviceName,
+			UseQemu:          buildUseQemuFlag,
+			CrossCompile:     buildCrossCompileFlag,
+			EmptyRootfs:      buildEmptyRootfsFlag,
+			HostChrootFlavor: hostChroot,
 		}
 
 		imagePath, err := pipeline.NewRunner(runnerOpts).Run(ctx, cfg)
