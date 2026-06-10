@@ -417,37 +417,14 @@ function DPKDrawer({ device, support, selected, onClose, onSelect }) {
         </div>
 
         <div className="dpk-drawer-foot">
-          <FocusBtn onClick={onClose} ariaLabel="Cancel and close drawer">
-            <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
-          </FocusBtn>
+          <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
           <div className="dpk-drawer-foot-sp" />
-          <FocusBtn onClick={() => onSelect(shown)} ariaLabel="Select this device and continue">
-            <Btn variant="primary" ar="→" onClick={() => onSelect(shown)}>
-              {selected ? "Keep this device" : "Select this device"}
-            </Btn>
-          </FocusBtn>
+          <Btn variant="primary" ar="→" onClick={() => onSelect(shown)}>
+            {selected ? "Keep this device" : "Select this device"}
+          </Btn>
         </div>
       </aside>
     </div>
-  );
-}
-
-/* The shared <Btn /> atom renders as a non-focusable <div>, which would
- * leave Cancel / Select unreachable via Tab. FocusBtn is a thin role
- * wrapper that makes them keyboard-activatable without forking shared.jsx. */
-function FocusBtn({ children, onClick, ariaLabel }) {
-  return (
-    <span className="dpk-drawer-fbtn"
-      role="button" tabIndex={0}
-      aria-label={ariaLabel}
-      onKeyDown={e => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onClick && onClick();
-        }
-      }}>
-      {children}
-    </span>
   );
 }
 

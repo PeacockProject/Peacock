@@ -83,7 +83,10 @@ export default function InstallFlow({ onHome, appClass }) {
         <div className="rail">
           <div className="rt">Install · disk</div>
           {ISTEPS.map((s, i) => (
-            <div key={s} className={"rstep" + (i === step ? " on" : "") + (i < step ? " done" : "")} onClick={() => i < step && setStep(i)}>
+            <div key={s} className={"rstep" + (i === step ? " on" : "") + (i < step ? " done" : "")}
+              role={i < step ? "button" : undefined} tabIndex={i < step ? 0 : -1}
+              onClick={() => i < step && setStep(i)}
+              onKeyDown={e => { if (i < step && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); setStep(i); } }}>
               <span className="rn">{i < step ? "" : String(i + 1).padStart(2, "0")}</span><span className="rl">{s}</span>
             </div>
           ))}

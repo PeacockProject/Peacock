@@ -25,9 +25,23 @@ export function PK({ src, className = "", style }) {
 
 export const Geo = ({ s }) => <span className={"gi" + (s ? " " + s : "")} />;
 
+/* keyActivate — shared Enter/Space → click adapter so the div-based
+ * interactive atoms below behave like real buttons for keyboard users. */
+function keyActivate(onClick) {
+  return (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    if (onClick) onClick(e);
+  };
+}
+
 export function Btn({ variant = "ghost", cap, ar, sub, onClick, disabled, children, style }) {
   return (
-    <div className={"btn " + variant} onClick={disabled ? null : onClick} disabled={disabled || undefined} style={style}>
+    <div className={"btn " + variant} role="button" tabIndex={disabled ? -1 : 0}
+      aria-disabled={disabled || undefined}
+      onClick={disabled ? null : onClick}
+      onKeyDown={disabled ? null : keyActivate(onClick)}
+      disabled={disabled || undefined} style={style}>
       <span className="lab">{children}{sub ? <small>{sub}</small> : null}</span>
       {ar ? <span className="ar">{ar}</span> : null}
       {cap ? <span className="cap">{cap}</span> : null}
@@ -35,7 +49,10 @@ export function Btn({ variant = "ghost", cap, ar, sub, onClick, disabled, childr
   );
 }
 
-export const Toggle = ({ on, onClick }) => <div className={"toggle" + (on ? " on" : "")} onClick={onClick} />;
+export const Toggle = ({ on, onClick }) => (
+  <div className={"toggle" + (on ? " on" : "")} role="switch" aria-checked={!!on}
+    tabIndex={0} onClick={onClick} onKeyDown={keyActivate(onClick)} />
+);
 
 /* motion: useLoaded flips true on the frame after mount (capture-safe entrance) */
 export function useLoaded() {
@@ -109,7 +126,8 @@ export function useMode() {
 export function ModeChip({ mode, onClick }) {
   const on = mode === "advanced";
   return (
-    <div className={"modechip" + (on ? " on" : "")} onClick={onClick}
+    <div className={"modechip" + (on ? " on" : "")} role="button" tabIndex={0}
+      aria-pressed={on} onClick={onClick} onKeyDown={keyActivate(onClick)}
       title={on ? "Showing every option" : "Show every option"}>
       <span className="dot" />Advanced
     </div>

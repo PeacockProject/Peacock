@@ -77,6 +77,11 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 .btn.grad{background:var(--irid);color:#fff;box-shadow:0 10px 26px -12px rgba(46,134,200,.7);}
 .btn.grad:hover{transform:translateY(-1px);}
 
+/* keyboard focus — soft 2px accent ring on the div-based interactive atoms */
+.btn:focus-visible,.toggle:focus-visible,.modechip:focus-visible,.rstep:focus-visible{
+  outline:2px solid rgba(46,134,200,.65);outline-offset:2px;}
+.rstep:focus-visible{outline-offset:-2px;border-radius:8px;}
+
 /* ---- wizard layout ---- */
 .wiz{height:100%;display:grid;grid-template-columns:240px 1fr;}
 .rail{background:var(--panel);border-right:1px solid var(--line);padding:28px 0 0;display:flex;flex-direction:column;position:relative;overflow:hidden;}
@@ -980,8 +985,6 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 .dpk-drawer-foot-sp{flex:1;}
 .dpk-drawer-foot .btn{padding:10px 14px;}
 .dpk-drawer-foot .btn.primary{background:var(--ink);}
-.dpk-drawer-fbtn{display:inline-flex;border-radius:11px;}
-.dpk-drawer-fbtn:focus-visible{outline:2px solid var(--blue);outline-offset:3px;}
 .dpk-drawer .dpk-mx-row:focus-visible{outline:2px solid var(--blue);outline-offset:2px;border-radius:4px;}
 
 /* ===================== RESPONSIVE BREAKPOINTS =====================
