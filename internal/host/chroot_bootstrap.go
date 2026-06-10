@@ -1,0 +1,235 @@
+package host
+
+// chroot_bootstrap.go: the download + checksum-verify + extract half of
+// the host-chroot bootstrap. This is the pmbootstrap-style idea applied
+// one level up from internal/builder's per-arch BUILD chroots: the host
+// needs only chroot + tar + curl, and everything else (pacman/apt/apk,
+// the build toolchain) lives inside a managed chroot we materialize here.
+//
+// The flow, per flavor:
+//   1. resolve the tarball URL (arch needs a directory-listing scrape;
+//      debian + alpine are deterministic).
+//   2. curl the tarball to a temp file.
+//   3. download the sums file, look up the expected sha256 for our
+//      filename, compute the local sha256, compare. FAIL CLOSED — if the
+//      sums file can't be fetched or the entry is missing we error out
+//      rather than silently trusting an unverified tarball.
+//   4. tar -xpf with the right --strip-components for the flavor's layout.
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+
+	"peacock/internal/runner"
+)
+
+// archBootstrapListingURL is the directory whose listing we scrape to
+// find the current dated archlinux-bootstrap tarball. Kept as a var so
+// tests can document intent; the parse itself is pure (see
+// parseArchBootstrapListing).
+const archBootstrapListingURL = "https://archive.archlinux.org/iso/latest/"
+
+// archBootstrapFilePattern matches the dated bootstrap tarball filename
+// inside the latest/ directory listing, e.g.
+// archlinux-bootstrap-2024.06.01-x86_64.tar.gz.
+var archBootstrapFilePattern = regexp.MustCompile(`archlinux-bootstrap-[0-9.]+-x86_64\.tar\.gz`)
+
+// stripComponentsFor returns the tar --strip-components value for a
+// flavor's bootstrap tarball layout:
+//   - arch: the bootstrap tarball nests everything under a single
+//     root.x86_64/ top-level dir, so strip 1.
+//   - debian: the genericcloud tarball extracts flat (./bin, ./etc, …).
+//   - alpine: the miniroot tarball extracts flat too.
+func stripComponentsFor(flavor string) int {
+	switch flavor {
+	case "arch":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// sumsURLFor returns the checksum-manifest URL for a flavor, derived
+// from the tarball URL's directory. Arch + Alpine publish
+// sha256sums.txt; Debian publishes SHA256SUMS. Returns "" for unknown
+// flavors so callers fail closed.
+func sumsURLFor(flavor, tarballURL string) string {
+	dir := tarballURL
+	if i := strings.LastIndex(tarballURL, "/"); i >= 0 {
+		dir = tarballURL[:i+1]
+	}
+	switch flavor {
+	case "arch", "alpine":
+		return dir + "sha256sums.txt"
+	case "debian":
+		return dir + "SHA256SUMS"
+	default:
+		return ""
+	}
+}
+
+// resolveTarballURL returns the concrete download URL for a flavor.
+// Debian + Alpine are deterministic; Arch requires a directory scrape
+// because TarballURL("arch") points at a non-existent stable filename.
+func resolveTarballURL(flavor string) (string, error) {
+	if flavor == "arch" {
+		return resolveArchBootstrapURL()
+	}
+	url := TarballURL(flavor)
+	if url == "" {
+		return "", fmt.Errorf("host: no bootstrap tarball URL known for flavor %q", flavor)
+	}
+	return url, nil
+}
+
+// resolveArchBootstrapURL fetches the archive.archlinux.org latest/
+// directory listing and extracts the current dated bootstrap tarball,
+// returning its full URL. The HTML parse is delegated to the pure
+// parseArchBootstrapListing so it can be table-tested offline.
+func resolveArchBootstrapURL() (string, error) {
+	runner.Logf("Resolving arch bootstrap from %s\n", archBootstrapListingURL)
+	out, err := runner.RunOutput(exec.Command("curl", "-fsSL", archBootstrapListingURL))
+	if err != nil {
+		return "", fmt.Errorf("host: failed to fetch arch bootstrap listing: %w", err)
+	}
+	name, err := parseArchBootstrapListing(out)
+	if err != nil {
+		return "", err
+	}
+	return archBootstrapListingURL + name, nil
+}
+
+// parseArchBootstrapListing extracts the dated bootstrap tarball
+// filename from an archive.archlinux.org latest/ directory listing.
+// Pure (no network): given the HTML body, returns the bare filename
+// (e.g. archlinux-bootstrap-2024.06.01-x86_64.tar.gz) or an error if no
+// match is present.
+func parseArchBootstrapListing(html string) (string, error) {
+	matches := archBootstrapFilePattern.FindAllString(html, -1)
+	if len(matches) == 0 {
+		return "", fmt.Errorf("host: no archlinux-bootstrap tarball found in listing")
+	}
+	// The listing may reference the same name multiple times (anchor
+	// href + visible text). Pick the lexically-greatest unique match so
+	// that, if several dates are present, we take the newest — dates are
+	// zero-padded YYYY.MM.DD so lexical == chronological order.
+	newest := matches[0]
+	for _, m := range matches[1:] {
+		if m > newest {
+			newest = m
+		}
+	}
+	return newest, nil
+}
+
+// downloadTarball curls a URL to dest with retries, streaming progress
+// through the runner log writer.
+func downloadTarball(url, dest string) error {
+	runner.Logf("Downloading %s -> %s\n", url, dest)
+	cmd := exec.Command("curl", "-fSL", "--retry", "3", "-o", dest, url)
+	if err := runner.RunCmd(cmd); err != nil {
+		return fmt.Errorf("host: download failed for %s: %w", url, err)
+	}
+	return nil
+}
+
+// verifyChecksum downloads the sums manifest at sumsURL, looks up the
+// expected sha256 for filename, computes the local sha256 of
+// tarballPath, and compares. FAILS CLOSED: any failure to fetch or
+// parse the sums file, or a missing entry, is an error — we never skip
+// verification silently, because this is a security boundary.
+func verifyChecksum(tarballPath, sumsURL, filename string) error {
+	if sumsURL == "" {
+		return fmt.Errorf("host: no checksum URL for %s (refusing to skip verification)", filename)
+	}
+	runner.Logf("Verifying checksum via %s\n", sumsURL)
+	sums, err := runner.RunOutput(exec.Command("curl", "-fsSL", sumsURL))
+	if err != nil {
+		return fmt.Errorf("host: failed to fetch checksum manifest %s (failing closed): %w", sumsURL, err)
+	}
+	expected, err := expectedHashFor(sums, filename)
+	if err != nil {
+		return err
+	}
+	actual, err := sha256File(tarballPath)
+	if err != nil {
+		return fmt.Errorf("host: failed to hash %s: %w", tarballPath, err)
+	}
+	if !strings.EqualFold(actual, expected) {
+		return fmt.Errorf("host: checksum mismatch for %s: expected %s got %s", filename, expected, actual)
+	}
+	runner.Logf("Checksum OK for %s\n", filename)
+	return nil
+}
+
+// expectedHashFor extracts the sha256 for filename from the content of
+// a sums manifest. Pure (no network): handles both the Arch/Alpine
+// "<hash>  <file>" form and the Debian SHA256SUMS form (same shape,
+// sometimes with a leading "*" or "./" on the path). Returns an error
+// if no matching entry is present.
+func expectedHashFor(sumsContent, filename string) (string, error) {
+	base := filepath.Base(filename)
+	for _, line := range strings.Split(sumsContent, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		hash := fields[0]
+		// The filename field may carry a binary-mode "*" marker or a
+		// "./" prefix; normalize before comparing by basename.
+		name := fields[len(fields)-1]
+		name = strings.TrimPrefix(name, "*")
+		name = strings.TrimPrefix(name, "./")
+		if filepath.Base(name) == base {
+			return hash, nil
+		}
+	}
+	return "", fmt.Errorf("host: no checksum entry for %q in manifest (failing closed)", filename)
+}
+
+// sha256File streams a file through crypto/sha256 and returns the hex
+// digest. Streaming (not ReadFile) keeps memory flat for ~600MB rootfs
+// tarballs.
+func sha256File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// extractTarball untars tarballPath into destRoot with the per-flavor
+// --strip-components applied. Uses sudo because the rootfs entries carry
+// privileged ownership/permissions (-p preserves them); destRoot lives
+// under the peacock workdir.
+func extractTarball(tarballPath, destRoot, flavor string) error {
+	if err := os.MkdirAll(destRoot, 0o755); err != nil {
+		return fmt.Errorf("host: cannot create chroot root %s: %w", destRoot, err)
+	}
+	args := []string{"tar", "-xpf", tarballPath, "-C", destRoot}
+	if n := stripComponentsFor(flavor); n > 0 {
+		args = append(args, fmt.Sprintf("--strip-components=%d", n))
+	}
+	runner.Logf("Extracting %s into %s (strip=%d)\n", filepath.Base(tarballPath), destRoot, stripComponentsFor(flavor))
+	cmd := exec.Command("sudo", args...)
+	if err := runner.RunCmd(cmd); err != nil {
+		return fmt.Errorf("host: extract failed for %s: %w", tarballPath, err)
+	}
+	return nil
+}
