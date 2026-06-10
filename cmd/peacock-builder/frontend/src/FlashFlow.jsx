@@ -592,7 +592,7 @@ function usePhase(script, armed, onDone) {
   return { prog, n, lines: script ? script.slice(0, n) : [] };
 }
 
-function StepFlash({ dev, onCancel, onBack, onDone }) {
+function StepFlash({ dev, onCancel, onBack, onDone, onWriteState }) {
   const ports = portsFor(dev);
   const blScript = React.useMemo(() => bootloaderScript(dev, ports), [dev.code, ports.bootloader]);
   const rcScript = React.useMemo(() => recoveryScript(dev, ports), [dev.code, ports.recovery]);
@@ -627,6 +627,16 @@ function StepFlash({ dev, onCancel, onBack, onDone }) {
     ...rc.lines.map(l => ({ ...l, _ph: "recv" })),
     ...sy.lines.map(l => ({ ...l, _ph: "sys"  })),
   ];
+
+  /* Tell the driver whether a destructive write is in flight. From the
+   * first log line until the last partition finishes, cancelling can
+   * brick the phone — the driver swaps the plain discard modal for a
+   * stronger "stop mid-flash?" confirmation while this is true. */
+  const writing = allLines.length > 0 && !finished;
+  React.useEffect(() => {
+    if (onWriteState) onWriteState(writing);
+  }, [writing]);
+  React.useEffect(() => () => { if (onWriteState) onWriteState(false); }, []);
 
   return (
     <div className="ff" data-step="flash">
@@ -815,6 +825,30 @@ function DiscardModal({ open, onKeep, onDiscard }) {
   );
 }
 
+/* ===== stop-mid-flash modal ============================================
+ *
+ * Shown instead of the discard modal once F4 has started writing to the
+ * phone. Interrupting a partition write can brick the device, so the
+ * safe action ("Keep flashing") is the primary button and dismissing the
+ * backdrop also keeps flashing. */
+function StopFlashModal({ open, onKeep, onStop }) {
+  if (!open) return null;
+  return (
+    <div className="ff-modal-wrap" role="dialog">
+      <div className="ff-modal-back" onClick={onKeep} />
+      <div className="ff-modal">
+        <div className="ff-modal-tag">STOP FLASHING</div>
+        <h2>Stop mid-flash?</h2>
+        <p>Stopping mid-flash can leave your phone unable to boot. Only stop if the flash appears frozen for several minutes.</p>
+        <div className="ff-modal-acts">
+          <Btn variant="primary" onClick={onKeep}>Keep flashing</Btn>
+          <Btn variant="warn" onClick={onStop}>Stop anyway</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ===== top-level driver =================================================
  *
  * State machine: splash → warn → unlock → connect → flash → done. The
@@ -824,13 +858,19 @@ function DiscardModal({ open, onKeep, onDiscard }) {
 export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appClass }) {
   const [sub, setSub] = React.useState("splash");
   const [discardOpen, setDiscardOpen] = React.useState(false);
+  const [stopOpen, setStopOpen] = React.useState(false);
   const [liveOpen, setLiveOpen] = React.useState(false);
+  /* True while F4 is actually writing partitions (first write → last).
+   * Cancel behaves differently then: see StopFlashModal above. */
+  const [flashWriting, setFlashWriting] = React.useState(false);
   const build = useBuildJob(dev, desktop, true); // armed immediately at F0 entry
   const ports = portsFor(dev);
 
-  const cancel = () => setDiscardOpen(true);
+  const cancel = () => (flashWriting ? setStopOpen(true) : setDiscardOpen(true));
   const keep = () => setDiscardOpen(false);
   const discard = () => { setDiscardOpen(false); onHome(); };
+  const keepFlashing = () => setStopOpen(false);
+  const stopAnyway = () => { setStopOpen(false); onHome(); };
 
   /* Persistent top-docked banner shows on F1..F4. F0 has its own splash
    * (which docks into the same spot), and F5 has its own celebratory layout. */
@@ -870,10 +910,11 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appCl
         {sub === "warn" && <StepWarn dev={dev} onCancel={cancel} onBack={onHome} onNext={() => setSub("unlock")} />}
         {sub === "unlock" && <StepUnlock dev={dev} build={build} onCancel={cancel} onBack={() => setSub("warn")} onNext={() => setSub("connect")} />}
         {sub === "connect" && <StepConnect dev={dev} onCancel={cancel} onBack={() => setSub("unlock")} onNext={() => setSub("flash")} />}
-        {sub === "flash" && <StepFlash dev={dev} onCancel={cancel} onBack={() => setSub("connect")} onDone={() => setSub("done")} />}
+        {sub === "flash" && <StepFlash dev={dev} onCancel={cancel} onBack={() => setSub("connect")} onDone={() => setSub("done")} onWriteState={setFlashWriting} />}
         {sub === "done" && <StepDone dev={dev} onHome={onHome} onBuildAnother={onHome} />}
         {liveOpen && <LiveOverlay dev={dev} desktop={desktop} onBack={() => setLiveOpen(false)} />}
         <DiscardModal open={discardOpen} onKeep={keep} onDiscard={discard} />
+        <StopFlashModal open={stopOpen} onKeep={keepFlashing} onStop={stopAnyway} />
       </div>
     </AppShell>
   );
