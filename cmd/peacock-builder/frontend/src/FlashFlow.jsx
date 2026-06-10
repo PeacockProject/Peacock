@@ -416,13 +416,16 @@ function StepUnlock({ dev, build, onCancel, onBack, onNext }) {
    * unlock dance (autoConfirm brands skip already, no point offering it). */
   const canSkip = !info.autoConfirm;
   const [skipUnlock, setSkipUnlock] = React.useState(false);
-  const ready = confirmed && build.done;
-  /* the user can ALWAYS click Continue once both gates are met. If the
-   * build is still going, show "Still building…" instead of disabling
-   * silently — gives them a reason. */
+  /* Continue unlocks as soon as the user has done THEIR part (ticked the
+   * unlock confirmation). The build is no longer a gate here: if it's
+   * still running, the driver routes Continue to the full-page live build
+   * view, which auto-advances to F3 when the build completes. */
+  const ready = confirmed;
   const hint = !confirmed
     ? "tick the box below once your phone is unlocked"
-    : (build.done ? "ready to continue" : "still building image · " + Math.round(build.progress) + "%");
+    : (build.done
+        ? "ready to continue"
+        : "still building · " + Math.round(build.progress) + "% — continue to watch it finish");
   return (
     <div className="ff" data-step="unlock">
       <FFTop title="Step 2 of 5 · Unlock your phone" onCancel={onCancel} />
@@ -921,8 +924,34 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appCl
   /* True while F4 is actually writing partitions (first write → last).
    * Cancel behaves differently then: see StopFlashModal above. */
   const [flashWriting, setFlashWriting] = React.useState(false);
+  /* True when the user finished F2 (unlock confirmed) before the build
+   * did: they're parked on the full-page live build view waiting for it.
+   * When the build completes we auto-advance them into F3. Cleared if
+   * they back out to F2 instead of waiting. */
+  const [waitingOnBuild, setWaitingOnBuild] = React.useState(false);
   const build = useBuildJob(dev, desktop, true); // armed immediately at F0 entry
   const ports = portsFor(dev);
+
+  /* F2 → next: build done means straight to F3 (connect); build still
+   * running means the user watches it finish on the full-page live view. */
+  const unlockNext = () => {
+    if (build.done) { setSub("connect"); return; }
+    setWaitingOnBuild(true);
+    setLiveOpen(true);
+  };
+  const liveBack = () => { setLiveOpen(false); setWaitingOnBuild(false); };
+
+  /* Auto-advance: the user is waiting on the live view and the build just
+   * finished — hold ~1s so the 100% moment is visible, then move to F3. */
+  React.useEffect(() => {
+    if (!waitingOnBuild || !build.done) return;
+    const t = setTimeout(() => {
+      setLiveOpen(false);
+      setWaitingOnBuild(false);
+      setSub("connect");
+    }, 1000);
+    return () => clearTimeout(t);
+  }, [waitingOnBuild, build.done]);
 
   const cancel = () => (flashWriting ? setStopOpen(true) : setDiscardOpen(true));
   const keep = () => setDiscardOpen(false);
@@ -967,11 +996,11 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appCl
         {showBanner && <TopBanner build={build} onOpenLive={() => setLiveOpen(true)} />}
         {sub === "splash" && <StepSplash onDone={() => setSub("warn")} />}
         {sub === "warn" && <StepWarn dev={dev} onCancel={cancel} onBack={onHome} onNext={() => setSub("unlock")} />}
-        {sub === "unlock" && <StepUnlock dev={dev} build={build} onCancel={cancel} onBack={() => setSub("warn")} onNext={() => setSub("connect")} />}
+        {sub === "unlock" && <StepUnlock dev={dev} build={build} onCancel={cancel} onBack={() => setSub("warn")} onNext={unlockNext} />}
         {sub === "connect" && <StepConnect dev={dev} onCancel={cancel} onBack={() => setSub("unlock")} onNext={() => setSub("flash")} />}
         {sub === "flash" && <StepFlash dev={dev} onCancel={cancel} onBack={() => setSub("connect")} onDone={() => setSub("done")} onWriteState={setFlashWriting} />}
         {sub === "done" && <StepDone dev={dev} onHome={onHome} onBuildAnother={onHome} />}
-        {liveOpen && <LiveOverlay dev={dev} build={build} onBack={() => setLiveOpen(false)} />}
+        {liveOpen && <LiveOverlay dev={dev} build={build} onBack={liveBack} />}
         <DiscardModal open={discardOpen} onKeep={keep} onDiscard={discard} />
         <StopFlashModal open={stopOpen} onKeep={keepFlashing} onStop={stopAnyway} />
       </div>
