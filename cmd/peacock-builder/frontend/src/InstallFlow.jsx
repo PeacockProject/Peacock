@@ -1,7 +1,14 @@
-/* InstallFlow.jsx — Calamares-style installer */
+/* InstallFlow.jsx — Calamares-style installer
+ *
+ * Mounted by two binaries: the installer (live ISO) boots straight into
+ * it, and the builder mounts it as a preview behind the Home screen's
+ * "Install PeacockOS on this computer" button. `previewNote` defaults
+ * OFF so the installer binary (which passes no prop) shows no strip;
+ * the builder's App.jsx passes it explicitly. */
 import React from "react";
 import { AppShell, PK, Btn, Head, SRow, Field, Seg, Toggle, FULL, HEAD } from "./shared.jsx";
 import { RunScreen, INSTALL_PHASES, installScript, InstallDone } from "./Run.jsx";
+import { APP_VERSION } from "./meta.js";
 
 const LANGS = ["English", "Français", "Deutsch", "Español", "日本語", "Nederlands", "Português", "Italiano", "Polski", "简体中文"];
 const REGIONS = [
@@ -27,7 +34,7 @@ const Lbl = ({ k, warn, children }) => (
   <div className="lblrow"><span className="lk">{k}{warn ? <small style={{ color: "#C2553B" }}>{warn}</small> : null}</span>{children}</div>
 );
 
-export default function InstallFlow({ onHome, appClass }) {
+export default function InstallFlow({ onHome, appClass, previewNote = false }) {
   const [step, setStep] = React.useState(0);
   const [lang, setLang] = React.useState("English");
   const [region, setRegion] = React.useState(REGIONS[0]);
@@ -91,9 +98,15 @@ export default function InstallFlow({ onHome, appClass }) {
             </div>
           ))}
           <PK src={FULL} className="wk pkfill" style={{ "--pkc": "#201F24" }} />
-          <div className="rfoot">PeacockOS 0.9 · live</div>
+          <div className="rfoot">PeacockOS {APP_VERSION} · live</div>
         </div>
         <div className="main">
+          {previewNote && (
+            <div className="ifl-preview" role="note">
+              <span className="ifl-preview-dot" aria-hidden="true" />
+              You're previewing the installer. The real install runs from a PeacockOS live USB.
+            </div>
+          )}
           <div key={step} className="mflow">
           {step === 0 && <React.Fragment>
             <Head c="STEP 01 / 07 · WELCOME" t="Welcome to PeacockOS" s="This assistant installs PeacockOS onto your device. Pick a language to begin — you can change everything later." />

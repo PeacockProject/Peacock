@@ -1,6 +1,7 @@
 /* Home.jsx — poster launcher (stage content) */
 import React from "react";
 import { PK, Btn, useKeys, FULL } from "./shared.jsx";
+import { APP_VERSION } from "./meta.js";
 
 export default function Home({ go, resume, peacock }) {
   useKeys(React.useMemo(() => ({ b: () => go("build"), i: () => go("install") }), [go]));
@@ -8,7 +9,7 @@ export default function Home({ go, resume, peacock }) {
   return (
     <div className="home fade">
       <PK src={FULL} className={pkCls} style={peacock === "ink" ? { "--pkc": "#201F24" } : undefined} />
-      <div className="kick">PEACOCKOS — BUILD &amp; INSTALL · v0.9</div>
+      <div className="kick">PEACOCKOS — BUILD &amp; INSTALL · v{APP_VERSION}</div>
       <div className="big">
         <div className="l1">Peacock</div>
         <div className="l2">Builder</div>
@@ -16,7 +17,7 @@ export default function Home({ go, resume, peacock }) {
       <div className="lede">Build a PeacockOS image for a device — or install it onto the disk in front of you.</div>
       <div className="acts">
         <Btn variant="primary" cap="B" sub="FOR A DEVICE" onClick={() => go("build")}>Build an image</Btn>
-        <Btn variant="ghost" cap="I" sub="FROM LIVE" onClick={() => go("install")}>Install to this device</Btn>
+        <Btn variant="ghost" cap="I" sub="FROM LIVE USB" onClick={() => go("install")}>Install PeacockOS on this computer</Btn>
       </div>
       <div className="recent">
         <span>RECENT</span>

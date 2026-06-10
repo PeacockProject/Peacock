@@ -42,7 +42,7 @@ export default function ReviewStep({
         s="Peacock will cross-compile and assemble a flashable image. This can take several minutes." />
       <div className="mbody fade">
         <div className="summary">
-          <SRow k="Device" v={dev.code} /><SRow k="Architecture" v={arch} />
+          <SRow k="Device" v={<span>{dev.name} <span className="dimcode">{dev.code}</span></span>} /><SRow k="Architecture" v={arch} />
           <SRow k="Distribution" v={flavor} /><SRow k="Init system" v={initSys} />
           <SRow k="Build mode" v={buildMode} /><SRow k="Desktop" v={desktop} />
           <SRow k="Display manager" v={dm} />

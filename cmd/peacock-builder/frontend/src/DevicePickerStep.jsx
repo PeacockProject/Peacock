@@ -32,13 +32,26 @@ const BRAND_ORDER = ["OPPO", "Xiaomi", "Samsung", "Pine64", "Fairphone", "PC / v
  * and an explanatory tooltip. Real backend will populate `status` per
  * device from peacock-ports in a future round — for now the stub data
  * in api.js hand-codes them. */
+/* Each status carries a distinct glyph alongside its color so the pills
+ * remain distinguishable without color vision (filled → empty roughly
+ * tracks how complete the port is). */
 const STATUS_META = {
-  stable:       { label: "Stable",       hint: "Daily-driveable. All major features work." },
-  testing:      { label: "Testing",      hint: "Mostly works. Some rough edges. Safe to try." },
-  experimental: { label: "Experimental", hint: "Basic boot works. Many features missing or unstable." },
-  partial:      { label: "Partial",      hint: "Only some features work. Don't use as daily phone." },
-  unsupported:  { label: "Unsupported",  hint: "Port abandoned or never finished. Listed for reference." },
+  stable:       { glyph: "●", label: "Stable",       hint: "Daily-driveable. All major features work." },
+  testing:      { glyph: "◐", label: "Testing",      hint: "Mostly works. Some rough edges. Safe to try." },
+  experimental: { glyph: "◇", label: "Experimental", hint: "Basic boot works. Many features missing or unstable." },
+  partial:      { glyph: "◮", label: "Partial",      hint: "Only some features work. Don't use as daily phone." },
+  unsupported:  { glyph: "○", label: "Unsupported",  hint: "Port abandoned or never finished. Listed for reference." },
 };
+
+/* StatusPill — colored pill + glyph; used on cards and in the drawer. */
+function StatusPill({ st }) {
+  const meta = STATUS_META[st];
+  return (
+    <div className={"dpk-pill dpk-stat-" + st} title={meta.hint}>
+      <span className="dpk-pill-g" aria-hidden="true">{meta.glyph}</span>{meta.label}
+    </div>
+  );
+}
 function statusOf(dev) {
   const s = (dev.status || dev.tag || "").toLowerCase();
   return STATUS_META[s] ? s : "experimental";
@@ -300,7 +313,6 @@ function DPKBrandSection({ brand, devices, collapsed, onToggle, selectedId, open
 function DPKCard({ device, selected, open, support, onOpen }) {
   const slug = deviceBrandSlug(device);
   const st = statusOf(device);
-  const meta = STATUS_META[st];
   const sum = summarize(support);
 
   // Friendly progress string. Skips zero-noise — e.g. "13 / 13 work"
@@ -318,7 +330,7 @@ function DPKCard({ device, selected, open, support, onOpen }) {
       aria-expanded={open}
       onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); } }}>
       <div className="dpk-card-accent" aria-hidden="true" />
-      <div className={"dpk-pill dpk-stat-" + st} title={meta.hint}>{meta.label}</div>
+      <StatusPill st={st} />
       <div className="dpk-card-name">{device.name}</div>
       <div className="dpk-card-code">{device.code}</div>
       <div className="dpk-card-soc">{device.soc} · {device.arch}</div>
@@ -367,7 +379,6 @@ function DPKDrawer({ device, support, selected, onClose, onSelect }) {
   const open = !!device;
   const slug = deviceBrandSlug(shown);
   const st = statusOf(shown);
-  const meta = STATUS_META[st];
   const prose = summaryProse(shown, support);
   const sum = summarize(support);
 
@@ -383,7 +394,7 @@ function DPKDrawer({ device, support, selected, onClose, onSelect }) {
         <header className="dpk-drawer-head">
           <div className="dpk-drawer-titles">
             <div className="dpk-drawer-name">{shown.name}</div>
-            <div className={"dpk-pill dpk-stat-" + st} title={meta.hint}>{meta.label}</div>
+            <StatusPill st={st} />
           </div>
           <button type="button" className="dpk-drawer-x"
             ref={closeBtnRef}

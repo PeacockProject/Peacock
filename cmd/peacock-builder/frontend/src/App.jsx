@@ -9,6 +9,7 @@ import { AppShell } from "./shared.jsx";
 import Home from "./Home.jsx";
 import BuildFlow from "./BuildFlow.jsx";
 import InstallFlow from "./InstallFlow.jsx";
+import { APP_VERSION } from "./meta.js";
 
 const TWEAK_DEFAULTS = {
   accent: "iridescent",
@@ -49,12 +50,15 @@ export default function App() {
     return <div className="viewwrap"><BuildFlow key="b" onHome={home} startDevice={startDevice} appClass={appClass} /></div>;
   }
   if (view === "install") {
-    return <div className="viewwrap"><InstallFlow key="i" onHome={home} appClass={appClass} /></div>;
+    /* previewNote: in the BUILDER this flow is a demo — the real install
+     * runs from the live-ISO binary, whose App.jsx passes no prop and so
+     * gets no strip (the prop defaults off in InstallFlow). */
+    return <div className="viewwrap"><InstallFlow key="i" onHome={home} appClass={appClass} previewNote /></div>;
   }
 
   const status = (
     <React.Fragment>
-      <span className="pd" /><span>PeacockOS 0.9</span><span className="sep">·</span><span>arch · aarch64</span>
+      <span className="pd" /><span>PeacockOS {APP_VERSION}</span><span className="sep">·</span><span>arch · aarch64</span>
       <span className="r"><span className="live" /><span>live session · 3 devices detected</span></span>
     </React.Fragment>
   );

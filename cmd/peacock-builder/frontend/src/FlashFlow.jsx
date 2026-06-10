@@ -463,9 +463,25 @@ function useMockDetect(dev) {
   return found;
 }
 
+/* After this long without a detection we assume the user is stuck and
+ * auto-open the troubleshooting tips (while still scanning). */
+const DETECT_SLOW_MS = 30000;
+
 function StepConnect({ dev, onCancel, onBack, onNext }) {
   const detected = useMockDetect(dev);
   const [helpOpen, setHelpOpen] = React.useState(false);
+  /* slow: no device after DETECT_SLOW_MS. We never stop scanning — this
+   * only adds a reassurance line and pops the help section open so the
+   * user knows the app hasn't crashed and what to try. */
+  const [slow, setSlow] = React.useState(false);
+  React.useEffect(() => {
+    if (detected) return;
+    const t = setTimeout(() => {
+      setSlow(true);
+      setHelpOpen(true);
+    }, DETECT_SLOW_MS);
+    return () => clearTimeout(t);
+  }, [detected, dev && dev.code]);
   const name = (dev && dev.name) || "phone";
   return (
     <div className="ff" data-step="connect">
@@ -500,6 +516,12 @@ function StepConnect({ dev, onCancel, onBack, onNext }) {
               </React.Fragment>
             )}
           </div>
+          {slow && !detected && (
+            <div className="ff-detect-slow" role="status">
+              Still looking… we haven't found your phone yet, but we haven't
+              given up either. The tips below fix this for most people.
+            </div>
+          )}
 
           <div className={"ff-help" + (helpOpen ? " open" : "")}>
             <div className="ff-help-head" onClick={() => setHelpOpen(o => !o)}>
@@ -903,7 +925,8 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appCl
   const stepNum = { warn: 1, unlock: 2, connect: 3, flash: 4, done: 5 }[sub];
   const status = (
     <React.Fragment>
-      <span className="pd" /><span>{dev ? dev.code : "no device"}</span>
+      <span className="pd" /><span>{dev ? dev.name : "no device"}</span>
+      {dev && <span className="dimcode">{dev.code}</span>}
       <span className="sep">·</span><span>flash · {ports.brand}</span>
       <span className="r">
         <span className="crumb">{
@@ -924,7 +947,7 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appCl
   );
 
   return (
-    <AppShell appClass={appClass} title={<span>Flash to device <span className="dim">· {dev && dev.code}</span></span>} status={status}>
+    <AppShell appClass={appClass} title={<span>Flash to device <span className="dim">· {dev && dev.name}</span> {dev && <span className="dimcode">{dev.code}</span>}</span>} status={status}>
       <div className="ffwrap">
         {showBanner && <TopBanner build={build} onOpenLive={() => setLiveOpen(true)} />}
         {sub === "splash" && <StepSplash onDone={() => setSub("warn")} />}
