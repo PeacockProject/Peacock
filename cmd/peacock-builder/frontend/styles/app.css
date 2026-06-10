@@ -287,6 +287,17 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
   border:1px solid var(--line2);background:rgba(255,255,255,.6);border-radius:9px;padding:9px 16px;cursor:pointer;transition:.14s;}
 .loglink:hover{color:var(--ink);border-color:var(--soft);background:#fff;}
 
+/* failure banner — swaps in for the % readout when build:error /
+ * install:error fires so the user never stares at a stuck bar */
+.rfail{position:relative;margin-top:14px;max-width:520px;padding:20px 22px 18px;
+  background:#FBEDE8;border:1px solid rgba(194,85,59,.35);border-left:3px solid #C2553B;border-radius:0 12px 12px 0;}
+.rfail-tag{font-family:var(--mono);font-size:10.5px;letter-spacing:.22em;color:#A02717;text-transform:uppercase;margin-bottom:8px;}
+.rfail-h2{font-family:var(--serif);font-size:34px;line-height:1.02;margin:0 0 8px;color:var(--ink);}
+.rfail-lead{font-size:13.5px;line-height:1.5;color:var(--ink2);margin:0 0 10px;}
+.rfail-msg{font-family:var(--mono);font-size:12px;line-height:1.6;color:#7C2D1C;margin:0 0 16px;
+  white-space:pre-wrap;word-break:break-word;max-height:140px;overflow:auto;}
+.rfail-acts{display:flex;gap:10px;flex-wrap:wrap;}
+
 /* right panel — peacock by default */
 .rpr{position:relative;overflow:hidden;background:var(--bg);}
 .rpr .aura{position:absolute;inset:0;pointer-events:none;animation:glowpulse 5s ease-in-out infinite;
@@ -584,6 +595,10 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
   animation:fftopbar-in .5s cubic-bezier(.2,.7,.2,1) both;transition:box-shadow .18s ease,transform .18s ease;}
 .ff-topbar:hover{box-shadow:0 14px 30px -16px rgba(46,134,200,.55);transform:translateY(-1px);}
 .ff-topbar.done{border-left-color:var(--green);box-shadow:0 10px 24px -18px rgba(31,138,91,.5);}
+.ff-topbar.fail{border-left-color:#C2553B;box-shadow:0 10px 24px -18px rgba(194,85,59,.55);}
+.ff-topbar.fail .ff-topbar-title{color:#A02717;}
+.ff-topbar.fail .ff-topbar-track i{background:#C2553B;}
+.ff-topbar-dot.r{background:#C2553B;box-shadow:0 0 0 3px rgba(194,85,59,.18);animation:none;}
 @keyframes fftopbar-in{from{opacity:0;transform:translateY(-6px);}to{opacity:1;transform:translateY(0);}}
 .ff-topbar-dot{width:10px;height:10px;border-radius:50%;background:var(--blue);box-shadow:0 0 0 3px rgba(46,134,200,.18);
   animation:bnpulse 1.6s ease-in-out infinite;grid-row:1 / span 2;align-self:center;}

@@ -61,7 +61,8 @@ export default function InstallFlow({ onHome, appClass }) {
         ? <InstallDone user={username} onHome={onHome} />
         : <RunScreen script={installScript(disk, username)} title="Installing PeacockOS"
             meta={`target ${disk.node} · ${disk.cap}`} phases={INSTALL_PHASES}
-            eventPrefix="install" onDone={() => setIdone(true)} />}
+            eventPrefix="install" onDone={() => setIdone(true)}
+            onBack={() => setRunning(false)} />}
     </AppShell>;
   }
 

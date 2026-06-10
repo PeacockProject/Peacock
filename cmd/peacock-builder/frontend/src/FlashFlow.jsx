@@ -53,16 +53,27 @@ function portsFor(dev) {
  * events this is the single place to swap in EventsOn("build:log",…). */
 function useBuildJob(dev, desktop, armed) {
   const [n, setN] = React.useState(0);
+  /* Populated by the Wails "build:error" event once the real pipeline is
+   * wired in; the simulated script never fails so it stays null in dev.
+   * TopBanner renders a tappable failure state when this is set. */
+  const [error, setError] = React.useState(null);
+  React.useEffect(() => {
+    if (typeof window === "undefined" || !window.runtime || typeof window.runtime.EventsOn !== "function") return;
+    const off = window.runtime.EventsOn("build:error", (payload) => {
+      setError(typeof payload === "string" && payload ? payload : "build failed");
+    });
+    return () => { if (typeof off === "function") { try { off(); } catch (_e) { /* noop */ } } };
+  }, []);
   const script = React.useMemo(() => buildScript(dev || { code: "x" }, desktop), [dev && dev.code, desktop]);
   React.useEffect(() => {
-    if (!armed) return;
+    if (!armed || error) return;
     if (n >= script.length) return;
     const t = setTimeout(() => setN(n + 1), n === 0 ? 400 : 380 + Math.random() * 300);
     return () => clearTimeout(t);
-  }, [armed, n, script.length]);
+  }, [armed, n, script.length, error]);
   const prog = n > 0 ? script[n - 1].prog : 0;
   const phase = BUILD_PHASES.reduce((a, p) => (prog >= p.at ? p.label : a), BUILD_PHASES[0].label);
-  return { progress: prog, phase, done: prog >= 100, lines: script.slice(0, n), script };
+  return { progress: prog, phase, done: !error && prog >= 100, error, lines: script.slice(0, n), script };
 }
 
 /* ===== F0: splash → top-bar morph =======================================
@@ -210,21 +221,30 @@ function StepSplash({ onDone }) {
 function TopBanner({ build, onOpenLive }) {
   const pct = Math.round(build.progress);
   const done = build.done;
+  const failed = !!build.error;
   return (
-    <div className={"ff-topbar" + (done ? " done" : "")} role="status"
+    <div className={"ff-topbar" + (done ? " done" : "") + (failed ? " fail" : "")} role="status"
       onClick={onOpenLive} title="Open the live build screen">
-      <span className={"ff-topbar-dot" + (done ? " g" : "")} />
+      <span className={"ff-topbar-dot" + (done ? " g" : "") + (failed ? " r" : "")} />
       <div className="ff-topbar-text">
         <div className="ff-topbar-title">
-          {done ? "Your image is ready." : "We're building in the background while you work."}
+          {failed ? "Build failed — tap for details."
+            : done ? "Your image is ready."
+            : "We're building in the background while you work."}
         </div>
         <div className="ff-topbar-sub">
-          <span className="pct">{pct}%</span>
-          <span className="sep">·</span>
-          <span className="ph">{done ? "system image written" : build.phase}</span>
+          {failed ? (
+            <span className="ph">{build.error}</span>
+          ) : (
+            <React.Fragment>
+              <span className="pct">{pct}%</span>
+              <span className="sep">·</span>
+              <span className="ph">{done ? "system image written" : build.phase}</span>
+            </React.Fragment>
+          )}
         </div>
       </div>
-      <div className="ff-topbar-track"><i style={{ width: pct + "%" }} /></div>
+      <div className="ff-topbar-track"><i style={{ width: (failed ? 100 : pct) + "%" }} /></div>
       <span className="ff-topbar-open">›</span>
     </div>
   );
@@ -251,6 +271,7 @@ function LiveOverlay({ dev, desktop, onBack }) {
         phases={BUILD_PHASES}
         eventPrefix="build"
         onDone={onBack}
+        onBack={onBack}
       />
     </div>
   );

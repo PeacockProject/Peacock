@@ -131,7 +131,7 @@ function useWailsScript(eventPrefix, phases) {
  * Backward-compatible: existing callers that pass `script` + `phases`
  * keep working — they're treated as the dev-mode source of truth and
  * the live path is opt-in via the `eventPrefix` prop. */
-export function RunScreen({ script, title, meta, phases, onDone, eventPrefix }) {
+export function RunScreen({ script, title, meta, phases, onDone, onBack, eventPrefix }) {
   const live = useWailsScript(eventPrefix || "build", phases);
 
   const [n, setN] = React.useState(0);
@@ -143,9 +143,11 @@ export function RunScreen({ script, title, meta, phases, onDone, eventPrefix }) 
     return () => clearTimeout(t);
   }, [n, live]);
 
-  // Fire onDone once for the live path when the backend emits :done.
+  // Fire onDone once for the live path when the backend emits :done —
+  // but NOT on :error (it also flips `done` to stop the spinner; the
+  // failure banner below owns that state instead of the success screen).
   React.useEffect(() => {
-    if (!live || !live.done) return;
+    if (!live || !live.done || live.errorMsg) return;
     const t = setTimeout(onDone, 600);
     return () => clearTimeout(t);
   }, [live && live.done]);
@@ -158,25 +160,40 @@ export function RunScreen({ script, title, meta, phases, onDone, eventPrefix }) 
   const recent = lines.slice(-5);
   const [showLog, setShowLog] = React.useState(false);
   const stillRunning = live ? !live.done : n < script.length;
+  const failed = !!(live && live.errorMsg);
+  const failTitle = (eventPrefix || "build") === "install" ? "Install failed" : "Build failed";
 
   return (
     <div className="rprog">
       <div className="rpl">
         <div className="glow" />
         <div className="meta">{meta}</div>
-        <div className="bigpct">{Math.round(prog)}<span className="pp">%</span></div>
-        <h2>{title}</h2>
-        <div className="phase">{prog >= 100 ? "Complete" : phase + "…"}</div>
-        <div className="rtrack"><i style={{ width: prog + "%" }} /></div>
-        <div className="rsteps">{phases.map((p, i) => {
-          const cur = phase === p.label && prog < 100;
-          const done = prog > p.at && phase !== p.label || prog >= 100;
-          return <span key={i} className={"stp" + (done ? " done" : cur ? " cur" : "")}><span className="d" />{p.label}</span>;
-        })}</div>
-        {live && live.errorMsg && (
-          <div className="rerror" style={{ color: "#C2553B", fontSize: 12, marginTop: 8 }}>
-            error · {live.errorMsg}
+        {failed ? (
+          /* Failure state: the progress readout is replaced by an explicit
+           * banner so the user never stares at a stuck bar. The backend's
+           * error string is shown verbatim. */
+          <div className="rfail" role="alert">
+            <div className="rfail-tag">{failTitle.toUpperCase()}</div>
+            <h2 className="rfail-h2">{failTitle}</h2>
+            <p className="rfail-lead">Something went wrong and we had to stop. The exact error was:</p>
+            <pre className="rfail-msg">{live.errorMsg}</pre>
+            <div className="rfail-acts">
+              <Btn variant="primary" onClick={() => setShowLog(true)}>Show full log</Btn>
+              {onBack && <Btn variant="ghost" onClick={onBack}>Back</Btn>}
+            </div>
           </div>
+        ) : (
+          <React.Fragment>
+            <div className="bigpct">{Math.round(prog)}<span className="pp">%</span></div>
+            <h2>{title}</h2>
+            <div className="phase">{prog >= 100 ? "Complete" : phase + "…"}</div>
+            <div className="rtrack"><i style={{ width: prog + "%" }} /></div>
+            <div className="rsteps">{phases.map((p, i) => {
+              const cur = phase === p.label && prog < 100;
+              const done = prog > p.at && phase !== p.label || prog >= 100;
+              return <span key={i} className={"stp" + (done ? " done" : cur ? " cur" : "")}><span className="d" />{p.label}</span>;
+            })}</div>
+          </React.Fragment>
         )}
         <button className="loglink" onClick={() => setShowLog(s => !s)}>
           {showLog ? "Hide full log ‹" : "Show full log ›"}
