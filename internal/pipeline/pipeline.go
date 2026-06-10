@@ -29,6 +29,8 @@ import (
 	"github.com/spf13/viper"
 
 	"peacock/internal/config"
+	"peacock/internal/host"
+	"peacock/internal/runner"
 	"peacock/pkg/buildconfig"
 )
 
@@ -54,6 +56,14 @@ type RunnerOpts struct {
 	// package install / user creation / desktop wiring and produce a
 	// small debug image with an empty labeled root partition.
 	EmptyRootfs bool
+
+	// HostChrootFlavor mirrors --use-host-chroot. Empty (the default)
+	// means host-chroot mode is off and the build shells out directly on
+	// the host, byte-identical to legacy behavior. When set to a
+	// supported flavor (arch|debian|alpine), Run bootstraps the host
+	// chroot via host.EnsureHostChroot and routes every runner shell-out
+	// through `sudo chroot <root>` for the duration of the build.
+	HostChrootFlavor string
 }
 
 // Runner drives a single build pipeline end-to-end. Construct via
@@ -123,6 +133,23 @@ func (r *Runner) Run(ctx context.Context, cfg buildconfig.BuildPipelineConfig) (
 		r.opts.Device = cfg.Device
 	}
 	r.opts.EmptyRootfs = cfg.EmptyRootfs
+
+	// Host-chroot mode (pmbootstrap-style). When a flavor is set, ensure
+	// the host chroot exists (bootstrap on first run — can take minutes)
+	// and prefix every runner shell-out with `sudo chroot <root>` for the
+	// rest of this build. The prefix is cleared on return so it never
+	// leaks past Run into a subsequent (non-chroot) build on the same
+	// process — important for the Wails GUI running builds back-to-back.
+	if r.opts.HostChrootFlavor != "" {
+		runner.Logf("Ensuring host chroot for flavor %q (first run downloads + extracts a rootfs; this can take several minutes)...\n", r.opts.HostChrootFlavor)
+		root, err := host.EnsureHostChroot(r.opts.HostChrootFlavor)
+		if err != nil {
+			return "", fmt.Errorf("host chroot: %w", err)
+		}
+		runner.Logf("Routing build through host chroot: sudo chroot %s\n", root)
+		runner.SetExecPrefix([]string{"sudo", "chroot", root})
+		defer runner.ClearExecPrefix()
+	}
 
 	workDir := cfg.WorkDir
 
