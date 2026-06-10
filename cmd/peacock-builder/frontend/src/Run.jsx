@@ -27,13 +27,15 @@ import React from "react";
 import { PK, Btn, FULL } from "./shared.jsx";
 import {
   BUILD_PHASES,
+  FLASHSET_PHASES,
+  ALL_PHASES,
   INSTALL_PHASES,
   buildScript,
   installScript,
   hasWails,
 } from "./devMock.jsx";
 
-export { BUILD_PHASES, INSTALL_PHASES, buildScript, installScript };
+export { BUILD_PHASES, FLASHSET_PHASES, ALL_PHASES, INSTALL_PHASES, buildScript, installScript };
 
 /* useWailsScript — subscribe to a "<prefix>:log" / "<prefix>:phase" /
  * "<prefix>:done" / "<prefix>:error" event stream and yield the same

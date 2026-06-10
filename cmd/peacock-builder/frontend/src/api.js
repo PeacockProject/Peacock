@@ -98,6 +98,15 @@ export const CancelBuild = async (buildID) => {
   return real === true;
 };
 
+// StartFlashSet kicks off the bootloader + PRP recovery build for a
+// device (the "flashable set"), streaming progress via the
+// flashset:log / flashset:phase / flashset:done / flashset:error events.
+// Fire-and-forget like StartBuild. In dev mode (no backend) it no-ops;
+// the simulated flow handles progress itself.
+export const StartFlashSet = async (device) => {
+  await callApp("StartFlashSet", device || "");
+};
+
 // PortsStatus reports whether a peacock-ports checkout is present.
 // Read-only. In dev mode (no Wails backend) we report present=true so
 // the first-time-setup clone screen never appears — the Cloudflare

@@ -24,6 +24,29 @@ export const BUILD_PHASES = [
   { at: 60, label: "Rootfs" }, { at: 80, label: "Configuring" }, { at: 92, label: "Disk image" },
 ];
 
+// FLASHSET_PHASES: the bootloader + PRP recovery build, which the flash
+// flow runs BEFORE the system image. Labels mirror the Go progress
+// emitter (Building kernel → Building bootloader → Building recovery).
+export const FLASHSET_PHASES = [
+  { at: 0, label: "Building kernel" }, { at: 40, label: "Building bootloader" },
+  { at: 70, label: "Building recovery" },
+];
+
+// ALL_PHASES is the combined ticker the flash flow shows: the flashable
+// set (bootloader + PRP) occupies the first ~45%, the system image the
+// rest. The displayed phase is derived from combined progress against
+// this list, so it doesn't depend on matching event-string labels.
+export const ALL_PHASES = [
+  { at: 0, label: "Kernel(s)" },
+  { at: 16, label: "Bootloader" },
+  { at: 32, label: "Recovery (PRP)" },
+  { at: 48, label: "Resolving deps" },
+  { at: 58, label: "OS kernel" },
+  { at: 70, label: "Busybox & initramfs" },
+  { at: 82, label: "Root filesystem" },
+  { at: 94, label: "Disk image" },
+];
+
 export function buildScript(dev, desktop) {
   return [
     L("12:04:18", 6, <span>Resolving dependencies…</span>),

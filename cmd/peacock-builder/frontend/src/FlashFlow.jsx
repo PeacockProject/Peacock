@@ -29,10 +29,10 @@
 
 import React from "react";
 import { AppShell, PK, Btn, FULL, HEAD } from "./shared.jsx";
-import { buildScript, BUILD_PHASES, RunScreen, useWailsScript } from "./Run.jsx";
+import { buildScript, BUILD_PHASES, FLASHSET_PHASES, ALL_PHASES, RunScreen, useWailsScript } from "./Run.jsx";
 import { DEVICE_PORTS, brandOf, brandSlug } from "./devices.js";
 import { hasWails } from "./devMock.jsx";
-import { StartBuild } from "./api.js";
+import { StartBuild, StartFlashSet } from "./api.js";
 
 /* buildDTO maps the wizard selections to the BuildRequestDTO the Go
  * StartBuild binding expects (see cmd/peacock-builder/build_runner.go).
@@ -96,49 +96,71 @@ function portsFor(dev) {
 function useBuildJob(cfg, armed) {
   const dev = cfg && cfg.dev;
   const desktop = cfg && cfg.desktop;
-  const live = useWailsScript("build", BUILD_PHASES); // null when no Wails runtime
+  // Two event streams under Wails: the flashable set (bootloader + PRP)
+  // builds first, then the system image. Both are pure subscriptions;
+  // we chain the kickoffs and merge their state into one combined job.
+  const fs = useWailsScript("flashset", FLASHSET_PHASES);
+  const live = useWailsScript("build", BUILD_PHASES);
   const [n, setN] = React.useState(0);
   const script = React.useMemo(() => buildScript(dev || { code: "x" }, desktop), [dev && dev.code, desktop]);
 
-  /* Kick the REAL build exactly once when armed under Wails. Without
-   * this the subscription (useWailsScript) sits at 0% forever because
-   * nothing ever invokes the pipeline. Mock mode (no Wails) skips this
-   * and animates the simulated script below instead. Errors come back
-   * through the build:error event, surfaced via live.errorMsg. */
-  const startedRef = React.useRef(false);
+  /* Kick the flashable-set build first when armed under Wails; when it
+   * finishes, kick the system build. Without these the subscriptions sit
+   * at 0% forever. Mock mode (no Wails) skips both and animates the
+   * simulated script below. Rejections surface via startErr since a
+   * never-started job emits no :error event. */
+  const fsStartedRef = React.useRef(false);
+  const buildStartedRef = React.useRef(false);
   const [startErr, setStartErr] = React.useState("");
   React.useEffect(() => {
-    if (!armed || startedRef.current || !hasWails()) return;
-    startedRef.current = true;
-    StartBuild(buildDTO(cfg)).catch((e) => {
-      // The build never started (e.g. config rejected) so no build:error
-      // event will ever fire — surface the rejection ourselves.
+    if (!armed || fsStartedRef.current || !hasWails()) return;
+    fsStartedRef.current = true;
+    StartFlashSet((dev && dev.code) || "").catch((e) => {
       setStartErr(String(e && e.message ? e.message : e));
     });
   }, [armed]);
+  const fsDone = fs && fs.done && !fs.errorMsg;
+  React.useEffect(() => {
+    if (!fsDone || buildStartedRef.current || !hasWails()) return;
+    buildStartedRef.current = true;
+    StartBuild(buildDTO(cfg)).catch((e) => {
+      setStartErr(String(e && e.message ? e.message : e));
+    });
+  }, [fsDone]);
 
   React.useEffect(() => {
-    if (live || !armed) return;
+    if (fs || live || !armed) return;
     if (n >= script.length) return;
     const t = setTimeout(() => setN(n + 1), n === 0 ? 400 : 380 + Math.random() * 300);
     return () => clearTimeout(t);
-  }, [live, armed, n, script.length]);
-  if (live) {
-    /* useWailsScript flips `done` on :error too (to stop spinners); here
-     * `done` means SUCCESS — it gates auto-advance into F3 — so mask it.
-     * startErr (a StartBuild rejection that never produced a build:error
-     * event) takes precedence so a failed kickoff doesn't hang at 0%. */
+  }, [fs, live, armed, n, script.length]);
+
+  if (fs || live) {
+    // Combined progress: flashable set spans 0-45%, system image 50-100%.
+    // The displayed phase is derived from the combined percent against
+    // ALL_PHASES so it tracks both stages without depending on matching
+    // event-string labels.
+    const error = startErr || (fs && fs.errorMsg) || (live && live.errorMsg) || null;
+    const lines = [...(fs ? fs.lines : []), ...(live ? live.lines : [])];
+    let progress;
+    if (!fsDone) {
+      progress = (fs ? fs.prog : 0) * 0.45;
+    } else {
+      progress = 50 + (live ? live.prog : 0) * 0.5;
+    }
+    const phase = ALL_PHASES.reduce((a, p) => (progress >= p.at ? p.label : a), ALL_PHASES[0].label);
     return {
-      progress: live.prog,
-      phase: live.phase,
-      done: live.done && !live.errorMsg && !startErr,
-      error: startErr || live.errorMsg,
-      lines: live.lines,
+      progress,
+      phase,
+      done: live && live.done && !live.errorMsg && !error,
+      error,
+      lines,
+      phaseSet: ALL_PHASES,
     };
   }
   const prog = n > 0 ? script[n - 1].prog : 0;
   const phase = BUILD_PHASES.reduce((a, p) => (prog >= p.at ? p.label : a), BUILD_PHASES[0].label);
-  return { progress: prog, phase, done: prog >= 100, error: null, lines: script.slice(0, n) };
+  return { progress: prog, phase, done: prog >= 100, error: null, lines: script.slice(0, n), phaseSet: BUILD_PHASES };
 }
 
 /* ===== F0: splash → top-bar morph =======================================
@@ -343,7 +365,7 @@ function LiveOverlay({ dev, build, onBack }) {
         }}
         title="Building your image…"
         meta={meta}
-        phases={BUILD_PHASES}
+        phases={build.phaseSet || BUILD_PHASES}
         onBack={onBack}
       />
     </div>
