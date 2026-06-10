@@ -510,7 +510,6 @@ function StepConnect({ dev, onCancel, onBack, onNext }) {
         <div className="ff-connect">
           <div className={"ff-cable" + (detected ? " ok" : "")} aria-hidden="true">
             <PK src={HEAD} className="pkw pkgrad" />
-            <span className="ff-cable-port" />
             <span className="ff-cable-pulse" />
           </div>
           <h2 className="ff-connect-h2">
