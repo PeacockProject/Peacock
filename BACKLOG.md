@@ -16,33 +16,40 @@ file; leaving them here so it's clear what's underway vs. what's still untouched
         `xiaomi-daisy` as new ports land.
   - [ ] Per-flavor `pacman-key`/`apt-key`/`apk-tools` keyring checks (today
         we only check tool presence, not whether the keyrings can verify).
-- [/] pmbootstrap-style chroot-per-target build strategy (`peacock build
-      --use-host-chroot <flavor>` / `PEACOCK_HOST_CHROOT=<flavor>`). v0
-      scaffolding committed:
-  - CLI flag wired through `cmd/peacock/host_chroot.go` (no conflicts with
-    the in-flight `cmd/peacock/build.go` split — flag registration lives
-    in its own file).
-  - `internal/host/chroot.go` declares the on-disk layout
-    (`~/.local/var/peacock/host-chroots/<flavor>/`), supported-flavor
-    list, and bootstrap-tarball URL constants.
-  - `internal/host.EnsureHostChroot` is idempotent for an already-present
-    rootfs and returns a "not yet implemented" error otherwise.
-  - `peacock doctor --use-host-chroot <flavor>` collapses the probe set
-    to chroot/tar/curl + the host-chroot rootdir.
+- [x] pmbootstrap-style chroot-per-target build strategy (`peacock build
+      --use-host-chroot <flavor>` / `PEACOCK_HOST_CHROOT=<flavor>`).
+      `EnsureHostChroot` is now real end-to-end: download → sha256-verify
+      (fail-closed) → extract → first-time toolchain install → bind-mounts.
+      `runner.SetExecPrefix(["sudo","chroot",root])` routes every build
+      command through the chroot; the pipeline sets it around the phases
+      and clears it after. Host's pacman/apt/apk/qemu/cross-gcc
+      requirements collapse to chroot+tar+curl.
+  - `internal/host/chroot_bootstrap.go` — `resolveArchBootstrapURL`
+    (parses the `latest/` index for the dated tarball), `downloadTarball`,
+    `verifyChecksum` + `expectedHashFor` (fail-closed; Arch/Alpine
+    sha256sums.txt + Debian SHA256SUMS formats), `extractTarball` with
+    per-flavor strip-components (arch=1, debian/alpine=0).
+  - `internal/host/chroot_setup.go` — `installToolchain` runs
+    pacman-key+base-devel / apt build-essential / apk build-base inside
+    the chroot, gated by a `.peacock-toolchain-ready` sentinel.
+  - `internal/host/chroot_mount.go` — `mountHostChroot` binds dev/dev-pts/
+    proc/sys + peacock-ports (RO) + workdir cache (RW) + /dev/bus/usb (for
+    the flash path); cleanup unmounts in reverse, tolerant of partial mounts.
+  - `internal/runner` — `SetExecPrefix`/`ExecPrefix`/`ClearExecPrefix`
+    applied at the single `runCmd` funnel; clears the stale `cmd.Err`
+    lookPathErr so chroot-internal binaries run. Empty prefix =
+    byte-identical legacy path.
+  - `peacock doctor --use-host-chroot <flavor>` reports chroot presence
+    read-only (never bootstraps) and collapses the probe set to
+    chroot+tar+curl + the host-chroot root check.
 
-  Follow-ups (deferred — not started in this round):
-  - [ ] `EnsureHostChroot` actual download path: arch needs the `latest`
-        index parsed to pick the dated tarball; debian + alpine URLs are
-        deterministic.
-  - [ ] First-time toolchain install inside the freshly extracted chroot
-        (pacstrap/debootstrap-second-stage/apk add build-base).
-  - [ ] Routing existing `runner.RunCmd` calls through the chroot. Cleanest
-        shape is a `runner.SetExecPrefix(prefix []string)` knob, but the
-        sibling agent splitting `cmd/peacock/build.go` may collide there;
-        defer until that split lands.
-  - [ ] Bind-mount management for `/dev`, `/proc`, `/sys`, the local
-        peacock-ports tree, and the workdir cache.
-  - [ ] Per-flavor tarball checksum verification (signed where available).
+  Integration-only (needs network + root, not unit-tested):
+  - [ ] End-to-end first-run bootstrap on each flavor host (download +
+        extract + toolchain install + a real build inside the chroot).
+  - [ ] `cmd.Dir`/absolute-path assumption: callers that set a host-side
+        working dir rely on the bind-mount making it resolve at the same
+        path inside the chroot. Holds for workdir + ports today; audit if
+        new callers set other dirs.
 - [/] Split `cmd/peacock/build.go` (~1.9k LOC) and `internal/builder/chroot_build.go`
       (~828 LOC) by build phase.
 - [/] `peacock build --bisect <port>` + table tests for `manifest.ResolvedLayout`,
