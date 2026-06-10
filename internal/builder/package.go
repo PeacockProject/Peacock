@@ -71,8 +71,15 @@ license = GPL
 		return "", runErr
 	}
 
-	// TarGz the package root
-	tarPath := filepath.Join(b.CacheDir, fmt.Sprintf("%s-%s-%s-%s.pkg.tar.gz", pkg.Package.Name, pkg.Package.Version, pkgrel, pacmanArch))
+	// TarGz the package into the per-arch package store
+	// (<var>/packages/<arch>/), the feather-facing repo — distinct from
+	// peacock-cache, which holds only source downloads + build-dep
+	// staging. Grouping built packages by arch makes lookup trivial.
+	archStoreDir := filepath.Join(b.PackagesDir(), pacmanArch)
+	if err := os.MkdirAll(archStoreDir, 0755); err != nil {
+		return "", err
+	}
+	tarPath := filepath.Join(archStoreDir, fmt.Sprintf("%s-%s-%s-%s.pkg.tar.gz", pkg.Package.Name, pkg.Package.Version, pkgrel, pacmanArch))
 	file, err := os.Create(tarPath)
 	if err != nil {
 		return "", err

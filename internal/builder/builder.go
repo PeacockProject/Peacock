@@ -27,6 +27,13 @@ func NewBuilder(cacheDir string) (*Builder, error) {
 	return &Builder{CacheDir: cacheDir}, nil
 }
 
+// PackagesDir is the per-arch built-package store (the feather-facing
+// repo), a sibling of CacheDir: <var>/packages/<arch>/. Built .pkg.tar.gz
+// live here; CacheDir holds only source downloads + build-dep staging.
+func (b *Builder) PackagesDir() string {
+	return filepath.Join(filepath.Dir(b.CacheDir), "packages")
+}
+
 // sourceCachePath returns the cache path for a source URL. The key is a
 // hash of the FULL url (not just the basename) so the many GitHub
 // `…/master.tar.gz` sources don't collide on one file — that collision

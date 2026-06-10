@@ -30,6 +30,9 @@ func touch(t *testing.T, path string) {
 // entry is .PKGINFO with the given contents.
 func writePkgTarball(t *testing.T, path, pkginfo string) {
 	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	f, err := os.Create(path)
 	if err != nil {
 		t.Fatal(err)
@@ -248,9 +251,14 @@ func TestCachedArtifactPath(t *testing.T) {
 		}
 	})
 
-	t.Run("hit on canonical pkgrel name", func(t *testing.T) {
+	// pkgArch returns the per-arch package store dir for a fixture cacheDir.
+	pkgArch := func(cacheDir, arch string) string {
+		return filepath.Join(packagesStoreDir(cacheDir), arch)
+	}
+
+	t.Run("hit in per-arch package store", func(t *testing.T) {
 		dir := t.TempDir()
-		want := filepath.Join(dir, "foo-1.0-1-x86_64.pkg.tar.gz")
+		want := filepath.Join(pkgArch(dir, "x86_64"), "foo-1.0-1-x86_64.pkg.tar.gz")
 		touch(t, want)
 		if got := cachedArtifactPath(dir, "foo", "1.0", "x86_64"); got != want {
 			t.Fatalf("cachedArtifactPath = %q, want %q", got, want)
@@ -259,8 +267,8 @@ func TestCachedArtifactPath(t *testing.T) {
 
 	t.Run("armv7 prefers pacman arch armv7h", func(t *testing.T) {
 		dir := t.TempDir()
-		want := filepath.Join(dir, "foo-1.0-1-armv7h.pkg.tar.gz")
-		plain := filepath.Join(dir, "foo-1.0-1-armv7.pkg.tar.gz")
+		want := filepath.Join(pkgArch(dir, "armv7h"), "foo-1.0-1-armv7h.pkg.tar.gz")
+		plain := filepath.Join(pkgArch(dir, "armv7"), "foo-1.0-1-armv7.pkg.tar.gz")
 		touch(t, want)
 		touch(t, plain)
 		if got := cachedArtifactPath(dir, "foo", "1.0", "armv7"); got != want {
@@ -268,20 +276,20 @@ func TestCachedArtifactPath(t *testing.T) {
 		}
 	})
 
-	t.Run("falls back to raw arch name", func(t *testing.T) {
+	t.Run("falls back to raw arch name dir", func(t *testing.T) {
 		dir := t.TempDir()
-		want := filepath.Join(dir, "foo-1.0-1-armv7.pkg.tar.gz")
+		want := filepath.Join(pkgArch(dir, "armv7"), "foo-1.0-1-armv7.pkg.tar.gz")
 		touch(t, want)
 		if got := cachedArtifactPath(dir, "foo", "1.0", "armv7"); got != want {
 			t.Fatalf("cachedArtifactPath = %q, want %q", got, want)
 		}
 	})
 
-	t.Run("legacy filename migrates to pkgrel name", func(t *testing.T) {
+	t.Run("legacy flat cache migrates to package store", func(t *testing.T) {
 		dir := t.TempDir()
 		legacy := filepath.Join(dir, "foo-1.0-x86_64.pkg.tar.gz")
 		touch(t, legacy)
-		want := filepath.Join(dir, "foo-1.0-1-x86_64.pkg.tar.gz")
+		want := filepath.Join(pkgArch(dir, "x86_64"), "foo-1.0-1-x86_64.pkg.tar.gz")
 		if got := cachedArtifactPath(dir, "foo", "1.0", "x86_64"); got != want {
 			t.Fatalf("cachedArtifactPath = %q, want migrated %q", got, want)
 		}
@@ -441,9 +449,13 @@ func TestFindCachedPackageArtifact(t *testing.T) {
 		}
 	})
 
+	pkgStore := func(cache, arch, file string) string {
+		return filepath.Join(packagesStoreDir(cache), arch, file)
+	}
+
 	t.Run("valid artifact resolves", func(t *testing.T) {
 		cache := t.TempDir()
-		want := filepath.Join(cache, "foo-1.0-1-x86_64.pkg.tar.gz")
+		want := pkgStore(cache, "x86_64", "foo-1.0-1-x86_64.pkg.tar.gz")
 		writePkgTarball(t, want, "pkgname = foo\npkgver = 1.0-1\narch = x86_64\n")
 		b := &builder.Builder{CacheDir: cache}
 		if got := FindCachedPackageArtifact(b, newPkg("foo", "1.0"), "x86_64"); got != want {
@@ -453,7 +465,7 @@ func TestFindCachedPackageArtifact(t *testing.T) {
 
 	t.Run("armv7 artifact must embed pacman arch armv7h", func(t *testing.T) {
 		cache := t.TempDir()
-		want := filepath.Join(cache, "foo-1.0-1-armv7h.pkg.tar.gz")
+		want := pkgStore(cache, "armv7h", "foo-1.0-1-armv7h.pkg.tar.gz")
 		writePkgTarball(t, want, "pkgname = foo\npkgver = 1.0-1\narch = armv7h\n")
 		b := &builder.Builder{CacheDir: cache}
 		if got := FindCachedPackageArtifact(b, newPkg("foo", "1.0"), "armv7"); got != want {
@@ -463,7 +475,7 @@ func TestFindCachedPackageArtifact(t *testing.T) {
 
 	t.Run("arch mismatch forces rebuild", func(t *testing.T) {
 		cache := t.TempDir()
-		stale := filepath.Join(cache, "foo-1.0-1-x86_64.pkg.tar.gz")
+		stale := pkgStore(cache, "x86_64", "foo-1.0-1-x86_64.pkg.tar.gz")
 		writePkgTarball(t, stale, "pkgname = foo\npkgver = 1.0-1\narch = aarch64\n")
 		b := &builder.Builder{CacheDir: cache}
 		if got := FindCachedPackageArtifact(b, newPkg("foo", "1.0"), "x86_64"); got != "" {
@@ -473,7 +485,7 @@ func TestFindCachedPackageArtifact(t *testing.T) {
 
 	t.Run("version mismatch misses", func(t *testing.T) {
 		cache := t.TempDir()
-		old := filepath.Join(cache, "foo-0.9-1-x86_64.pkg.tar.gz")
+		old := pkgStore(cache, "x86_64", "foo-0.9-1-x86_64.pkg.tar.gz")
 		writePkgTarball(t, old, "pkgname = foo\npkgver = 0.9-1\narch = x86_64\n")
 		b := &builder.Builder{CacheDir: cache}
 		if got := FindCachedPackageArtifact(b, newPkg("foo", "1.0"), "x86_64"); got != "" {

@@ -307,27 +307,40 @@ func pacmanArch(arch string) string {
 	return arch
 }
 
+// packagesStoreDir is the per-arch built-package store, a sibling of the
+// cache dir (mirrors builder.Builder.PackagesDir).
+func packagesStoreDir(cacheDir string) string {
+	return filepath.Join(filepath.Dir(cacheDir), "packages")
+}
+
 func cachedArtifactPath(cacheDir, name, version, arch string) string {
 	pacArch := pacmanArch(arch)
+	archDir := filepath.Join(packagesStoreDir(cacheDir), pacArch)
+	// Preferred: per-arch package store (packages/<arch>/...), arch-name alt.
 	candidates := []string{
-		filepath.Join(cacheDir, fmt.Sprintf("%s-%s-1-%s.pkg.tar.gz", name, version, pacArch)),
-		filepath.Join(cacheDir, fmt.Sprintf("%s-%s-1-%s.pkg.tar.gz", name, version, arch)),
+		filepath.Join(archDir, fmt.Sprintf("%s-%s-1-%s.pkg.tar.gz", name, version, pacArch)),
+		filepath.Join(packagesStoreDir(cacheDir), arch, fmt.Sprintf("%s-%s-1-%s.pkg.tar.gz", name, version, arch)),
 	}
 	for _, path := range candidates {
 		if _, err := os.Stat(path); err == nil {
 			return path
 		}
 	}
-	// Migrate legacy filename without pkgrel if present.
+	// Legacy artifacts in the flat cache dir (pre package store, with or
+	// without pkgrel). Migrate the first hit into the per-arch store.
 	legacyCandidates := []string{
+		filepath.Join(cacheDir, fmt.Sprintf("%s-%s-1-%s.pkg.tar.gz", name, version, pacArch)),
+		filepath.Join(cacheDir, fmt.Sprintf("%s-%s-1-%s.pkg.tar.gz", name, version, arch)),
 		filepath.Join(cacheDir, fmt.Sprintf("%s-%s-%s.pkg.tar.gz", name, version, pacArch)),
 		filepath.Join(cacheDir, fmt.Sprintf("%s-%s-%s.pkg.tar.gz", name, version, arch)),
 	}
 	for _, legacy := range legacyCandidates {
 		if _, err := os.Stat(legacy); err == nil {
-			target := filepath.Join(cacheDir, fmt.Sprintf("%s-%s-1-%s.pkg.tar.gz", name, version, pacArch))
-			if err := os.Rename(legacy, target); err == nil {
-				return target
+			target := filepath.Join(archDir, fmt.Sprintf("%s-%s-1-%s.pkg.tar.gz", name, version, pacArch))
+			if err := os.MkdirAll(archDir, 0755); err == nil {
+				if err := os.Rename(legacy, target); err == nil {
+					return target
+				}
 			}
 			return legacy
 		}
