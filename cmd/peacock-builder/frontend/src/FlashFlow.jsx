@@ -18,9 +18,10 @@
  *   F4  Flash  — bootloader → recovery → system, live progress + log.
  *   F5  Done   — Welcome screen, next steps.
  *
- * Persistent build banner: lives at the top-left of the wizard chrome across
- * F1..F4. Click it to open the full RunScreen overlay so power users can
- * watch the live log without losing flash-flow state.
+ * Persistent build banner: lives at the top-left of the wizard chrome on
+ * F1..F2 (plus F3 while the build is still running). Click it to open the
+ * full RunScreen overlay so power users can watch the live log without
+ * losing flash-flow state. It unmounts once flashing starts (F4).
  *
  * Phase 1 (today): all jobs are simulated via the same log-script pattern as
  * Run.jsx — see useBuildJob / useFlashJob below. Phase 4 will swap the
@@ -221,7 +222,8 @@ function StepSplash({ onDone }) {
 
 /* ===== persistent top-docked build banner ===============================
  *
- * Rendered by the driver across F1..F4. Visually it sits at the wizard's
+ * Rendered by the driver on F1..F2, plus F3 while the build is still
+ * running (the gate that matters there). Visually it sits at the wizard's
  * top-left (above the step's own .ff-top), shows a small circle that pulses
  * during build and turns green on done, plus a click-to-open affordance for
  * the live RunScreen overlay so power users can watch the log without
@@ -959,9 +961,15 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, onHome, appCl
   const keepFlashing = () => setStopOpen(false);
   const stopAnyway = () => { setStopOpen(false); onHome(); };
 
-  /* Persistent top-docked banner shows on F1..F4. F0 has its own splash
-   * (which docks into the same spot), and F5 has its own celebratory layout. */
-  const showBanner = sub === "warn" || sub === "unlock" || sub === "connect" || sub === "flash";
+  /* Persistent top-docked banner shows only while the background build is
+   * still relevant context: F1 (warn) and F2 (unlock) always, plus F3
+   * (connect) only while the build hasn't succeeded (running or failed —
+   * normally unreachable since F2 routes through the live view, but real
+   * backend event ordering could land us here mid-build). Once flashing
+   * starts (F4) or the flow finishes (F5) the banner is pure noise — its
+   * "system image written" line reads like flash progress — so it unmounts.
+   * F0 has its own splash (which docks into the same spot). */
+  const showBanner = sub === "warn" || sub === "unlock" || (sub === "connect" && !build.done);
 
   /* Step counter: F0 is a transient pre-step (splash + background build
    * kickoff), not one of the 5 user-actionable substeps. Show just
