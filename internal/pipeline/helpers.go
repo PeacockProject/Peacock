@@ -666,7 +666,14 @@ func prepareBuildDepPackages(b *builder.Builder, pkg *manifest.Package, chrootRo
 			}
 		}
 
-		destRoot := filepath.Join(chrootRoot, "usr", "local")
+		// Default: keep our own build-dep packages in the /peacock overlay
+		// (the feather domain). A port that sets [build].integrate = true
+		// is merged into the base system tree at /usr instead. Either way
+		// the bin/lib/include detected below get wired into the build env.
+		destRoot := filepath.Join(chrootRoot, "peacock")
+		if depManifest.Build.Integrate {
+			destRoot = filepath.Join(chrootRoot, "usr")
+		}
 		if err := execCommand("sudo", "mkdir", "-p", destRoot); err != nil {
 			return preparedBuildDeps{}, fmt.Errorf("failed to create build_dep_package dest %s: %w", destRoot, err)
 		}

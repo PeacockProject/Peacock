@@ -97,10 +97,17 @@ type Package struct {
 		// a port that needs "arm-eabi" rather than the standard
 		// "arm-linux-gnueabihf"). Flows into both package resolution and
 		// the derived CROSS_COMPILE so they can't disagree.
-		Triple   string `toml:"triple"`
-		Script   string `toml:"script"`
-		Source   string `toml:"source"`
-		Checksum string `toml:"checksum"`
+		Triple string `toml:"triple"`
+		// Integrate controls where this package lands when staged as a
+		// build_dep_package (a port we build ourselves — device-specific or
+		// not in the distro). Default (false) keeps it in the /peacock
+		// overlay (the feather domain); true integrates it into the base
+		// system tree at /usr. Either way its bin/lib/include are wired
+		// into the build env (PATH / LD_LIBRARY_PATH).
+		Integrate bool   `toml:"integrate"`
+		Script    string `toml:"script"`
+		Source    string `toml:"source"`
+		Checksum  string `toml:"checksum"`
 	} `toml:"build"`
 
 	Install Install `toml:"install"`
