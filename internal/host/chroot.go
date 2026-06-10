@@ -23,6 +23,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"peacock/internal/runner"
 )
 
 // SupportedHostChrootFlavors is the closed set we know how to (or
@@ -92,43 +95,82 @@ func HostChrootRoot(flavor string) (string, error) {
 	return filepath.Join(base, flavor), nil
 }
 
-// EnsureHostChroot is the v0 entrypoint: idempotently materialize a
-// host chroot for `flavor` and return its path. When the chroot
-// already exists, no work is done.
+// EnsureHostChroot idempotently materializes a host chroot for `flavor`
+// and returns its path. The end-to-end flow:
 //
-// v0: the download+extract+first-time-setup steps are still TODO. We
-// return a clear "not yet implemented" error so the build path that
-// calls into here fails loudly rather than silently falling back to
-// the host's own tools (which would defeat the point of opting into
-// host-chroot mode).
+//  1. fast path: a populated rootfs WITH the toolchain sentinel is
+//     reused as-is, no work.
+//  2. resolve the download URL (arch scrapes the latest/ listing; debian
+//     + alpine are deterministic).
+//  3. download the tarball to a temp file, then verify its sha256
+//     against the flavor's published sums manifest — FAILING CLOSED if
+//     the manifest can't be fetched or lacks our entry.
+//  4. extract with the flavor's --strip-components.
+//  5. bring up the bind-mounts, install the build toolchain inside,
+//     write the sentinel, tear the mounts down.
 //
-// BACKLOG.md tracks the rest:
-//   - fetch `latest` directory listing for arch and pick the newest dated tarball.
-//   - download with progress + checksum verification.
-//   - bind-mount /dev, /proc, /sys (already covered by internal/chroot.MountWithSudo).
-//   - first-time apt/pacman/apk install of the build toolchain inside the chroot.
-//   - integrate with runner.SetExecPrefix or equivalent so RunCmd routes through the chroot.
+// The (flavor) -> (string, error) signature is load-bearing: the build
+// path (runner.SetExecPrefix wiring) depends on it staying stable.
 func EnsureHostChroot(flavor string) (string, error) {
 	root, err := HostChrootRoot(flavor)
 	if err != nil {
 		return "", err
 	}
 
-	// Idempotency check: if the rootfs already has a recognizable
-	// init.d / etc / usr structure, we treat it as already
-	// bootstrapped. The fuller "matches the flavor we expect" check
-	// (e.g. /etc/alpine-release vs /etc/debian_version) lands with the
-	// real implementation.
-	if isProbablyBootstrapped(root) {
+	// Fast path: already bootstrapped AND toolchain installed.
+	if isProbablyBootstrapped(root) && toolchainReady(root) {
 		return root, nil
 	}
 
-	url := TarballURL(flavor)
-	if url == "" {
-		return "", fmt.Errorf("host: no bootstrap tarball URL known for flavor %q", flavor)
+	// Only download+extract if the rootfs isn't already populated; a
+	// half-finished chroot (rootfs present, toolchain not) skips
+	// straight to the toolchain install below.
+	if !isProbablyBootstrapped(root) {
+		url, err := resolveTarballURL(flavor)
+		if err != nil {
+			return "", err
+		}
+
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			return "", fmt.Errorf("host: cannot create chroot root %s: %w", root, err)
+		}
+
+		tmp, err := os.CreateTemp("", "peacock-host-"+flavor+"-*.tar")
+		if err != nil {
+			return "", fmt.Errorf("host: cannot create temp file: %w", err)
+		}
+		tmpPath := tmp.Name()
+		_ = tmp.Close()
+		defer os.Remove(tmpPath)
+
+		runner.Logf("Downloading %s bootstrap...\n", flavor)
+		if err := downloadTarball(url, tmpPath); err != nil {
+			return "", err
+		}
+
+		runner.Logf("Verifying checksum...\n")
+		filename := url[strings.LastIndex(url, "/")+1:]
+		if err := verifyChecksum(tmpPath, sumsURLFor(flavor, url), filename); err != nil {
+			return "", err
+		}
+
+		if err := extractTarball(tmpPath, root, flavor); err != nil {
+			return "", err
+		}
 	}
 
-	return root, fmt.Errorf("host: --use-host-chroot=%s not yet implemented (would bootstrap from %s into %s); see BACKLOG.md", flavor, url, root)
+	// Toolchain install needs the bind-mounts up (proc/dev + DNS).
+	cleanup, err := mountHostChroot(root)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+
+	if err := installToolchain(root, flavor); err != nil {
+		return "", err
+	}
+
+	return root, nil
 }
 
 // isProbablyBootstrapped is a cheap "does this look like a populated
