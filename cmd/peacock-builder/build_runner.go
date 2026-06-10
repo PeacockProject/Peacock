@@ -85,17 +85,25 @@ func (r BuildRequestDTO) toRunnerOpts() pipeline.RunnerOpts {
 
 // StartBuild validates the request, generates a buildID, spawns the
 // build goroutine, and returns the ID immediately. The frontend then
+// defaultWorkDir is the standard peacock var dir ($HOME/.local/var/peacock),
+// used when the GUI doesn't supply one (it never runs `peacock init`).
+// Falls back to "peacock" relative if $HOME can't be resolved.
+func defaultWorkDir() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".local", "var", "peacock")
+	}
+	return "peacock"
+}
+
 // listens for Wails events keyed by ID.
 func (a *App) StartBuild(req BuildRequestDTO) (string, error) {
 	cfg := req.toBuildConfig()
 	// The GUI never runs `peacock init`, so viper's work_dir is unset and
 	// the DTO leaves WorkDir empty. Validate() requires it, so default to
-	// the standard peacock var dir ($HOME/.local/var/peacock) — the same
-	// path the CLI's `init` proposes — when the frontend didn't supply one.
+	// the standard peacock var dir — the same path the CLI's `init`
+	// proposes — when the frontend didn't supply one.
 	if cfg.WorkDir == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			cfg.WorkDir = filepath.Join(home, ".local", "var", "peacock")
-		}
+		cfg.WorkDir = defaultWorkDir()
 	}
 	if err := cfg.Validate(); err != nil {
 		return "", err
