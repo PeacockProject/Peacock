@@ -650,7 +650,11 @@ function usePhase(script, armed, onDone) {
     const t = setTimeout(() => setN(n + 1), n === 0 ? 320 : 360 + Math.random() * 240);
     return () => clearTimeout(t);
   }, [armed, n, script]);
-  React.useEffect(() => { if (!armed) setN(0); }, [armed]);
+  /* No reset on disarm: phases arm strictly in sequence and never
+   * re-arm, so a completed phase keeps its final progress + log lines.
+   * (Resetting here made finished phase pills drop to "—" and the
+   * combined percentage dip when the next phase took over. Re-entering
+   * F4 via Back remounts StepFlash, which resets naturally.) */
   const prog = !script ? 100 : n > 0 ? script[n - 1].prog : 0;
   return { prog, n, lines: script ? script.slice(0, n) : [] };
 }
