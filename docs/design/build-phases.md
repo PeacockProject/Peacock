@@ -85,8 +85,11 @@ ports" philosophy). The Go harness only orchestrates.
   `peacock_msg`, `apply_patches`).
 - `lib/build/<type>.sh` — the per-type defaults below.
 
-These get copied into the chroot build dir alongside the port files, then
-sourced.
+This is **one shared library**, edited in one place. It is never copied
+into a port's source dir — a port dir holds only its `package.toml`,
+optional `build.sh`, and config files. The shared `lib/` is bind-mounted
+into the throwaway chroot build sandbox at build time and sourced from
+there.
 
 ## Build types
 
@@ -123,13 +126,14 @@ New build types are new `lib/build/<type>.sh` files; no Go change.
 `peacock-build.sh` and runs it. New flow:
 
 1. Resolve `build_type` (default `raw`).
-2. Copy `peacock-ports/lib/build/{default.sh,<type>.sh}` into the build
-   dir (next to the port files already copied in).
+2. Bind-mount the one shared `peacock-ports/lib/build/` into the chroot
+   build sandbox (read-only) at a fixed path, e.g. `/peacock-buildlib`.
+   Nothing is copied; the same single library serves every build.
 3. Generate `peacock-build.sh` = the env preamble + the source-and-run
    driver:
    ```sh
-   . ./lib/default.sh
-   . ./lib/<type>.sh
+   . /peacock-buildlib/default.sh
+   . /peacock-buildlib/<type>.sh
    [ -f ./build.sh ] && . ./build.sh
    run_phases            # defined in default.sh
    ```
@@ -214,9 +218,10 @@ all come from `lib/build/kernel.sh`.
 
 ## Open questions
 
-1. Lib delivery: copy `lib/build/*.sh` into each build dir (simple,
-   self-contained per build) vs bind-mount the ports `lib/` into the
-   chroot (no copy, but more mount plumbing). Leaning copy.
+1. ~~Lib delivery~~ **Resolved:** bind-mount the one shared
+   `peacock-ports/lib/build/` read-only into the sandbox at
+   `/peacock-buildlib`. Nothing is copied into package or build dirs; a
+   single library serves every build.
 2. `build_type` default: `raw` (explicit, a port must opt into a type) vs
    inferring from declared fields. Leaning explicit `raw`.
 3. Do bootloaders (lk2nd) get a `bootloader`/`make`-ish type, or stay
