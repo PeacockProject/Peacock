@@ -15,10 +15,10 @@ import (
 // featherManifest renders the manifest.toml that goes at the root of a
 // .feather archive, from the port's metadata. ftr requires [package].name,
 // [package].version, and [install].layout; the rest is optional.
-func featherManifest(pkg *manifest.Package, version string) string {
+func featherManifest(name, version string, pkg *manifest.Package) string {
 	var b strings.Builder
 	b.WriteString("[package]\n")
-	fmt.Fprintf(&b, "name = %q\n", pkg.Package.Name)
+	fmt.Fprintf(&b, "name = %q\n", name)
 	fmt.Fprintf(&b, "version = %q\n", version)
 	if pkg.Package.Description != "" {
 		fmt.Fprintf(&b, "description = %q\n", pkg.Package.Description)
@@ -68,68 +68,79 @@ func nonEmpty(in []string) []string {
 	return out
 }
 
-// PackageArtifact creates a .feather package (a gzip tarball of
-// manifest.toml + the staged tree under files/) in the per-arch package
-// store. `ftr install` consumes it. Returns the archive path.
-func (b *Builder) PackageArtifact(buildDir string, pkg *manifest.Package, arch string) (string, error) {
-	pkgRoot := buildDir
-	stageDir := filepath.Join(buildDir, "stage")
-	if info, err := os.Stat(stageDir); err == nil && info.IsDir() {
-		pkgRoot = stageDir
-	}
+func isDir(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && info.IsDir()
+}
 
-	// Normalize arch (armv7 -> armv7h).
+// PackageArtifact creates the .feather package(s) for a built port in the
+// per-arch store and returns the main package path. A kernel port that
+// declares prp_kernel_config additionally emits a `<name>-prp` subpackage
+// from buildDir/stage-prp — the PRP-trimmed kernel, a build dependency of
+// PRP recovery images that is never shipped in the OS rootfs.
+func (b *Builder) PackageArtifact(buildDir string, pkg *manifest.Package, arch string) (string, error) {
 	pacmanArch := arch
 	if arch == "armv7" {
 		pacmanArch = "armv7h"
 	}
+	version := fmt.Sprintf("%s-1", pkg.Package.Version)
 
-	pkgrel := "1"
-	version := fmt.Sprintf("%s-%s", pkg.Package.Version, pkgrel)
-
-	archStoreDir := filepath.Join(b.PackagesDir(), pacmanArch)
-	if err := os.MkdirAll(archStoreDir, 0755); err != nil {
+	store := filepath.Join(b.PackagesDir(), pacmanArch)
+	if err := os.MkdirAll(store, 0755); err != nil {
 		return "", err
 	}
-	tarPath := filepath.Join(archStoreDir, fmt.Sprintf("%s-%s-%s.feather", pkg.Package.Name, version, pacmanArch))
-	file, err := os.Create(tarPath)
-	if err != nil {
+
+	mainStage := buildDir
+	if d := filepath.Join(buildDir, "stage"); isDir(d) {
+		mainStage = d
+	}
+	mainOut := filepath.Join(store, fmt.Sprintf("%s-%s-%s.feather", pkg.Package.Name, version, pacmanArch))
+	if err := writeFeatherArchive(mainStage, featherManifest(pkg.Package.Name, version, pkg), mainOut); err != nil {
 		return "", err
+	}
+
+	if pkg.Build.PRPKernelConfig != "" {
+		if prpStage := filepath.Join(buildDir, "stage-prp"); isDir(prpStage) {
+			prpName := pkg.Package.Name + "-prp"
+			prpOut := filepath.Join(store, fmt.Sprintf("%s-%s-%s.feather", prpName, version, pacmanArch))
+			if err := writeFeatherArchive(prpStage, featherManifest(prpName, version, pkg), prpOut); err != nil {
+				return "", err
+			}
+		}
+	}
+
+	return mainOut, nil
+}
+
+// writeFeatherArchive writes a .feather (gzip tar of manifest.toml + the
+// stageDir tree under files/) to outPath.
+func writeFeatherArchive(stageDir, manifestContent, outPath string) error {
+	file, err := os.Create(outPath)
+	if err != nil {
+		return err
 	}
 	defer file.Close()
-
 	gw := gzip.NewWriter(file)
 	defer gw.Close()
 	tw := tar.NewWriter(gw)
 	defer tw.Close()
 
-	// manifest.toml at the archive root.
-	manifestBytes := []byte(featherManifest(pkg, version))
-	if err := tw.WriteHeader(&tar.Header{
-		Name: "manifest.toml",
-		Mode: 0644,
-		Size: int64(len(manifestBytes)),
-	}); err != nil {
-		return "", err
+	manifestBytes := []byte(manifestContent)
+	if err := tw.WriteHeader(&tar.Header{Name: "manifest.toml", Mode: 0644, Size: int64(len(manifestBytes))}); err != nil {
+		return err
 	}
 	if _, err := tw.Write(manifestBytes); err != nil {
-		return "", err
+		return err
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: "files/", Typeflag: tar.TypeDir, Mode: 0755}); err != nil {
+		return err
 	}
 
-	// files/ — the staged tree feather overlays onto the install prefix.
-	if err := tw.WriteHeader(&tar.Header{
-		Name:     "files/",
-		Typeflag: tar.TypeDir,
-		Mode:     0755,
-	}); err != nil {
-		return "", err
-	}
-
-	err = filepath.Walk(pkgRoot, func(path string, info os.FileInfo, err error) error {
+	return filepath.Walk(stageDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		relPath, _ := filepath.Rel(pkgRoot, path)
+		relPath, _ := filepath.Rel(stageDir, path)
 		if relPath == "." {
 			return nil
 		}
@@ -169,6 +180,4 @@ func (b *Builder) PackageArtifact(buildDir string, pkg *manifest.Package, arch s
 		}
 		return nil
 	})
-
-	return tarPath, err
 }

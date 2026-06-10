@@ -581,29 +581,46 @@ func prepareBuildDepPackages(b *builder.Builder, pkg *manifest.Package, chrootRo
 				break
 			}
 		}
-		if found == "" {
-			return preparedBuildDeps{}, fmt.Errorf("build_dep_package %s not found in peacock-ports/base or peacock-ports/device", depPkg)
-		}
-
-		depManifest, err := manifest.LoadPackage(found)
-		if err != nil {
-			return preparedBuildDeps{}, fmt.Errorf("failed to load build_dep_package %s: %w", depPkg, err)
-		}
 
 		hostArch := builder.HostArchString()
-		artifactPath := cachedArtifactPath(b.CacheDir, depManifest.Package.Name, depManifest.Package.Version, hostArch)
-		if artifactPath == "" {
-			buildDir, err := b.BuildPackageInChroot(depManifest, hostArch, buildDepChrootRoot, builder.BuildOptions{
-				UseQemu: boolPtr(false),
-			})
-			if err != nil {
-				return preparedBuildDeps{}, fmt.Errorf("failed to build build_dep_package %s in chroot: %w", depPkg, err)
-			}
+		var depManifest *manifest.Package
+		var artifactPath string
 
-			artifactPath, err = b.PackageArtifact(buildDir, depManifest, hostArch)
+		switch {
+		case found != "":
+			// A port we build directly.
+			pm, err := manifest.LoadPackage(found)
 			if err != nil {
-				return preparedBuildDeps{}, fmt.Errorf("failed to package build_dep_package %s: %w", depPkg, err)
+				return preparedBuildDeps{}, fmt.Errorf("failed to load build_dep_package %s: %w", depPkg, err)
 			}
+			artifactPath, err = buildOrCacheArtifact(b, pm, depPkg, hostArch, buildDepChrootRoot)
+			if err != nil {
+				return preparedBuildDeps{}, err
+			}
+			depManifest = pm
+		case strings.HasSuffix(depPkg, "-prp"):
+			// A PRP-kernel subpackage: produced by the parent kernel port
+			// (linux-<dev>), which emits linux-<dev>-prp.feather when it
+			// declares prp_kernel_config.
+			parent := strings.TrimSuffix(depPkg, "-prp")
+			parentPath, ok := LocalPackageManifestPath(parent)
+			if !ok {
+				return preparedBuildDeps{}, fmt.Errorf("build_dep_package %s: no port, and no parent port %q", depPkg, parent)
+			}
+			pm, err := manifest.LoadPackage(parentPath)
+			if err != nil {
+				return preparedBuildDeps{}, err
+			}
+			if pm.Build.PRPKernelConfig == "" {
+				return preparedBuildDeps{}, fmt.Errorf("build_dep_package %s: parent %q builds no -prp subpackage", depPkg, parent)
+			}
+			artifactPath, err = buildOrCacheArtifact(b, pm, depPkg, hostArch, buildDepChrootRoot)
+			if err != nil {
+				return preparedBuildDeps{}, err
+			}
+			depManifest = pm
+		default:
+			return preparedBuildDeps{}, fmt.Errorf("build_dep_package %s not found in peacock-ports/base or peacock-ports/device", depPkg)
 		}
 
 		// Install the dep package into the build chroot via feather, at its
@@ -631,6 +648,30 @@ func prepareBuildDepPackages(b *builder.Builder, pkg *manifest.Package, chrootRo
 	}
 
 	return extra, nil
+}
+
+// buildOrCacheArtifact returns the cached .feather for wantPkg — building
+// buildManifest (the port that produces it) if absent. wantPkg may differ
+// from buildManifest's name when it's a subpackage (e.g. linux-<dev>-prp
+// produced by the linux-<dev> port).
+func buildOrCacheArtifact(b *builder.Builder, buildManifest *manifest.Package, wantPkg, hostArch, buildDepChrootRoot string) (string, error) {
+	if p := cachedArtifactPath(b.CacheDir, wantPkg, buildManifest.Package.Version, hostArch); p != "" {
+		return p, nil
+	}
+	buildDir, err := b.BuildPackageInChroot(buildManifest, hostArch, buildDepChrootRoot, builder.BuildOptions{
+		UseQemu: boolPtr(false),
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to build %s in chroot: %w", buildManifest.Package.Name, err)
+	}
+	if _, err := b.PackageArtifact(buildDir, buildManifest, hostArch); err != nil {
+		return "", fmt.Errorf("failed to package %s: %w", buildManifest.Package.Name, err)
+	}
+	p := cachedArtifactPath(b.CacheDir, wantPkg, buildManifest.Package.Version, hostArch)
+	if p == "" {
+		return "", fmt.Errorf("build of %s did not produce subpackage %s", buildManifest.Package.Name, wantPkg)
+	}
+	return p, nil
 }
 
 func appendUnique(dst []string, vals ...string) []string {
