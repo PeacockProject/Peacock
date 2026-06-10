@@ -143,7 +143,7 @@ func TestSumsURLFor(t *testing.T) {
 		{
 			flavor:  "alpine",
 			tarball: AlpineMinirootURL,
-			want:    "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/sha256sums.txt",
+			want:    AlpineMinirootURL + ".sha256",
 		},
 		{
 			flavor:  "debian",

@@ -59,21 +59,24 @@ func stripComponentsFor(flavor string) int {
 	}
 }
 
-// sumsURLFor returns the checksum-manifest URL for a flavor, derived
-// from the tarball URL's directory. Arch + Alpine publish
-// sha256sums.txt; Debian publishes SHA256SUMS. Returns "" for unknown
-// flavors so callers fail closed.
+// sumsURLFor returns the checksum-manifest URL for a flavor.
+//   - arch: a fixed sha256sums.txt on the geo mirror.
+//   - alpine: a per-file sidecar, "<tarballURL>.sha256" (Alpine does NOT
+//     publish a sha256sums.txt in the releases dir — that 404s).
+//   - debian: derived SHA256SUMS for now.
+//
+// Returns "" for unknown flavors so callers fail closed.
 func sumsURLFor(flavor, tarballURL string) string {
-	dir := tarballURL
-	if i := strings.LastIndex(tarballURL, "/"); i >= 0 {
-		dir = tarballURL[:i+1]
-	}
 	switch flavor {
 	case "arch":
 		return archSumsURL
 	case "alpine":
-		return dir + "sha256sums.txt"
+		return tarballURL + ".sha256"
 	case "debian":
+		dir := tarballURL
+		if i := strings.LastIndex(tarballURL, "/"); i >= 0 {
+			dir = tarballURL[:i+1]
+		}
 		return dir + "SHA256SUMS"
 	default:
 		return ""
