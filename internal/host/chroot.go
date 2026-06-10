@@ -12,11 +12,12 @@
 // just `chroot`, `tar`, `curl` — everything else lives inside the
 // host chroot and gets installed there once at first run.
 //
-// Status (v0): the directory layout is fixed and EnsureHostChroot
-// returns a clear "not yet implemented" error. The actual download +
-// extract + first-time setup is captured in BACKLOG.md and lands in a
-// follow-up. cmd/peacock/build.go's --use-host-chroot flag wires
-// through to here so the user-facing flag is real today.
+// EnsureHostChroot is real end-to-end: download → sha256-verify (fail
+// closed) → extract → first-time toolchain install → bind-mounts.
+// arch + alpine bootstrap from stable upstream URLs; debian has no stable
+// rootfs tarball, so it goes through $PEACOCK_DEBIAN_ROOTFS_URL or a
+// clear, actionable error. cmd/peacock/build.go's --use-host-chroot flag
+// wires through to here.
 package host
 
 import (
@@ -50,22 +51,44 @@ func IsSupportedHostChrootFlavor(flavor string) bool {
 // Arch publishes a STABLE-named bootstrap tarball under the geo mirror's
 // iso/latest/ that resolves to the newest dated build, so no listing
 // scrape is needed for the happy path. Note the compression is .tar.zst.
+//
+// Debian deliberately has NO constant: it does not publish a simple
+// stable rootfs tarball (the cloud genericcloud .tar.xz is a disk IMAGE,
+// not a chroot). The Debian flavor goes through an env-or-clear-error
+// path; see resolveTarballURL and $PEACOCK_DEBIAN_ROOTFS_URL.
 const (
 	ArchBootstrapURL  = "https://geo.mirror.pkgbuild.com/iso/latest/archlinux-bootstrap-x86_64.tar.zst"
-	DebianRootfsURL   = "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.tar.xz"
 	AlpineMinirootURL = "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.0-x86_64.tar.gz"
 )
 
+// Debian escape-hatch environment variables. Debian has no stable rootfs
+// tarball, so the user must point Peacock at one explicitly:
+//   - PEACOCK_DEBIAN_ROOTFS_URL: a flat .tar.xz/.tar.gz Debian rootfs
+//     (e.g. a debuerreotype / docker-debian-artifacts rootfs.tar.xz).
+//   - PEACOCK_DEBIAN_ROOTFS_SHA256URL: a sidecar sums file for that
+//     tarball ("<hash>  <file>"). If unset, checksum verification can
+//     only be skipped via PEACOCK_INSECURE_SKIP_VERIFY=1 (fail-closed
+//     otherwise).
+//   - PEACOCK_INSECURE_SKIP_VERIFY=1: explicit opt-out of checksum
+//     verification (only honored on the Debian env path).
+const (
+	envDebianRootfsURL       = "PEACOCK_DEBIAN_ROOTFS_URL"
+	envDebianRootfsSHA256URL = "PEACOCK_DEBIAN_ROOTFS_SHA256URL"
+	envInsecureSkipVerify    = "PEACOCK_INSECURE_SKIP_VERIFY"
+)
+
 // TarballURL returns the canonical bootstrap tarball URL for a flavor.
-// Returns "" for unknown flavors so callers can produce a clear error.
+// Returns "" for unknown flavors and for debian (which has no stable URL
+// and is resolved via env in resolveTarballURL) so callers can produce a
+// clear error.
 func TarballURL(flavor string) string {
 	switch flavor {
 	case "arch":
 		return ArchBootstrapURL
-	case "debian":
-		return DebianRootfsURL
 	case "alpine":
 		return AlpineMinirootURL
+	case "debian":
+		return os.Getenv(envDebianRootfsURL)
 	default:
 		return ""
 	}
@@ -100,8 +123,8 @@ func HostChrootRoot(flavor string) (string, error) {
 //
 //  1. fast path: a populated rootfs WITH the toolchain sentinel is
 //     reused as-is, no work.
-//  2. resolve the download URL (arch scrapes the latest/ listing; debian
-//     + alpine are deterministic).
+//  2. resolve the download URL (arch + alpine are deterministic stable
+//     URLs; debian comes from $PEACOCK_DEBIAN_ROOTFS_URL or errors).
 //  3. download the tarball to a temp file, then verify its sha256
 //     against the flavor's published sums manifest — FAILING CLOSED if
 //     the manifest can't be fetched or lacks our entry.
@@ -148,10 +171,18 @@ func EnsureHostChroot(flavor string) (string, error) {
 			return "", err
 		}
 
-		runner.Logf("Verifying checksum...\n")
 		filename := url[strings.LastIndex(url, "/")+1:]
-		if err := verifyChecksum(tmpPath, sumsURLFor(flavor, url), filename); err != nil {
-			return "", err
+		sumsURL := sumsURLFor(flavor, url)
+		// Debian env path may explicitly opt out of verification via
+		// PEACOCK_INSECURE_SKIP_VERIFY=1 (e.g. a user-supplied rootfs with
+		// no published sums). Every other flavor stays fail-closed.
+		if sumsURL == "" && flavor == "debian" && os.Getenv(envInsecureSkipVerify) == "1" {
+			runner.Logf("WARNING: skipping checksum verification for %s (%s=1)\n", filename, envInsecureSkipVerify)
+		} else {
+			runner.Logf("Verifying checksum...\n")
+			if err := verifyChecksum(tmpPath, sumsURL, filename); err != nil {
+				return "", err
+			}
 		}
 
 		if err := extractTarball(tmpPath, root, flavor); err != nil {

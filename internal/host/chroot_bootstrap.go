@@ -7,13 +7,17 @@ package host
 // the build toolchain) lives inside a managed chroot we materialize here.
 //
 // The flow, per flavor:
-//   1. resolve the tarball URL (arch needs a directory-listing scrape;
-//      debian + alpine are deterministic).
+//   1. resolve the tarball URL (arch + alpine are deterministic stable
+//      URLs; debian comes from $PEACOCK_DEBIAN_ROOTFS_URL or a clear error
+//      — Debian has no stable rootfs tarball).
 //   2. curl the tarball to a temp file.
-//   3. download the sums file, look up the expected sha256 for our
-//      filename, compute the local sha256, compare. FAIL CLOSED — if the
-//      sums file can't be fetched or the entry is missing we error out
-//      rather than silently trusting an unverified tarball.
+//   3. download the sums file (arch: fixed geo-mirror sha256sums.txt;
+//      alpine: per-file .sha256 sidecar; debian:
+//      $PEACOCK_DEBIAN_ROOTFS_SHA256URL), look up the expected sha256 for
+//      our filename, compute the local sha256, compare. FAIL CLOSED — if
+//      the sums file can't be fetched or the entry is missing we error
+//      out rather than silently trusting an unverified tarball (the
+//      debian env path may opt out via PEACOCK_INSECURE_SKIP_VERIFY=1).
 //   4. tar -xpf with the right --strip-components for the flavor's layout.
 
 import (
@@ -48,7 +52,7 @@ var archBootstrapFilePattern = regexp.MustCompile(`archlinux-bootstrap-[0-9.]+-x
 // flavor's bootstrap tarball layout:
 //   - arch: the bootstrap tarball nests everything under a single
 //     root.x86_64/ top-level dir, so strip 1.
-//   - debian: the genericcloud tarball extracts flat (./bin, ./etc, …).
+//   - debian: a user-supplied rootfs tarball is expected to extract flat.
 //   - alpine: the miniroot tarball extracts flat too.
 func stripComponentsFor(flavor string) int {
 	switch flavor {
@@ -61,9 +65,10 @@ func stripComponentsFor(flavor string) int {
 
 // sumsURLFor returns the checksum-manifest URL for a flavor.
 //   - arch: a fixed sha256sums.txt on the geo mirror.
-//   - alpine: a per-file sidecar, "<tarballURL>.sha256" (Alpine does NOT
-//     publish a sha256sums.txt in the releases dir — that 404s).
-//   - debian: derived SHA256SUMS for now.
+//   - alpine: a per-file sidecar, "<tarballURL>.sha256".
+//   - debian: $PEACOCK_DEBIAN_ROOTFS_SHA256URL, or "" (which forces
+//     fail-closed in verifyChecksum unless the caller opted into the
+//     insecure-skip env).
 //
 // Returns "" for unknown flavors so callers fail closed.
 func sumsURLFor(flavor, tarballURL string) string {
@@ -73,21 +78,30 @@ func sumsURLFor(flavor, tarballURL string) string {
 	case "alpine":
 		return tarballURL + ".sha256"
 	case "debian":
-		dir := tarballURL
-		if i := strings.LastIndex(tarballURL, "/"); i >= 0 {
-			dir = tarballURL[:i+1]
-		}
-		return dir + "SHA256SUMS"
+		return os.Getenv(envDebianRootfsSHA256URL)
 	default:
 		return ""
 	}
 }
 
 // resolveTarballURL returns the concrete download URL for a flavor.
-// Arch uses the stable .tar.zst URL directly (the geo mirror resolves it
-// to the newest dated build — no listing scrape); debian + alpine are
-// deterministic.
+//   - arch: the stable .tar.zst URL directly (geo mirror resolves it to
+//     the newest dated build — no listing scrape needed).
+//   - alpine: deterministic.
+//   - debian: $PEACOCK_DEBIAN_ROOTFS_URL, or a clear, actionable error.
 func resolveTarballURL(flavor string) (string, error) {
+	if flavor == "debian" {
+		if url := TarballURL("debian"); url != "" {
+			return url, nil
+		}
+		return "", fmt.Errorf(
+			"host: host-chroot bootstrap for the debian flavor isn't wired up to a built-in URL — "+
+				"Debian publishes no stable rootfs tarball (the cloud genericcloud image is a disk image, not a chroot). "+
+				"Either use `--use-host-chroot arch` or `--use-host-chroot alpine`, "+
+				"or set $%s to a flat Debian rootfs tarball (e.g. a debuerreotype / docker-debian-artifacts rootfs.tar.xz) "+
+				"and $%s to its sums sidecar (or set $%s=1 to skip verification)",
+			envDebianRootfsURL, envDebianRootfsSHA256URL, envInsecureSkipVerify)
+	}
 	url := TarballURL(flavor)
 	if url == "" {
 		return "", fmt.Errorf("host: no bootstrap tarball URL known for flavor %q", flavor)
