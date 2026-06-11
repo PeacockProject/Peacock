@@ -64,7 +64,7 @@ func (r *Runner) runInitramfsPhase(
 	if err := ensureBuildChrootBootstrap(b, bbChrootDir, bbChrootArch); err != nil {
 		return "", fmt.Errorf("error bootstrapping build tools for busybox: %w", err)
 	}
-	bbExtraPaths, err := prepareBuildDepPackages(b, bbPkg, bbChrootDir, buildDepChrootRoot)
+	bbExtraPaths, err := prepareBuildDepPackages(b, bbPkg, dev.Device.Architecture, bbChrootDir, buildDepChrootRoot)
 	if err != nil {
 		return "", fmt.Errorf("error preparing build dep packages for busybox: %w", err)
 	}
@@ -127,7 +127,7 @@ func (r *Runner) runInitramfsPhase(
 	if err := ensureBuildChrootBootstrap(b, splashChrootDir, splashChrootArch); err != nil {
 		return "", fmt.Errorf("error bootstrapping build tools for peacock-splash: %w", err)
 	}
-	splashExtraPaths, err := prepareBuildDepPackages(b, splashPkg, splashChrootDir, buildDepChrootRoot)
+	splashExtraPaths, err := prepareBuildDepPackages(b, splashPkg, dev.Device.Architecture, splashChrootDir, buildDepChrootRoot)
 	if err != nil {
 		return "", fmt.Errorf("error preparing build dep packages for peacock-splash: %w", err)
 	}

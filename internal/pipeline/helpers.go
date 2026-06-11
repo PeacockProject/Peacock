@@ -539,7 +539,7 @@ func BuildPackageInChrootStep(b *builder.Builder, pkg *manifest.Package, targetA
 	if err := ensureBuildChrootBootstrap(b, buildChrootDir, chrootArch); err != nil {
 		return "", "", fmt.Errorf("bootstrapping build chroot: %w", err)
 	}
-	extraPaths, err := prepareBuildDepPackages(b, pkg, buildChrootDir, buildDepChrootRoot)
+	extraPaths, err := prepareBuildDepPackages(b, pkg, targetArch, buildChrootDir, buildDepChrootRoot)
 	if err != nil {
 		return "", "", fmt.Errorf("preparing build_dep_packages: %w", err)
 	}
@@ -559,7 +559,7 @@ func BuildPackageInChrootStep(b *builder.Builder, pkg *manifest.Package, targetA
 	return buildDir, artifactPath, nil
 }
 
-func prepareBuildDepPackages(b *builder.Builder, pkg *manifest.Package, chrootRoot string, buildDepChrootRoot string) (preparedBuildDeps, error) {
+func prepareBuildDepPackages(b *builder.Builder, pkg *manifest.Package, consumingArch, chrootRoot, buildDepChrootRoot string) (preparedBuildDeps, error) {
 	if len(pkg.Build.BuildDepPackages) == 0 {
 		return preparedBuildDeps{}, nil
 	}
@@ -593,12 +593,19 @@ func prepareBuildDepPackages(b *builder.Builder, pkg *manifest.Package, chrootRo
 			if err != nil {
 				return preparedBuildDeps{}, fmt.Errorf("failed to load build_dep_package %s: %w", depPkg, err)
 			}
-			// A dep that declares target_arch (a kernel) is a target
-			// artifact — build it for that arch, not the host. Host tools
-			// (toolchains, build utils) have no target_arch -> hostArch.
+			// Pick the arch to build this dep for. A kernel declares
+			// target_arch -> use it. A dep that needs a toolchain
+			// (capabilities) but has no fixed target_arch is a device
+			// artifact (e.g. busybox) -> build it for the consuming
+			// device's arch, and set target_arch so its cross toolchain
+			// resolves. Otherwise it's a host tool (toolchain, make) ->
+			// hostArch.
 			depArch := hostArch
 			if pm.Build.TargetArch != "" {
 				depArch = pm.Build.TargetArch
+			} else if len(pm.Build.Capabilities) > 0 && consumingArch != "" {
+				depArch = consumingArch
+				pm.Build.TargetArch = consumingArch
 			}
 			artifactPath, err = buildOrCacheArtifact(b, pm, depPkg, depArch, buildDepChrootRoot)
 			if err != nil {
@@ -621,12 +628,19 @@ func prepareBuildDepPackages(b *builder.Builder, pkg *manifest.Package, chrootRo
 			if pm.Build.PRPKernelConfig == "" {
 				return preparedBuildDeps{}, fmt.Errorf("build_dep_package %s: parent %q builds no -prp subpackage", depPkg, parent)
 			}
-			// A dep that declares target_arch (a kernel) is a target
-			// artifact — build it for that arch, not the host. Host tools
-			// (toolchains, build utils) have no target_arch -> hostArch.
+			// Pick the arch to build this dep for. A kernel declares
+			// target_arch -> use it. A dep that needs a toolchain
+			// (capabilities) but has no fixed target_arch is a device
+			// artifact (e.g. busybox) -> build it for the consuming
+			// device's arch, and set target_arch so its cross toolchain
+			// resolves. Otherwise it's a host tool (toolchain, make) ->
+			// hostArch.
 			depArch := hostArch
 			if pm.Build.TargetArch != "" {
 				depArch = pm.Build.TargetArch
+			} else if len(pm.Build.Capabilities) > 0 && consumingArch != "" {
+				depArch = consumingArch
+				pm.Build.TargetArch = consumingArch
 			}
 			artifactPath, err = buildOrCacheArtifact(b, pm, depPkg, depArch, buildDepChrootRoot)
 			if err != nil {

@@ -96,7 +96,7 @@ func (r *Runner) runRootfsPhase(
 			if err := ensureBuildChrootBootstrap(b, kernelChrootDir, kernelChrootArch); err != nil {
 				return nil, fmt.Errorf("error bootstrapping build tools for kernel: %w", err)
 			}
-			kernelExtraPaths, err := prepareBuildDepPackages(b, kernelPkg, kernelChrootDir, buildDepChrootRoot)
+			kernelExtraPaths, err := prepareBuildDepPackages(b, kernelPkg, dev.Device.Architecture, kernelChrootDir, buildDepChrootRoot)
 			if err != nil {
 				return nil, fmt.Errorf("error preparing build dep packages for kernel: %w", err)
 			}
