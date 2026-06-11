@@ -231,11 +231,18 @@ func (r *Runner) runInitramfsPhase(
 	}
 
 	initramfsPath := filepath.Join(workDir, "initramfs.cpio.gz")
+	// Boot-model flip: the initramfs hands off to the BASE, whose /sbin/init is
+	// peacock-init — NOT the flavor's init. So the initramfs always uses the
+	// /sbin/init (OpenRC-style) switch_root path, regardless of the flavor's
+	// init system (that choice configures the flavor itself, downstream). A
+	// "systemd" value here would make the initramfs jump to
+	// /usr/lib/systemd/systemd, which the base doesn't have.
+	_ = initSystem // flavor init system; the base handoff is always /sbin/init
 	mkinitfsArgs := []string{
 		"build",
 		"--device", deviceName,
 		"--arch", dev.Device.Architecture,
-		"--init", initSystem,
+		"--init", "openrc",
 		"--root-label", rootLabel,
 		"--busybox", busyboxPath,
 		"--output", initramfsPath,
