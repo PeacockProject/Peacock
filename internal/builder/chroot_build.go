@@ -128,7 +128,15 @@ func (b *Builder) BuildPackageInChroot(pkg *manifest.Package, targetArch string,
 	// toolchains.toml on the host); fails fast on an unsupported combo
 	// before any chroot work. The packages get installed alongside
 	// build_deps after the chroot is mounted, below.
-	tcRes, err := toolchain.Resolve(pkg.Build.Capabilities, pkg.Build.TargetArch, pkg.Build.Triple, opts.Flavor, cross)
+	//
+	// An arch-agnostic port (busybox, peacock-splash) declares capabilities
+	// but no fixed target_arch — it's built for whatever arch we're
+	// targeting now, so resolve the toolchain for targetArch in that case.
+	tcArch := pkg.Build.TargetArch
+	if tcArch == "" {
+		tcArch = targetArch
+	}
+	tcRes, err := toolchain.Resolve(pkg.Build.Capabilities, tcArch, pkg.Build.Triple, opts.Flavor, cross)
 	if err != nil {
 		return "", err
 	}
