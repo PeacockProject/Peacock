@@ -196,12 +196,23 @@ func (r *Runner) runInitramfsPhase(
 		runner.Logf("Info: skipping msm-fb-refresher for device %s\n", deviceName)
 	}
 
-	// Build util-linux + lvm2 ports for initramfs runtime tooling.
-	utilLinuxBuildDir := buildPortForInitramfs(b, "util-linux", dev.Device.Architecture, workDir, useQemuFlag, crossCompileFlag)
-	lvm2BuildDir := buildPortForInitramfs(b, "lvm2", dev.Device.Architecture, workDir, useQemuFlag, crossCompileFlag)
+	// Build util-linux + lvm2 ports for initramfs runtime tooling. A build
+	// failure is fatal — the initramfs is broken without blkid/partx and
+	// dmsetup, so we must not continue and ship a bad image.
+	utilLinuxBuildDir, err := buildPortForInitramfs(b, "util-linux", dev.Device.Architecture, workDir, useQemuFlag, crossCompileFlag)
+	if err != nil {
+		return "", err
+	}
+	lvm2BuildDir, err := buildPortForInitramfs(b, "lvm2", dev.Device.Architecture, workDir, useQemuFlag, crossCompileFlag)
+	if err != nil {
+		return "", err
+	}
 
 	// Build the peacock-mkinitfs port so its binary is available to invoke below.
-	mkinitfsBuildDir := buildPortForInitramfs(b, "peacock-mkinitfs", dev.Device.Architecture, workDir, useQemuFlag, crossCompileFlag)
+	mkinitfsBuildDir, err := buildPortForInitramfs(b, "peacock-mkinitfs", dev.Device.Architecture, workDir, useQemuFlag, crossCompileFlag)
+	if err != nil {
+		return "", err
+	}
 	mkinitfsBin := locatePeacockMkinitfs(mkinitfsBuildDir)
 	if mkinitfsBin == "" {
 		return "", fmt.Errorf("peacock-mkinitfs binary not found (port build dir empty and not on PATH). Install the peacock-mkinitfs port or `go install github.com/PeacockProject/peacock-mkinitfs/cmd/peacock-mkinitfs@latest`")

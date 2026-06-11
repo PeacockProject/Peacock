@@ -491,23 +491,21 @@ func locatePeacockMkinitfs(portBuildDir string) string {
 // payload (sbin/, lib/, etc.). Used to source util-linux + lvm2 binaries for
 // the initramfs after the PRP vendor tree was dropped.
 //
-// Returns the build-dir path on success, "" on any error (errors are logged
-// to stdout). Callers MUST tolerate "" gracefully — the initramfs builder
-// falls back to host paths when the supplied dir is empty.
-func buildPortForInitramfs(b *builder.Builder, name, targetArch, workDir, useQemuFlag, crossCompileFlag string) string {
+// Returns the build-dir path, or an error. A build failure here is FATAL: the
+// initramfs needs these tools (blkid/partx, dmsetup/dm-linear), so silently
+// skipping a failed port would produce a broken image reported as success.
+func buildPortForInitramfs(b *builder.Builder, name, targetArch, workDir, useQemuFlag, crossCompileFlag string) (string, error) {
 	manifestPath := filepath.Join(portsRoot, "base", name, "package.toml")
 	pkg, err := manifest.LoadPackage(manifestPath)
 	if err != nil {
-		runner.Logf("Warning: skipping %s for initramfs (manifest load failed): %v\n", name, err)
-		return ""
+		return "", fmt.Errorf("loading %s manifest for initramfs: %w", name, err)
 	}
 
 	// Compute the build-dir path so we can reuse a previous in-chroot build
 	// without re-running the full pipeline when only the .pkg.tar.gz is cached.
 	_, chrootArch, err := resolveBuildOptions(pkg, targetArch, useQemuFlag, crossCompileFlag)
 	if err != nil {
-		runner.Logf("Warning: skipping %s for initramfs (resolveBuildOptions failed): %v\n", name, err)
-		return ""
+		return "", fmt.Errorf("resolving build options for %s: %w", name, err)
 	}
 	buildChrootDir := filepath.Join(workDir, "build-chroot", chrootArch)
 	buildDirHint := filepath.Join(buildChrootDir, "build", fmt.Sprintf("%s-%s-%s", pkg.Package.Name, pkg.Package.Version, targetArch))
@@ -515,7 +513,7 @@ func buildPortForInitramfs(b *builder.Builder, name, targetArch, workDir, useQem
 	artifactPath := FindCachedPackageArtifact(b, pkg, targetArch)
 	if artifactPath != "" && fileExists(buildDirHint) {
 		runner.Logf("Reusing cached %s build dir at %s\n", name, buildDirHint)
-		return buildDirHint
+		return buildDirHint, nil
 	}
 	// No cached .feather, but a prior run completed this build (marker present)
 	// and was killed before packaging — re-package the existing stage rather
@@ -526,7 +524,7 @@ func buildPortForInitramfs(b *builder.Builder, name, targetArch, workDir, useQem
 			runner.Logf("Warning: re-packaging completed %s build dir failed (%v); rebuilding\n", name, err)
 		} else {
 			runner.Logf("Packaged %s from a previously-completed build dir (skipped rebuild)\n", name)
-			return buildDirHint
+			return buildDirHint, nil
 		}
 	}
 	if artifactPath != "" {
@@ -536,10 +534,9 @@ func buildPortForInitramfs(b *builder.Builder, name, targetArch, workDir, useQem
 	runner.Logf("Building %s for initramfs...\n", name)
 	buildDir, _, err := BuildPackageInChrootStep(b, pkg, targetArch, workDir, useQemuFlag, crossCompileFlag)
 	if err != nil {
-		runner.Logf("Warning: skipping %s for initramfs (build failed): %v\n", name, err)
-		return ""
+		return "", fmt.Errorf("building %s for initramfs: %w", name, err)
 	}
-	return buildDir
+	return buildDir, nil
 }
 
 // BuildPackageInChrootStep performs the full chroot-build pipeline for a single
