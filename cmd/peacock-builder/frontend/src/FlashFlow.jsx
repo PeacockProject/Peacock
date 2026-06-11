@@ -349,12 +349,12 @@ function TopBanner({ build, onOpenLive }) {
  * and this full-page view always agree on percent / phase / log / errors.
  * No timer, no subscriptions of its own. Completion routing (auto-advance
  * to F3 when the user is waiting on the build) lives in the driver. */
-function LiveOverlay({ dev, build, onBack, onProceed }) {
+function LiveOverlay({ dev, build, onBack, onProceed, closing }) {
   const meta = (
     <span>{(dev && dev.code) || "build"} · <span>live build</span></span>
   );
   return (
-    <div className="ff-live">
+    <div className={"ff-live" + (closing ? " out" : "")}>
       <button className="ff-live-back" onClick={onBack} title="Return to flash setup">
         ‹ Back to flash setup
       </button>
@@ -1010,6 +1010,11 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, dm, pkgs, arc
   const [discardOpen, setDiscardOpen] = React.useState(false);
   const [stopOpen, setStopOpen] = React.useState(false);
   const [liveOpen, setLiveOpen] = React.useState(false);
+  /* True while the full-page live view is playing its exit animation before
+   * unmounting — keeps it mounted so the .ff-live.out fade can run instead of
+   * the overlay snapping away. */
+  const [liveClosing, setLiveClosing] = React.useState(false);
+  const liveCloseTimer = React.useRef(null);
   /* True while F4 is actually writing partitions (first write → last).
    * Cancel behaves differently then: see StopFlashModal above. */
   const [flashWriting, setFlashWriting] = React.useState(false);
@@ -1033,23 +1038,37 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, dm, pkgs, arc
     setWaitingOnBuild(true);
     setLiveOpen(true);
   };
+  /* Fade the full-page live view out (CSS .ff-live.out) before unmounting it,
+   * so returning to / advancing past the wizard step animates instead of
+   * snapping. `then` runs after the exit; callers that change `sub` do so
+   * BEFORE calling this, so the new step is revealed by the fade rather than
+   * flashing the old one underneath. */
+  const closeLive = (then) => {
+    setLiveClosing(true);
+    if (liveCloseTimer.current) clearTimeout(liveCloseTimer.current);
+    liveCloseTimer.current = setTimeout(() => {
+      setLiveClosing(false);
+      setLiveOpen(false);
+      setWaitingOnBuild(false);
+      if (then) then();
+    }, 240);
+  };
+
   const liveBack = () => {
-    setLiveOpen(false);
-    setWaitingOnBuild(false);
     /* A failed build has nothing to flash — re-entering the wizard steps
      * (warn / unlock / connect) is a dead end, and dropping the user back
      * on the data-loss disclaimer is jarring. Exit to home instead. */
-    if (build.error) onHome();
+    closeLive(build.error ? onHome : null);
   };
 
   /* When the user is parked on the live view waiting for the build, we no
    * longer auto-advance on completion — RunScreen shows an explicit
    * "Image built successfully!" panel with a Continue button (onProceed)
-   * so the moment is acknowledged, not skipped past. */
+   * so the moment is acknowledged, not skipped past. Set the next step first
+   * so the fade-out reveals connect, not the unlock step we came from. */
   const proceedFromLive = () => {
-    setLiveOpen(false);
-    setWaitingOnBuild(false);
     setSub("connect");
+    closeLive();
   };
 
   const cancel = () => (flashWriting ? setStopOpen(true) : setDiscardOpen(true));
@@ -1059,14 +1078,14 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, dm, pkgs, arc
   const stopAnyway = () => { setStopOpen(false); onHome(); };
 
   /* Persistent top-docked banner shows only while the background build is
-   * still relevant context: F1 (warn) and F2 (unlock) always, plus F3
-   * (connect) only while the build hasn't succeeded (running or failed —
-   * normally unreachable since F2 routes through the live view, but real
-   * backend event ordering could land us here mid-build). Once flashing
-   * starts (F4) or the flow finishes (F5) the banner is pure noise — its
-   * "system image written" line reads like flash progress — so it unmounts.
-   * F0 has its own splash (which docks into the same spot). */
-  const showBanner = sub === "warn" || sub === "unlock" || (sub === "connect" && !build.done);
+   * still in progress (or failed) on a pre-flash step — F1 (warn), F2
+   * (unlock), F3 (connect). Once the build SUCCEEDS its job is done, so it
+   * unmounts rather than lingering as a "your image is ready" bar over the
+   * instructions; a failed build (build.done is false) keeps it so the error
+   * stays visible. It also unmounts once flashing starts (F4) / the flow
+   * finishes (F5), where "system image written" would read like flash
+   * progress. F0 has its own splash (which docks into the same spot). */
+  const showBanner = !build.done && (sub === "warn" || sub === "unlock" || sub === "connect");
 
   /* Step counter: F0 is a transient pre-step (splash + background build
    * kickoff), not one of the 5 user-actionable substeps. Show just
@@ -1105,8 +1124,8 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, dm, pkgs, arc
         {sub === "connect" && <StepConnect dev={dev} onCancel={cancel} onBack={() => setSub("unlock")} onNext={() => setSub("flash")} />}
         {sub === "flash" && <StepFlash dev={dev} onCancel={cancel} onBack={() => setSub("connect")} onDone={() => setSub("done")} onWriteState={setFlashWriting} />}
         {sub === "done" && <StepDone dev={dev} onHome={onHome} onBuildAnother={onHome} />}
-        {liveOpen && <LiveOverlay dev={dev} build={build} onBack={liveBack}
-          onProceed={waitingOnBuild ? proceedFromLive : null} />}
+        {(liveOpen || liveClosing) && <LiveOverlay dev={dev} build={build} onBack={liveBack}
+          onProceed={waitingOnBuild ? proceedFromLive : null} closing={liveClosing} />}
         <DiscardModal open={discardOpen} onKeep={keep} onDiscard={discard} />
         <StopFlashModal open={stopOpen} onKeep={keepFlashing} onStop={stopAnyway} />
       </div>

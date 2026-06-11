@@ -678,6 +678,9 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 /* ===== live build overlay (RunScreen reused) ===== */
 .ff-live{position:absolute;inset:0;z-index:38;background:var(--bg);animation:fflive-in .26s ease both;}
 @keyframes fflive-in{from{opacity:0;transform:scale(.98);}to{opacity:1;transform:scale(1);}}
+/* Exit: lift + fade so the wizard step underneath is revealed smoothly. */
+.ff-live.out{animation:fflive-out .24s ease both;pointer-events:none;}
+@keyframes fflive-out{from{opacity:1;transform:scale(1);}to{opacity:0;transform:scale(1.02);}}
 .ff-live-back{position:absolute;top:14px;right:18px;z-index:2;background:#fff;border:1px solid var(--line2);
   color:var(--ink2);font-family:var(--mono);font-size:11px;letter-spacing:.04em;
   border-radius:999px;padding:7px 14px;cursor:pointer;
