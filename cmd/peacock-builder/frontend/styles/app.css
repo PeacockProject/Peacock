@@ -97,7 +97,11 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 .rstep.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:3px;border-radius:0 2px 2px 0;background:var(--irid);}
 .rstep.done .rn{color:transparent;}
 .rstep.done .rn::after{content:"✓";color:var(--green);font-family:var(--sans);font-size:13px;}
-.rail .wk{position:absolute;left:-30px;bottom:-30px;width:200px;height:230px;opacity:.05;pointer-events:none;}
+.rail .wk{position:absolute;left:25px;bottom:-26px;width:190px;height:219px;opacity:.05;pointer-events:none;}
+/* Clip the watermark to its own box (overrides the global .pkw svg
+ * overflow:visible) so it can't drift toward the rail's right border and
+ * get sliced — it now bleeds cleanly off the bottom-left corner only. */
+.rail .wk svg{overflow:hidden;}
 .rail .rfoot{margin-top:auto;padding:18px 26px;font-family:var(--mono);font-size:10.5px;color:var(--faint);position:relative;z-index:2;}
 
 .main{display:flex;flex-direction:column;min-height:0;min-width:0;position:relative;}

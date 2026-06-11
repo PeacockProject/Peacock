@@ -82,7 +82,10 @@ export default function BuildFlow({ onHome, startDevice, appClass }) {
   const [buildMode, setBuildMode] = React.useState("auto");
   const [desktop, setDesktop] = React.useState("phosh");
   const [dm, setDm] = React.useState("sddm");
-  const [pkgs, setPkgs] = React.useState(["firefox-esr", "mpv"]);
+  // Seed only with packages that have a visible curated card the user can
+  // toggle off in basic mode. mpv has no card, so seeding it meant it was
+  // installed for every basic-mode user with no way to deselect it.
+  const [pkgs, setPkgs] = React.useState(["firefox-esr"]);
   const [running, setRunning] = React.useState(false);
   const [mdMode, toggleMode] = useMode();
 
