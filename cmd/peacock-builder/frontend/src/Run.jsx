@@ -202,16 +202,24 @@ export function RunScreen({ script, title, meta, phases, onDone, onBack, eventPr
               {onBack && <Btn variant="ghost" onClick={onBack}>Back</Btn>}
             </div>
           </div>
-        ) : succeeded && onProceed ? (
-          /* Controlled-mode success: the driver hands us an onProceed so the
-           * user explicitly advances instead of being auto-routed off the
-           * finished build. */
+        ) : succeeded && job ? (
+          /* Controlled-mode success (FlashFlow live overlay): the controller
+           * owns completion routing, so show an explicit done state with an
+           * action instead of sitting on a bare 100%. When the user was
+           * waiting on the build (onProceed) the action advances the wizard;
+           * otherwise the build ran in the background while they were on an
+           * earlier step, so the action just returns them to setup to finish. */
           <div className="rdone" role="status">
             <div className="rdone-tag">IMAGE READY</div>
             <h2 className="rdone-h2">Image built successfully!</h2>
-            <p className="rdone-lead">Your flashable PeacockOS image is assembled. Continue when you're ready to flash it to your phone.</p>
+            <p className="rdone-lead">
+              Your flashable PeacockOS image is assembled
+              {onProceed ? ". Continue when you're ready to flash it to your phone." : " — head back to finish the steps and flash it to your phone."}
+            </p>
             <div className="rdone-acts">
-              <Btn variant="grad" ar="→" onClick={onProceed}>Continue</Btn>
+              <Btn variant="grad" ar="→" onClick={onProceed || onBack}>
+                {onProceed ? "Continue" : "Back to flash setup"}
+              </Btn>
             </div>
           </div>
         ) : (
