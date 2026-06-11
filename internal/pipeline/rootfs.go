@@ -14,7 +14,7 @@ import (
 
 	"peacock/internal/builder"
 	"peacock/internal/chroot"
-	"peacock/internal/feather"
+	"peacock/internal/config"
 	"peacock/internal/manifest"
 	"peacock/internal/runner"
 	"peacock/internal/userland"
@@ -128,17 +128,27 @@ func (r *Runner) runRootfsPhase(
 
 	cleanup.imageChroot = imageChrootRoot
 
-	rootfsPath := filepath.Join(imageChrootRoot, "rootfs")
-	res.rootfsPath = rootfsPath
-	if err := unmountRootfsSubmounts(rootfsPath); err != nil {
+	// Boot-model flip: the image root is the Peacock BASE (LABEL=ROOT, PID 1 =
+	// peacock-init). The flavor distro is installed UNDER /flavors/<name> and
+	// entered by peacock-init at boot. Pointing rootfsPath at the flavor subdir
+	// keeps the entire flavor / init-config block below unchanged — it already
+	// operates on rootfsPath.
+	baseRoot := filepath.Join(imageChrootRoot, "rootfs")
+	flavor := config.Flavor()
+	if flavor == "" {
+		flavor = "arch"
+	}
+	rootfsPath := filepath.Join(baseRoot, "flavors", flavor)
+	res.rootfsPath = baseRoot // image assembly copies the whole base (incl. /flavors)
+	if err := unmountRootfsSubmounts(baseRoot); err != nil {
 		runner.Logf("Warning: failed to unmount stale rootfs submounts: %v\n", err)
 	}
-	_ = chroot.UnmountPathWithSudo(rootfsPath)
-	if err := execCommand("sudo", "rm", "-rf", "--one-file-system", rootfsPath); err != nil {
+	_ = chroot.UnmountPathWithSudo(baseRoot)
+	if err := execCommand("sudo", "rm", "-rf", "--one-file-system", baseRoot); err != nil {
 		runner.Logf("Warning: failed to clean rootfs: %v\n", err)
 	}
 	if err := execCommand("sudo", "mkdir", "-p", rootfsPath); err != nil {
-		runner.Logf("Warning: failed to create rootfs: %v\n", err)
+		runner.Logf("Warning: failed to create flavor rootfs: %v\n", err)
 	}
 
 	// Determine packages to install
@@ -400,17 +410,20 @@ fi
 		}
 	}
 
-	// Phase 3 placeholder for the future feather-install step.
-	if feather.Available() {
-		runner.Logln("Feather binary detected; phase 4 will overlay /peacock here.")
-	} else {
-		runner.Logln("skipping feather install step — phase 4 will land")
+	// Assemble the Peacock BASE at the image root: peacock-init (PID 1) +
+	// busybox, the base-owned /peacock /apps /compat /data trees, and the
+	// active-flavor pointer. The base is what boots; peacock-init enters
+	// /flavors/<flavor> from here.
+	if !emptyRootfs {
+		if err := r.assemblePeacockBase(b, imageChrootRoot, baseRoot, flavor, dev.Device.Architecture, workDir); err != nil {
+			return nil, fmt.Errorf("error assembling peacock base: %w", err)
+		}
 	}
 
 	if res.kernelImagePath != "" && fileExistsFile(initramfsPath) {
 		dtbPath := discoverKernelDTB(res.kernelBuildDir, deviceName)
-		runner.Logln("Staging extlinux boot assets into rootfs /boot...")
-		if err := stageExtlinuxBootAssets(rootfsPath, res.kernelImagePath, initramfsPath, dev.Boot.Cmdline, dtbPath); err != nil {
+		runner.Logln("Staging extlinux boot assets into base /boot...")
+		if err := stageExtlinuxBootAssets(baseRoot, res.kernelImagePath, initramfsPath, dev.Boot.Cmdline, dtbPath); err != nil {
 			return nil, fmt.Errorf("error staging extlinux boot assets: %w", err)
 		}
 	} else {
@@ -418,4 +431,46 @@ fi
 	}
 
 	return res, nil
+}
+
+// assemblePeacockBase lays the Peacock BASE over the image root: it builds +
+// installs peacock-init (the new /sbin/init / PID 1) and busybox, creates the
+// base-owned /peacock /apps /compat /data trees, and records the active flavor.
+// The base is the new LABEL=ROOT; at boot peacock-init enters /flavors/<flavor>.
+func (r *Runner) assemblePeacockBase(b *builder.Builder, imageChrootRoot, baseRoot, flavor, arch, workDir string) error {
+	runner.Logln("Assembling Peacock base (peacock-init + busybox + /peacock)...")
+
+	// Ensure peacock-init is built so its .feather lands in the store (busybox
+	// is already built for the initramfs). We only need the side effect.
+	if _, err := buildPortForInitramfs(b, "peacock-init", arch, workDir, r.opts.UseQemu, r.opts.CrossCompile); err != nil {
+		return fmt.Errorf("building peacock-init: %w", err)
+	}
+
+	// Install the base packages at the image root. InstallPackagesToRootfs
+	// resolves each to its .feather and ftr-installs it: peacock-init ships
+	// /sbin/peacock-init + the /sbin/init symlink, busybox ships /usr/bin/busybox.
+	if err := b.InstallPackagesToRootfs(imageChrootRoot, baseRoot, []string{"busybox", "peacock-init"}, arch); err != nil {
+		return fmt.Errorf("installing base packages: %w", err)
+	}
+
+	// Base-owned trees, the active-flavor pointer, and a /bin/sh for
+	// peacock-init's phase-1 emergency shell — written with the image chroot's
+	// privileges.
+	script := fmt.Sprintf(`set -e
+ROOT=%q
+FLAVOR=%q
+mkdir -p "$ROOT/peacock/etc" "$ROOT/apps" "$ROOT/compat" "$ROOT/data" "$ROOT/proc" "$ROOT/sys" "$ROOT/dev" "$ROOT/run" "$ROOT/bin" "$ROOT/sbin"
+printf '%%s\n' "$FLAVOR" > "$ROOT/peacock/etc/active-flavor"
+if [ -e "$ROOT/usr/bin/busybox" ] && [ ! -e "$ROOT/bin/sh" ]; then
+	ln -sf /usr/bin/busybox "$ROOT/bin/sh"
+fi
+if [ -e "$ROOT/sbin/peacock-init" ] && [ ! -e "$ROOT/sbin/init" ]; then
+	ln -sf peacock-init "$ROOT/sbin/init"
+fi
+`, baseRoot, flavor)
+	if err := execCommand("sudo", "sh", "-c", script); err != nil {
+		return fmt.Errorf("writing base layout: %w", err)
+	}
+	runner.Logf("Peacock base assembled; active flavor = %s\n", flavor)
+	return nil
 }
