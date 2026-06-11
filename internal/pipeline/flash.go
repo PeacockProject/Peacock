@@ -123,19 +123,25 @@ func writeChrootFile(root, rel, content string) error {
 }
 
 // mountUSB bind-mounts the host USB bus into the chroot so fastboot/heimdall
-// (run as root inside) can see plugged-in devices. Hotplugged nodes appear
-// automatically — it's the same host devtmpfs. Returns an unmount cleanup.
+// (run as root inside) can see plugged-in devices. Returns an unmount cleanup.
+//
+// A bind mount of /dev/bus/usb is a point-in-time snapshot of the bus, so a
+// device plugged in AFTER an earlier bind won't appear. We therefore re-bind
+// fresh on every call: drop any existing mount (lazily, in case a tool is
+// holding a node) and bind the current bus. This is what makes detection see
+// a device the user plugs in mid-poll.
 func mountUSB(root string) (func(), error) {
 	target := filepath.Join(root, "dev", "bus", "usb")
 	if err := runner.RunCmd(exec.Command("sudo", "mkdir", "-p", target)); err != nil {
 		return nil, fmt.Errorf("creating usb mount point: %w", err)
 	}
-	if !isMounted(target) {
-		if err := runner.RunCmd(exec.Command("sudo", "mount", "--bind", "/dev/bus/usb", target)); err != nil {
-			return nil, fmt.Errorf("bind-mounting /dev/bus/usb: %w", err)
-		}
+	if isMounted(target) {
+		_ = runner.RunCmd(exec.Command("sudo", "umount", "-l", target))
 	}
-	return func() { _ = runner.RunCmd(exec.Command("sudo", "umount", target)) }, nil
+	if err := runner.RunCmd(exec.Command("sudo", "mount", "--bind", "/dev/bus/usb", target)); err != nil {
+		return nil, fmt.Errorf("bind-mounting /dev/bus/usb: %w", err)
+	}
+	return func() { _ = runner.RunCmd(exec.Command("sudo", "umount", "-l", target)) }, nil
 }
 
 // FlashDetect lists devices visible to the given tool inside the flash chroot.
@@ -169,6 +175,7 @@ func FlashDetect(root, tool string) ([]string, error) {
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	if err := cmd.Run(); err != nil {
+		runner.Logf("flash: fastboot devices failed: %v (%s)\n", err, strings.TrimSpace(out.String()))
 		return nil, fmt.Errorf("fastboot devices: %w (%s)", err, strings.TrimSpace(out.String()))
 	}
 	var serials []string
@@ -178,6 +185,13 @@ func FlashDetect(root, tool string) ([]string, error) {
 		if len(fields) >= 2 && fields[1] == "fastboot" && fields[0] != "" {
 			serials = append(serials, fields[0])
 		}
+	}
+	// Log the probe so detection is visible in the flash:log stream — quiet
+	// when nothing's connected (the common polling case), louder on a hit.
+	if len(serials) > 0 {
+		runner.Logf("flash: fastboot detected %d device(s): %s\n", len(serials), strings.Join(serials, ", "))
+	} else if raw := strings.TrimSpace(out.String()); raw != "" {
+		runner.Logf("flash: fastboot devices (no match): %q\n", raw)
 	}
 	return serials, nil
 }

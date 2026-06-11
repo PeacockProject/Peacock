@@ -8,6 +8,8 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"sync"
 
@@ -38,7 +40,9 @@ func (a *App) setFlashLog() {
 	if a.ctx == nil {
 		return
 	}
-	runner.SetLogWriter(&wailsLogEmitter{ctx: a.ctx, event: "flash:log"})
+	// Tee to the GUI process stderr (captured to the launch log file) so flash
+	// logs are tailable, plus the frontend event stream.
+	runner.SetLogWriter(io.MultiWriter(os.Stderr, &wailsLogEmitter{ctx: a.ctx, event: "flash:log"}))
 	runner.SetContext(a.ctx)
 }
 
