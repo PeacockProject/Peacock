@@ -349,7 +349,7 @@ function TopBanner({ build, onOpenLive }) {
  * and this full-page view always agree on percent / phase / log / errors.
  * No timer, no subscriptions of its own. Completion routing (auto-advance
  * to F3 when the user is waiting on the build) lives in the driver. */
-function LiveOverlay({ dev, build, onBack }) {
+function LiveOverlay({ dev, build, onBack, onProceed }) {
   const meta = (
     <span>{(dev && dev.code) || "build"} · <span>live build</span></span>
   );
@@ -372,6 +372,7 @@ function LiveOverlay({ dev, build, onBack }) {
         meta={meta}
         phases={build.phaseSet || BUILD_PHASES}
         onBack={onBack}
+        onProceed={onProceed}
       />
     </div>
   );
@@ -1032,19 +1033,24 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, dm, pkgs, arc
     setWaitingOnBuild(true);
     setLiveOpen(true);
   };
-  const liveBack = () => { setLiveOpen(false); setWaitingOnBuild(false); };
+  const liveBack = () => {
+    setLiveOpen(false);
+    setWaitingOnBuild(false);
+    /* A failed build has nothing to flash — re-entering the wizard steps
+     * (warn / unlock / connect) is a dead end, and dropping the user back
+     * on the data-loss disclaimer is jarring. Exit to home instead. */
+    if (build.error) onHome();
+  };
 
-  /* Auto-advance: the user is waiting on the live view and the build just
-   * finished — hold ~1s so the 100% moment is visible, then move to F3. */
-  React.useEffect(() => {
-    if (!waitingOnBuild || !build.done) return;
-    const t = setTimeout(() => {
-      setLiveOpen(false);
-      setWaitingOnBuild(false);
-      setSub("connect");
-    }, 1000);
-    return () => clearTimeout(t);
-  }, [waitingOnBuild, build.done]);
+  /* When the user is parked on the live view waiting for the build, we no
+   * longer auto-advance on completion — RunScreen shows an explicit
+   * "Image built successfully!" panel with a Continue button (onProceed)
+   * so the moment is acknowledged, not skipped past. */
+  const proceedFromLive = () => {
+    setLiveOpen(false);
+    setWaitingOnBuild(false);
+    setSub("connect");
+  };
 
   const cancel = () => (flashWriting ? setStopOpen(true) : setDiscardOpen(true));
   const keep = () => setDiscardOpen(false);
@@ -1099,7 +1105,8 @@ export default function FlashFlow({ dev, flavor, initSys, desktop, dm, pkgs, arc
         {sub === "connect" && <StepConnect dev={dev} onCancel={cancel} onBack={() => setSub("unlock")} onNext={() => setSub("flash")} />}
         {sub === "flash" && <StepFlash dev={dev} onCancel={cancel} onBack={() => setSub("connect")} onDone={() => setSub("done")} onWriteState={setFlashWriting} />}
         {sub === "done" && <StepDone dev={dev} onHome={onHome} onBuildAnother={onHome} />}
-        {liveOpen && <LiveOverlay dev={dev} build={build} onBack={liveBack} />}
+        {liveOpen && <LiveOverlay dev={dev} build={build} onBack={liveBack}
+          onProceed={waitingOnBuild ? proceedFromLive : null} />}
         <DiscardModal open={discardOpen} onKeep={keep} onDiscard={discard} />
         <StopFlashModal open={stopOpen} onKeep={keepFlashing} onStop={stopAnyway} />
       </div>

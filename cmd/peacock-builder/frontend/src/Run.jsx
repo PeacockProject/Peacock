@@ -148,7 +148,7 @@ export function useWailsScript(eventPrefix, phases, enabled = true) {
  * build overlay uses this so the top banner and the full-page view
  * always show identical state. Standalone self-driving mode is
  * unchanged — InstallFlow still relies on it. */
-export function RunScreen({ script, title, meta, phases, onDone, onBack, eventPrefix, job }) {
+export function RunScreen({ script, title, meta, phases, onDone, onBack, eventPrefix, job, onProceed }) {
   const wails = useWailsScript(eventPrefix || "build", phases, !job);
   const live = job || wails;
 
@@ -180,6 +180,7 @@ export function RunScreen({ script, title, meta, phases, onDone, onBack, eventPr
   const [showLog, setShowLog] = React.useState(false);
   const stillRunning = live ? !live.done : n < script.length;
   const failed = !!(live && live.errorMsg);
+  const succeeded = !!(live && live.done && !live.errorMsg);
   const failTitle = (eventPrefix || "build") === "install" ? "Install failed" : "Build failed";
 
   return (
@@ -199,6 +200,18 @@ export function RunScreen({ script, title, meta, phases, onDone, onBack, eventPr
             <div className="rfail-acts">
               <Btn variant="primary" onClick={() => setShowLog(true)}>Show full log</Btn>
               {onBack && <Btn variant="ghost" onClick={onBack}>Back</Btn>}
+            </div>
+          </div>
+        ) : succeeded && onProceed ? (
+          /* Controlled-mode success: the driver hands us an onProceed so the
+           * user explicitly advances instead of being auto-routed off the
+           * finished build. */
+          <div className="rdone" role="status">
+            <div className="rdone-tag">IMAGE READY</div>
+            <h2 className="rdone-h2">Image built successfully!</h2>
+            <p className="rdone-lead">Your flashable PeacockOS image is assembled. Continue when you're ready to flash it to your phone.</p>
+            <div className="rdone-acts">
+              <Btn variant="grad" ar="→" onClick={onProceed}>Continue</Btn>
             </div>
           </div>
         ) : (
@@ -222,6 +235,10 @@ export function RunScreen({ script, title, meta, phases, onDone, onBack, eventPr
         <div key={showLog ? "log" : "pk"} className="rprfill">
         {showLog ? (
           <React.Fragment>
+            {/* The same peacock as the idle view, kept behind the log as a
+             * faint watermark — a softer presence than the full-opacity
+             * idle state. */}
+            <PK src={FULL} className="pkprog pkgrad pkbehind" />
             <div className="topfade" />
             <div className="logwrap">
               {lines.map((l, i) => <div key={i} className="ln"><span className="t">{l.t} </span>{l.node}</div>)}

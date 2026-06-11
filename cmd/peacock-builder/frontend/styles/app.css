@@ -311,6 +311,16 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
   white-space:pre-wrap;word-break:break-word;max-height:140px;overflow:auto;}
 .rfail-acts{display:flex;gap:10px;flex-wrap:wrap;}
 
+/* success readout — shown in the controlled live view when the build
+ * finishes and the driver hands RunScreen an onProceed (explicit
+ * advance instead of auto-routing off the done build). */
+.rdone{position:relative;margin-top:14px;max-width:520px;padding:20px 22px 18px;
+  background:#E9F5EE;border:1px solid rgba(31,138,91,.32);border-left:3px solid var(--green);border-radius:0 12px 12px 0;}
+.rdone-tag{font-family:var(--mono);font-size:10.5px;letter-spacing:.22em;color:#1F8A5B;text-transform:uppercase;margin-bottom:8px;}
+.rdone-h2{font-family:var(--serif);font-size:34px;line-height:1.02;margin:0 0 8px;color:var(--ink);}
+.rdone-lead{font-size:13.5px;line-height:1.5;color:var(--ink2);margin:0 0 16px;}
+.rdone-acts{display:flex;gap:10px;flex-wrap:wrap;}
+
 /* right panel — peacock by default */
 .rpr{position:relative;overflow:hidden;background:var(--bg);}
 .rpr .aura{position:absolute;inset:0;pointer-events:none;animation:glowpulse 5s ease-in-out infinite;
@@ -324,7 +334,13 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 
 /* right panel — full dark log when toggled */
 .rpr.dark{background:#1a1820;}
-.rpr .logwrap{position:absolute;inset:0;padding:24px 28px;overflow:hidden;font-family:var(--mono);font-size:12px;line-height:1.85;color:#cfcbd6;display:flex;flex-direction:column;justify-content:flex-end;z-index:2;}
+.rpr .logwrap{position:absolute;inset:0;padding:24px 28px;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;font-family:var(--mono);font-size:12px;line-height:1.85;color:#cfcbd6;display:flex;flex-direction:column;justify-content:flex-end;z-index:2;}
+.rpr .logwrap::-webkit-scrollbar{width:9px;}
+.rpr .logwrap::-webkit-scrollbar-track{background:transparent;}
+.rpr .logwrap::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:6px;}
+.rpr .logwrap::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.26);}
+/* faint peacock watermark behind the log (item: nicer than a flat dark panel) */
+.rpr .pkbehind{opacity:.11;z-index:1;filter:saturate(.9) drop-shadow(0 26px 60px rgba(46,134,200,.10));}
 .rpr .logwrap .ln{white-space:pre-wrap;}
 .rpr .logwrap .t{color:#6f6a78;}
 .rpr .logwrap .g{color:#54cfc1;} .rpr .logwrap .b{color:#74a8e0;} .rpr .logwrap .y{color:#d6b15e;}
