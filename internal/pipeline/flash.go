@@ -122,26 +122,39 @@ func writeChrootFile(root, rel, content string) error {
 	return runner.RunCmd(cmd)
 }
 
-// mountUSB bind-mounts the host USB bus into the chroot so fastboot/heimdall
-// (run as root inside) can see plugged-in devices. Returns an unmount cleanup.
+// mountUSB makes plugged-in USB devices visible to fastboot/heimdall (run as
+// root inside the chroot). Two mounts are needed:
 //
-// A bind mount of /dev/bus/usb is a point-in-time snapshot of the bus, so a
-// device plugged in AFTER an earlier bind won't appear. We therefore re-bind
-// fresh on every call: drop any existing mount (lazily, in case a tool is
-// holding a node) and bind the current bus. This is what makes detection see
-// a device the user plugs in mid-poll.
+//   - /sys: libusb ENUMERATES USB devices via sysfs. Without it a tool can see
+//     the device node but lists nothing. sysfs is a live view, so we bind it
+//     once and leave it across polls.
+//   - /dev/bus/usb: the device nodes for I/O. A bind mount of devtmpfs is a
+//     point-in-time snapshot, so a device plugged in AFTER an earlier bind
+//     won't appear — we re-bind it FRESH on every call (lazy-unmounting any
+//     prior bind in case a tool holds a node).
+//
+// Returns a cleanup that drops the per-call /dev/bus/usb bind (the /sys bind is
+// stable and intentionally left in place).
 func mountUSB(root string) (func(), error) {
-	target := filepath.Join(root, "dev", "bus", "usb")
-	if err := runner.RunCmd(exec.Command("sudo", "mkdir", "-p", target)); err != nil {
-		return nil, fmt.Errorf("creating usb mount point: %w", err)
+	usbTarget := filepath.Join(root, "dev", "bus", "usb")
+	sysTarget := filepath.Join(root, "sys")
+	for _, t := range []string{usbTarget, sysTarget} {
+		if err := runner.RunCmd(exec.Command("sudo", "mkdir", "-p", t)); err != nil {
+			return nil, fmt.Errorf("creating mount point %s: %w", t, err)
+		}
 	}
-	if isMounted(target) {
-		_ = runner.RunCmd(exec.Command("sudo", "umount", "-l", target))
+	if !isMounted(sysTarget) {
+		if err := runner.RunCmd(exec.Command("sudo", "mount", "--rbind", "/sys", sysTarget)); err != nil {
+			return nil, fmt.Errorf("bind-mounting /sys: %w", err)
+		}
 	}
-	if err := runner.RunCmd(exec.Command("sudo", "mount", "--bind", "/dev/bus/usb", target)); err != nil {
+	if isMounted(usbTarget) {
+		_ = runner.RunCmd(exec.Command("sudo", "umount", "-l", usbTarget))
+	}
+	if err := runner.RunCmd(exec.Command("sudo", "mount", "--bind", "/dev/bus/usb", usbTarget)); err != nil {
 		return nil, fmt.Errorf("bind-mounting /dev/bus/usb: %w", err)
 	}
-	return func() { _ = runner.RunCmd(exec.Command("sudo", "umount", "-l", target)) }, nil
+	return func() { _ = runner.RunCmd(exec.Command("sudo", "umount", "-l", usbTarget)) }, nil
 }
 
 // FlashDetect lists devices visible to the given tool inside the flash chroot.
