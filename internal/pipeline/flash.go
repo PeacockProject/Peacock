@@ -13,6 +13,7 @@ package pipeline
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,21 @@ import (
 	"peacock/internal/builder"
 	"peacock/internal/runner"
 )
+
+// The flash chroot is a minimal Alpine root: tiny (tens of MB vs the Arch
+// build chroot's GBs) and self-contained — the minirootfs ships apk, so no
+// host apk is needed (apk add runs inside the chroot, which is host-arch).
+const (
+	alpineBranch  = "v3.21"
+	alpineRelease = "3.21.7"
+	alpineMirror  = "https://dl-cdn.alpinelinux.org/alpine"
+)
+
+// alpineMinirootfsURL is the CDN URL for the host-arch minirootfs tarball.
+func alpineMinirootfsURL(arch string) string {
+	return fmt.Sprintf("%s/%s/releases/%s/alpine-minirootfs-%s-%s.tar.gz",
+		alpineMirror, alpineBranch, arch, alpineRelease, arch)
+}
 
 // FlashTool maps a device.toml flash_method to the stage-1 bootstrap tool
 // used to get our bootloader onto the device. Everything after the bootloader
@@ -41,27 +57,69 @@ func flashChrootDir(b *builder.Builder) string {
 	return filepath.Join(filepath.Dir(b.CacheDir), "flash-chroot", builder.HostArchString())
 }
 
-// EnsureFlashChroot ensures a persistent host-arch chroot with android-tools
-// (fastboot) + heimdall installed, and returns its root. Idempotent: the tool
-// install is skipped once both binaries are present.
+// EnsureFlashChroot ensures a minimal Alpine chroot with android-tools
+// (fastboot) + heimdall installed, and returns its root. Idempotent: returns
+// immediately once both tools are present.
 func EnsureFlashChroot(b *builder.Builder) (string, error) {
 	host := builder.HostArchString()
 	root := flashChrootDir(b)
-	if err := b.EnsureBuildChroot(root, host, false); err != nil {
-		return "", fmt.Errorf("ensuring flash chroot: %w", err)
+
+	if fileExists(filepath.Join(root, "usr", "bin", "fastboot")) &&
+		fileExists(filepath.Join(root, "usr", "bin", "heimdall")) {
+		return root, nil
 	}
-	haveFastboot := fileExists(filepath.Join(root, "usr", "bin", "fastboot"))
-	haveHeimdall := fileExists(filepath.Join(root, "usr", "bin", "heimdall"))
-	if !haveFastboot || !haveHeimdall {
-		runner.Logln("Installing flash tools (android-tools, heimdall) into flash chroot...")
-		// bootstrapPacmanPackages does keyring init + a host-side `pacman -r`
-		// install into the chroot, downloading through the persistent per-arch
-		// distro cache so this is a one-time cost.
-		if err := bootstrapPacmanPackages(b, root, []string{"android-tools", "heimdall"}); err != nil {
-			return "", fmt.Errorf("installing flash tools: %w", err)
+
+	// 1. Lay down the Alpine base from the minirootfs tarball (~3 MB) unless
+	//    the chroot already is one.
+	if !fileExists(filepath.Join(root, "etc", "alpine-release")) {
+		runner.Logln("Provisioning minimal Alpine flash chroot...")
+		tarball, err := b.Download(alpineMinirootfsURL(host), "")
+		if err != nil {
+			return "", fmt.Errorf("downloading alpine minirootfs: %w", err)
+		}
+		if err := runner.RunCmd(exec.Command("sudo", "mkdir", "-p", root)); err != nil {
+			return "", fmt.Errorf("creating flash chroot dir: %w", err)
+		}
+		if err := runner.RunCmd(exec.Command("sudo", "tar", "-xzf", tarball, "-C", root)); err != nil {
+			return "", fmt.Errorf("extracting alpine minirootfs: %w", err)
 		}
 	}
+
+	// 2. DNS + main/community repos so apk can resolve the tools (heimdall is
+	//    in community).
+	if err := runner.RunCmd(exec.Command("sudo", "cp", "/etc/resolv.conf", filepath.Join(root, "etc", "resolv.conf"))); err != nil {
+		return "", fmt.Errorf("seeding resolv.conf: %w", err)
+	}
+	repos := fmt.Sprintf("%s/%s/main\n%s/%s/community\n", alpineMirror, alpineBranch, alpineMirror, alpineBranch)
+	if err := writeChrootFile(root, filepath.Join("etc", "apk", "repositories"), repos); err != nil {
+		return "", fmt.Errorf("writing apk repositories: %w", err)
+	}
+
+	// 3. Install the flash tools. apk ships in the minirootfs, so this runs
+	//    inside the chroot (host-arch, no qemu) — no host apk required.
+	runner.Logln("Installing flash tools (android-tools, heimdall) into Alpine flash chroot...")
+	// Absolute paths inside the chroot: sudo's secure_path doesn't carry /sbin,
+	// so `chroot root apk` fails to resolve via PATH.
+	add := exec.Command("sudo", "chroot", root, "/sbin/apk", "add", "--no-cache", "android-tools", "heimdall")
+	add.Stdout = runner.LogWriter()
+	add.Stderr = runner.LogWriter()
+	if err := runner.RunCmd(add); err != nil {
+		return "", fmt.Errorf("installing flash tools via apk: %w", err)
+	}
 	return root, nil
+}
+
+// writeChrootFile writes content to <root>/<rel> as root (the chroot tree is
+// root-owned), creating parent dirs.
+func writeChrootFile(root, rel, content string) error {
+	target := filepath.Join(root, rel)
+	if err := runner.RunCmd(exec.Command("sudo", "mkdir", "-p", filepath.Dir(target))); err != nil {
+		return err
+	}
+	cmd := exec.Command("sudo", "tee", target)
+	cmd.Stdin = strings.NewReader(content)
+	cmd.Stdout = io.Discard
+	return runner.RunCmd(cmd)
 }
 
 // mountUSB bind-mounts the host USB bus into the chroot so fastboot/heimdall
@@ -95,8 +153,9 @@ func FlashDetect(root, tool string) ([]string, error) {
 	var out bytes.Buffer
 	if tool == "heimdall" {
 		// `heimdall detect` exits 0 and prints "Device detected" when a phone
-		// is in Download Mode, non-zero otherwise.
-		cmd := exec.Command("sudo", "chroot", root, "heimdall", "detect")
+		// is in Download Mode, non-zero otherwise. Absolute path: the chroot
+		// exec doesn't resolve /usr/bin via PATH under sudo.
+		cmd := exec.Command("sudo", "chroot", root, "/usr/bin/heimdall", "detect")
 		cmd.Stdout = &out
 		cmd.Stderr = &out
 		_ = cmd.Run()
@@ -106,7 +165,7 @@ func FlashDetect(root, tool string) ([]string, error) {
 		return nil, nil
 	}
 
-	cmd := exec.Command("sudo", "chroot", root, "fastboot", "devices")
+	cmd := exec.Command("sudo", "chroot", root, "/usr/bin/fastboot", "devices")
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	if err := cmd.Run(); err != nil {

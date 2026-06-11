@@ -14,6 +14,7 @@ import (
 	"peacock/internal/builder"
 	"peacock/internal/manifest"
 	"peacock/internal/pipeline"
+	"peacock/internal/runner"
 )
 
 var (
@@ -25,6 +26,20 @@ var (
 // (same cache layout the build pipeline uses).
 func flashBuilder() (*builder.Builder, error) {
 	return builder.NewBuilder(filepath.Join(defaultWorkDir(), "peacock-cache"))
+}
+
+// setFlashLog points the shared runner log writer at a live "flash:log"
+// emitter for the duration of a flash operation. This matters because the
+// build path leaves the global writer pointing at its now-closed log
+// MultiWriter; without resetting it, chroot subprocesses (tar, apk) would
+// write into a dead pipe and die with SIGPIPE ("broken pipe"). The emitter
+// is EventsEmit-based, so it can't broken-pipe.
+func (a *App) setFlashLog() {
+	if a.ctx == nil {
+		return
+	}
+	runner.SetLogWriter(&wailsLogEmitter{ctx: a.ctx, event: "flash:log"})
+	runner.SetContext(a.ctx)
 }
 
 // ensureFlasher provisions the flash chroot (fastboot + heimdall) exactly once
@@ -53,6 +68,7 @@ func ensureFlasher() (string, error) {
 // on success or an error message for the UI to surface. Safe to call when the
 // user reaches the connect step.
 func (a *App) PrepareFlasher() string {
+	a.setFlashLog()
 	if _, err := ensureFlasher(); err != nil {
 		return err.Error()
 	}
@@ -63,6 +79,7 @@ func (a *App) PrepareFlasher() string {
 // implies: fastboot serials, or a "download-mode" sentinel for heimdall. An
 // empty slice means nothing is connected yet (not an error) — the UI polls.
 func (a *App) DetectFlashDevice(deviceCode string) ([]string, error) {
+	a.setFlashLog()
 	root, err := ensureFlasher()
 	if err != nil {
 		return nil, err
