@@ -34,6 +34,33 @@ func (b *Builder) PackagesDir() string {
 	return filepath.Join(filepath.Dir(b.CacheDir), "packages")
 }
 
+// DistroPkgCacheDir is the persistent per-(flavor, arch) download cache for
+// the base distro's own packages — pacman *.pkg.tar.zst (kind "pkg") or apk
+// *.apk (kind "apk"). It lives beside PackagesDir at
+// <var>/distro-cache/<flavor>/<arch>/<kind>/ and is bind-mounted (or passed as
+// --cachedir) into build + rootfs chroots, so a fresh build reuses prior
+// downloads instead of re-fetching from the distro mirrors. Partitioning by
+// arch keeps an aarch64 build from colliding with an armv7h/x86_64 one in a
+// single flat dir.
+func (b *Builder) DistroPkgCacheDir(flavor, arch string) string {
+	if flavor == "" {
+		flavor = "arch"
+	}
+	switch arch {
+	case "":
+		arch = HostArchString()
+	case "armv7":
+		arch = "armv7h"
+	}
+	kind := "pkg"
+	if flavor == "alpine" {
+		kind = "apk"
+	}
+	d := filepath.Join(filepath.Dir(b.CacheDir), "distro-cache", flavor, arch, kind)
+	_ = os.MkdirAll(d, 0o755)
+	return d
+}
+
 // sourceCachePath returns the cache path for a source URL. The key is a
 // hash of the FULL url (not just the basename) so the many GitHub
 // `…/master.tar.gz` sources don't collide on one file — that collision

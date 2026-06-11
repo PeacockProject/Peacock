@@ -16,10 +16,13 @@ import (
 	"peacock/internal/runner"
 )
 
-func (b *Builder) installBuildDeps(root string, deps []string, execRoot string) error {
+func (b *Builder) installBuildDeps(root string, deps []string, execRoot, flavor, arch string) error {
 	if len(deps) == 0 {
 		return nil
 	}
+	// Persistent per-(flavor, arch) distro download cache, bind-mounted as the
+	// chroot's pacman cachedir so build_deps aren't re-fetched on a fresh chroot.
+	distroCache := b.DistroPkgCacheDir(flavor, arch)
 
 	targetPath := root
 	confPath := filepath.Join(root, "etc", "pacman.conf")
@@ -49,7 +52,7 @@ func (b *Builder) installBuildDeps(root string, deps []string, execRoot string) 
 		if err := runner.RunCmd(exec.Command("sudo", "mkdir", "-p", cacheMount)); err != nil {
 			return err
 		}
-		if err := runner.RunCmd(exec.Command("sudo", "mount", "--bind", b.CacheDir, cacheMount)); err != nil {
+		if err := runner.RunCmd(exec.Command("sudo", "mount", "--bind", distroCache, cacheMount)); err != nil {
 			return err
 		}
 		defer runner.RunCmd(exec.Command("sudo", "umount", cacheMount))
@@ -97,8 +100,13 @@ func (b *Builder) installBuildDeps(root string, deps []string, execRoot string) 
 	if err := os.MkdirAll(cacheMount, 0755); err != nil {
 		return err
 	}
+	// Bind the persistent per-arch distro cache over the chroot's pacman cache
+	// so downloads survive the chroot and a fresh build reuses them.
+	if err := runner.RunCmd(exec.Command("sudo", "mount", "--bind", distroCache, cacheMount)); err != nil {
+		return err
+	}
+	defer runner.RunCmd(exec.Command("sudo", "umount", cacheMount))
 
-	// Using pacman to install build deps
-	// Pass explicit cachedir (per-chroot cache)
+	// Using pacman to install build deps from the bind-mounted persistent cache.
 	return pacman.Install(root, startConf, deps, cacheMount, false, "")
 }

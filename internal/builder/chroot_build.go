@@ -180,7 +180,7 @@ func (b *Builder) BuildPackageInChroot(pkg *manifest.Package, targetArch string,
 	// (they're already concrete distro names from toolchains.toml).
 	resolvedDeps := ResolveBuildDeps(pkg.Build.BuildDeps, opts.Flavor)
 	resolvedDeps = append(resolvedDeps, tcRes.Packages...)
-	if err := b.installBuildDeps(root, resolvedDeps, masterRoot); err != nil {
+	if err := b.installBuildDeps(root, resolvedDeps, masterRoot, opts.Flavor, chrootArch); err != nil {
 		return "", fmt.Errorf("failed to install build deps: %w", err)
 	}
 

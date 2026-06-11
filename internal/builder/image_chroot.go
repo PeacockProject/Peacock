@@ -270,9 +270,12 @@ func (b *Builder) InstallPackagesToRootfs(imageChrootRoot, rootfsPath string, pa
 	}
 	defer chroot.UnmountPathWithSudo(hostRootfsMount)
 
-	// Bind mount cache
+	// Bind mount the persistent per-arch distro download cache as the rootfs
+	// pacman cachedir, so the base distro's OS packages aren't re-fetched on
+	// every fresh rootfs build. (Was b.CacheDir — persistent but flat across
+	// all arches and mixed with source downloads.)
 	if !isMountPoint(hostCacheMount) {
-		if err := runner.RunCmd(exec.Command("sudo", "mount", "--bind", b.CacheDir, hostCacheMount)); err != nil {
+		if err := runner.RunCmd(exec.Command("sudo", "mount", "--bind", b.DistroPkgCacheDir("arch", arch), hostCacheMount)); err != nil {
 			return fmt.Errorf("failed to bind mount cache: %w", err)
 		}
 	}

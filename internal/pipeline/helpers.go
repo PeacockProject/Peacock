@@ -756,7 +756,7 @@ func ensureBuildDepBootstrap(b *builder.Builder, root string) error {
 			return nil
 		}
 	}
-	return bootstrapBaseDevel(root)
+	return bootstrapBaseDevel(b, root)
 }
 
 func ensureBuildChrootBootstrap(b *builder.Builder, root string, chrootArch string) error {
@@ -771,14 +771,14 @@ func ensureBuildChrootBootstrap(b *builder.Builder, root string, chrootArch stri
 			return nil
 		}
 	}
-	return bootstrapBaseDevel(root)
+	return bootstrapBaseDevel(b, root)
 }
 
-func bootstrapBaseDevel(root string) error {
-	return bootstrapPacmanPackages(root, []string{"base-devel", "python"})
+func bootstrapBaseDevel(b *builder.Builder, root string) error {
+	return bootstrapPacmanPackages(b, root, []string{"base-devel", "python"})
 }
 
-func bootstrapPacmanPackages(root string, packages []string) error {
+func bootstrapPacmanPackages(b *builder.Builder, root string, packages []string) error {
 	confPath := filepath.Join(root, "etc", "pacman.conf")
 	confData, err := os.ReadFile(confPath)
 	if err != nil {
@@ -807,12 +807,17 @@ func bootstrapPacmanPackages(root string, packages []string) error {
 	_ = execCommand("sudo", "sh", "-c", fmt.Sprintf("rm -rf %q/download-*", syncDir))
 	_ = execCommand("sudo", "pacman-key", "--gpgdir", filepath.Join(root, "etc", "pacman.d", "gnupg"), "--init")
 	_ = execCommand("sudo", "pacman-key", "--gpgdir", filepath.Join(root, "etc", "pacman.d", "gnupg"), "--populate", "archlinux")
+	// Primary cachedir is the persistent host-arch distro cache so a fresh
+	// build chroot reuses base-devel/python downloads instead of re-fetching;
+	// the chroot-local and host caches stay as read fallbacks. pacman writes
+	// new downloads to the first writable cachedir.
 	args := []string{
 		"pacman",
 		"-Sy",
 		"--noconfirm",
 		"--root", root,
 		"--dbpath", filepath.Join(root, "var", "lib", "pacman"),
+		"--cachedir", b.DistroPkgCacheDir("arch", builder.HostArchString()),
 		"--cachedir", filepath.Join(root, "var", "cache", "pacman", "pkg"),
 		"--cachedir", "/var/cache/pacman/pkg",
 		"--config", tmpConf,
