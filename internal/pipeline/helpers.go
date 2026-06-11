@@ -631,7 +631,11 @@ func prepareBuildDepPackages(b *builder.Builder, pkg *manifest.Package, consumin
 			depArch := hostArch
 			if pm.Build.TargetArch != "" {
 				depArch = pm.Build.TargetArch
-			} else if len(pm.Build.Capabilities) > 0 && consumingArch != "" {
+			} else if consumingArch != "" {
+				// build_dep_packages are inputs to the target build (libs,
+				// headers, binaries linked or staged into it), so default to
+				// the consuming arch — e.g. util-linux's static libblkid.a for
+				// an aarch64 lvm2. A kernel's explicit target_arch wins above.
 				depArch = consumingArch
 				pm.Build.TargetArch = consumingArch
 			}
@@ -666,7 +670,11 @@ func prepareBuildDepPackages(b *builder.Builder, pkg *manifest.Package, consumin
 			depArch := hostArch
 			if pm.Build.TargetArch != "" {
 				depArch = pm.Build.TargetArch
-			} else if len(pm.Build.Capabilities) > 0 && consumingArch != "" {
+			} else if consumingArch != "" {
+				// build_dep_packages are inputs to the target build (libs,
+				// headers, binaries linked or staged into it), so default to
+				// the consuming arch — e.g. util-linux's static libblkid.a for
+				// an aarch64 lvm2. A kernel's explicit target_arch wins above.
 				depArch = consumingArch
 				pm.Build.TargetArch = consumingArch
 			}
