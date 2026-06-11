@@ -20,6 +20,7 @@
  * device.toml in a future round. The map is keyed by device id and
  * passed in as the `supportMap` prop (defaults to {}). */
 import React from "react";
+import { createPortal } from "react-dom";
 import { Head, Btn } from "./shared.jsx";
 import { brandOf, brandSlug } from "./devices.js";
 
@@ -363,6 +364,20 @@ function DPKDrawer({ device, support, selected, onClose, onSelect }) {
     return () => clearTimeout(t);
   }, [device]);
 
+  // Slide-in: mount in the closed (off-screen) state, then flip to open on
+  // the next frame so the transform transition actually plays instead of
+  // the panel snapping in already-open. A double rAF guarantees the closed
+  // frame is painted before we open.
+  const [entered, setEntered] = React.useState(false);
+  React.useEffect(() => {
+    if (!device) { setEntered(false); return; }
+    let inner = 0;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => setEntered(true));
+    });
+    return () => { cancelAnimationFrame(outer); cancelAnimationFrame(inner); };
+  }, [device]);
+
   // Auto-focus the close button when the drawer opens so Tab cycles
   // ✕ → summary link area → matrix items → Cancel → Select, then wraps.
   React.useEffect(() => {
@@ -376,13 +391,19 @@ function DPKDrawer({ device, support, selected, onClose, onSelect }) {
 
   const shown = device || last;
   if (!shown) return null;
-  const open = !!device;
+  // `entered` gates the slide-in transition; without it the panel would
+  // mount already-open and snap into place. On close (device === null) it's
+  // already false, so the .closing slide-out plays.
+  const open = !!device && entered;
   const slug = deviceBrandSlug(shown);
   const st = statusOf(shown);
   const prose = summaryProse(shown, support);
   const sum = summarize(support);
 
-  return (
+  // Portal to <body> so the fixed overlay escapes the animated .mflow step
+  // wrapper's stacking context — otherwise the wizard's top-right ADVANCED
+  // chip (a sibling of that context) paints over the drawer's close button.
+  return createPortal(
     <div className={"dpk-drawer-root" + (open ? " open" : " closing")}
       ref={rootRef}
       aria-hidden={!open}>
@@ -435,7 +456,8 @@ function DPKDrawer({ device, support, selected, onClose, onSelect }) {
           </Btn>
         </div>
       </aside>
-    </div>
+    </div>,
+    document.body
   );
 }
 
