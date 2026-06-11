@@ -107,6 +107,22 @@ export const StartFlashSet = async (device) => {
   await callApp("StartFlashSet", device || "");
 };
 
+// PrepareFlasher provisions the flash chroot (installs fastboot + heimdall on
+// first run). Returns "" on success or an error message. In dev mode (no
+// backend) it resolves to "" so the connect step's mock detection runs.
+export const PrepareFlasher = async () => {
+  const real = await callApp("PrepareFlasher");
+  return typeof real === "string" ? real : "";
+};
+
+// DetectFlashDevice probes for the device in the mode its flash_method implies.
+// Returns an array of detected identifiers (empty = nothing connected yet), or
+// null when there's no backend (dev preview) so the caller can fall back to a
+// simulated detection.
+export const DetectFlashDevice = async (deviceCode) => {
+  return await callApp("DetectFlashDevice", deviceCode || "");
+};
+
 // PortsStatus reports whether a peacock-ports checkout is present.
 // Read-only. In dev mode (no Wails backend) we report present=true so
 // the first-time-setup clone screen never appears — the Cloudflare

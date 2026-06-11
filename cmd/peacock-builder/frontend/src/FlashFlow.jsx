@@ -32,7 +32,7 @@ import { AppShell, PK, Btn, FULL, HEAD } from "./shared.jsx";
 import { buildScript, BUILD_PHASES, FLASHSET_PHASES, ALL_PHASES, RunScreen, useWailsScript } from "./Run.jsx";
 import { DEVICE_PORTS, brandOf, brandSlug } from "./devices.js";
 import { hasWails } from "./devMock.jsx";
-import { StartBuild, StartFlashSet } from "./api.js";
+import { StartBuild, StartFlashSet, PrepareFlasher, DetectFlashDevice } from "./api.js";
 
 /* buildDTO maps the wizard selections to the BuildRequestDTO the Go
  * StartBuild binding expects (see cmd/peacock-builder/build_runner.go).
@@ -552,19 +552,44 @@ function StepUnlock({ dev, build, onCancel, onBack, onNext }) {
 
 /* ===== F3: connect device =============================================== */
 
-/* useMockDetect — in dev mode the fastboot binding is unavailable so we
- * fake a 4-second "scanning" pulse before reporting the device as found.
- * This is the single seam where the real Wails binding will plug in:
- *   useEffect → window.runtime.EventsOn("device:fastboot", setFound)
- *   plus a periodic poll of `App.ListFastbootDevices()`. */
-function useMockDetect(dev) {
+/* useDeviceDetect — provisions the flash chroot (PrepareFlasher, installs
+ * fastboot+heimdall on first run) then polls DetectFlashDevice until the phone
+ * appears in the mode its flash_method implies. Returns { found, prepErr }.
+ * In dev mode (no Wails backend) DetectFlashDevice yields null, so we fall
+ * back to the original 4-second simulated detection for the preview. */
+function useDeviceDetect(dev) {
   const [found, setFound] = React.useState(false);
+  const [prepErr, setPrepErr] = React.useState("");
   React.useEffect(() => {
     setFound(false);
-    const t = setTimeout(() => setFound(true), 4000);
-    return () => clearTimeout(t);
+    setPrepErr("");
+    let alive = true;
+    let timer = null;
+
+    if (!hasWails()) {
+      timer = setTimeout(() => alive && setFound(true), 4000);
+      return () => { alive = false; if (timer) clearTimeout(timer); };
+    }
+
+    (async () => {
+      const err = await PrepareFlasher();
+      if (!alive) return;
+      if (err) { setPrepErr(err); return; }
+      const poll = async () => {
+        if (!alive) return;
+        try {
+          const devs = await DetectFlashDevice(dev && dev.code);
+          if (!alive) return;
+          if (Array.isArray(devs) && devs.length > 0) { setFound(true); return; }
+        } catch (_e) { /* transient — keep polling */ }
+        if (alive) timer = setTimeout(poll, 2500);
+      };
+      poll();
+    })();
+
+    return () => { alive = false; if (timer) clearTimeout(timer); };
   }, [dev && dev.code]);
-  return found;
+  return { found, prepErr };
 }
 
 /* After this long without a detection we assume the user is stuck and
@@ -572,7 +597,7 @@ function useMockDetect(dev) {
 const DETECT_SLOW_MS = 30000;
 
 function StepConnect({ dev, onCancel, onBack, onNext }) {
-  const detected = useMockDetect(dev);
+  const { found: detected, prepErr } = useDeviceDetect(dev);
   const [helpOpen, setHelpOpen] = React.useState(false);
   /* slow: no device after DETECT_SLOW_MS. We never stop scanning — this
    * only adds a reassurance line and pops the help section open so the
@@ -619,7 +644,14 @@ function StepConnect({ dev, onCancel, onBack, onNext }) {
               </React.Fragment>
             )}
           </div>
-          {slow && !detected && (
+          {prepErr && !detected && (
+            <div className="ff-detect-slow" role="alert">
+              Couldn't prepare the flash tools: {prepErr}. Detection can't run
+              until this is resolved — check that admin rights were granted and
+              the network is reachable.
+            </div>
+          )}
+          {slow && !detected && !prepErr && (
             <div className="ff-detect-slow" role="status">
               Still looking… we haven't found your phone yet, but we haven't
               given up either. The tips below fix this for most people.
