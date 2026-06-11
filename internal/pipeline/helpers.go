@@ -593,7 +593,14 @@ func prepareBuildDepPackages(b *builder.Builder, pkg *manifest.Package, chrootRo
 			if err != nil {
 				return preparedBuildDeps{}, fmt.Errorf("failed to load build_dep_package %s: %w", depPkg, err)
 			}
-			artifactPath, err = buildOrCacheArtifact(b, pm, depPkg, hostArch, buildDepChrootRoot)
+			// A dep that declares target_arch (a kernel) is a target
+			// artifact — build it for that arch, not the host. Host tools
+			// (toolchains, build utils) have no target_arch -> hostArch.
+			depArch := hostArch
+			if pm.Build.TargetArch != "" {
+				depArch = pm.Build.TargetArch
+			}
+			artifactPath, err = buildOrCacheArtifact(b, pm, depPkg, depArch, buildDepChrootRoot)
 			if err != nil {
 				return preparedBuildDeps{}, err
 			}
@@ -614,7 +621,14 @@ func prepareBuildDepPackages(b *builder.Builder, pkg *manifest.Package, chrootRo
 			if pm.Build.PRPKernelConfig == "" {
 				return preparedBuildDeps{}, fmt.Errorf("build_dep_package %s: parent %q builds no -prp subpackage", depPkg, parent)
 			}
-			artifactPath, err = buildOrCacheArtifact(b, pm, depPkg, hostArch, buildDepChrootRoot)
+			// A dep that declares target_arch (a kernel) is a target
+			// artifact — build it for that arch, not the host. Host tools
+			// (toolchains, build utils) have no target_arch -> hostArch.
+			depArch := hostArch
+			if pm.Build.TargetArch != "" {
+				depArch = pm.Build.TargetArch
+			}
+			artifactPath, err = buildOrCacheArtifact(b, pm, depPkg, depArch, buildDepChrootRoot)
 			if err != nil {
 				return preparedBuildDeps{}, err
 			}
