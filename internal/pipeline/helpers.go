@@ -23,6 +23,12 @@ import (
 	"peacock/internal/runner"
 )
 
+// buildCompleteMarker is dropped into a package's in-chroot build dir once its
+// stage is fully populated, before the .feather is written. It lets a later
+// run distinguish a build that finished but wasn't packaged (salvageable) from
+// one that was interrupted mid-build (must be rebuilt).
+const buildCompleteMarker = ".peacock-build-complete"
+
 // execCommand wraps runner.Run so the rest of the helpers don't have to
 // thread the runner package through their parameter lists.
 func execCommand(name string, arg ...string) error {
@@ -506,11 +512,24 @@ func buildPortForInitramfs(b *builder.Builder, name, targetArch, workDir, useQem
 	buildChrootDir := filepath.Join(workDir, "build-chroot", chrootArch)
 	buildDirHint := filepath.Join(buildChrootDir, "build", fmt.Sprintf("%s-%s-%s", pkg.Package.Name, pkg.Package.Version, targetArch))
 
-	if artifactPath := FindCachedPackageArtifact(b, pkg, targetArch); artifactPath != "" {
-		if fileExists(buildDirHint) {
-			runner.Logf("Reusing cached %s build dir at %s\n", name, buildDirHint)
+	artifactPath := FindCachedPackageArtifact(b, pkg, targetArch)
+	if artifactPath != "" && fileExists(buildDirHint) {
+		runner.Logf("Reusing cached %s build dir at %s\n", name, buildDirHint)
+		return buildDirHint
+	}
+	// No cached .feather, but a prior run completed this build (marker present)
+	// and was killed before packaging — re-package the existing stage rather
+	// than rebuild from scratch. The marker guarantees the stage is complete,
+	// so we never cache a half-built package.
+	if artifactPath == "" && fileExists(filepath.Join(buildDirHint, buildCompleteMarker)) {
+		if _, err := b.PackageArtifact(buildDirHint, pkg, targetArch); err != nil {
+			runner.Logf("Warning: re-packaging completed %s build dir failed (%v); rebuilding\n", name, err)
+		} else {
+			runner.Logf("Packaged %s from a previously-completed build dir (skipped rebuild)\n", name)
 			return buildDirHint
 		}
+	}
+	if artifactPath != "" {
 		runner.Logf("Cached %s package present but build dir missing; rebuilding for initramfs\n", name)
 	}
 
@@ -557,6 +576,10 @@ func BuildPackageInChrootStep(b *builder.Builder, pkg *manifest.Package, targetA
 	if err != nil {
 		return "", "", fmt.Errorf("building package: %w", err)
 	}
+	// Mark the build complete (stage fully populated) before packaging. If the
+	// process dies in the gap before PackageArtifact writes the .feather, a
+	// later run can trust this stage and re-package it instead of rebuilding.
+	_ = os.WriteFile(filepath.Join(buildDir, buildCompleteMarker), nil, 0644)
 	artifactPath, err := b.PackageArtifact(buildDir, pkg, targetArch)
 	if err != nil {
 		return buildDir, "", fmt.Errorf("packaging artifact: %w", err)
