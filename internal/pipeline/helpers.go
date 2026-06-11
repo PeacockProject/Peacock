@@ -338,7 +338,10 @@ func extractKernelFromPackage(pkgPath, workDir string) (string, error) {
 	if fileExistsFile(zImagePath) {
 		return dest, nil
 	}
-	cmd := exec.Command("tar", "-xzf", pkgPath, "-C", dest, "zImage", "modules.tar.gz")
+	// .feather payload under files/: the kernel image is at files/boot/zImage
+	// and the device trees at files/boot/dtbs/. Strip files/boot/ so they
+	// land at dest/zImage and dest/dtbs/ (where discoverKernelDTB looks).
+	cmd := exec.Command("tar", "-xzf", pkgPath, "-C", dest, "--strip-components=2", "files/boot/zImage", "files/boot/dtbs")
 	if err := runner.RunCmd(cmd); err != nil {
 		return "", fmt.Errorf("failed to extract zImage from %s: %w", pkgPath, err)
 	}
@@ -357,7 +360,9 @@ func extractBusyboxFromPackage(pkgPath, workDir string) (string, error) {
 	if fileExistsFile(busyboxPath) {
 		return dest, nil
 	}
-	cmd := exec.Command("tar", "-xzf", pkgPath, "-C", dest, "busybox")
+	// .feather packages carry the payload under files/; busybox is at
+	// files/usr/bin/busybox. Strip that prefix so it lands at dest/busybox.
+	cmd := exec.Command("tar", "-xzf", pkgPath, "-C", dest, "--strip-components=3", "files/usr/bin/busybox")
 	if err := runner.RunCmd(cmd); err != nil {
 		return "", fmt.Errorf("failed to extract busybox from %s: %w", pkgPath, err)
 	}
