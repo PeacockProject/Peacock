@@ -10,6 +10,8 @@ package pipeline
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 
 	"peacock/internal/builder"
@@ -121,7 +123,10 @@ func BuildFlashSet(device, workDir, useQemuFlag, crossCompileFlag string, progre
 }
 
 // buildOnePort loads a device-tree port by name and builds it through the
-// shared chroot step, returning its build dir.
+// shared chroot step, returning its build dir. If the port's package is
+// already cached, it skips the rebuild and instead materializes the
+// cached .feather's staged tree into a build dir, so callers that look
+// for a staged image (findStagedImage) still work.
 func buildOnePort(b *builder.Builder, name, targetArch, workDir, useQemuFlag, crossCompileFlag string) (string, error) {
 	manifestPath, ok := LocalPackageManifestPath(name)
 	if !ok {
@@ -131,8 +136,36 @@ func buildOnePort(b *builder.Builder, name, targetArch, workDir, useQemuFlag, cr
 	if err != nil {
 		return "", fmt.Errorf("load %s: %w", name, err)
 	}
+	if cached := FindCachedPackageArtifact(b, pkg, targetArch); cached != "" {
+		if buildDir, err := materializeCachedStage(cached, workDir, name, targetArch); err == nil {
+			runner.Logf("%s already built (cached %s); skipping rebuild.\n", name, filepath.Base(cached))
+			return buildDir, nil
+		}
+		// Extraction failed — fall through to a clean rebuild.
+	}
 	buildDir, _, err := BuildPackageInChrootStep(b, pkg, targetArch, workDir, useQemuFlag, crossCompileFlag)
 	if err != nil {
+		return "", err
+	}
+	return buildDir, nil
+}
+
+// materializeCachedStage unpacks a cached .feather's files/ tree into
+// <workDir>/flashset-cache/<name>-<arch>/stage so findStagedImage and
+// other build-dir consumers see the same layout a fresh build produces.
+func materializeCachedStage(featherPath, workDir, name, targetArch string) (string, error) {
+	buildDir := filepath.Join(workDir, "flashset-cache", name+"-"+targetArch)
+	stageDir := filepath.Join(buildDir, "stage")
+	if err := os.RemoveAll(buildDir); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(stageDir, 0o755); err != nil {
+		return "", err
+	}
+	// .feather is a gzip tar with the payload under files/; strip that
+	// prefix so files/usr/... lands at stage/usr/...
+	cmd := exec.Command("tar", "-xzf", featherPath, "-C", stageDir, "--strip-components=1", "files")
+	if err := cmd.Run(); err != nil {
 		return "", err
 	}
 	return buildDir, nil
