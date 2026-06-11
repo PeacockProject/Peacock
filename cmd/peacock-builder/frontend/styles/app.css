@@ -621,10 +621,11 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 .ff-topbar{position:absolute;top:14px;left:28px;right:28px;z-index:24;
   display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;align-items:center;
   padding:10px 16px 11px;background:#fff;border:1px solid var(--line);border-left:3px solid var(--blue);
-  border-radius:0 12px 12px 0;cursor:pointer;
+  border-radius:0 12px 12px 0;cursor:default;
   box-shadow:0 10px 24px -18px rgba(46,134,200,.5);
   animation:fftopbar-in .5s cubic-bezier(.2,.7,.2,1) both;transition:box-shadow .18s ease,transform .18s ease;}
-.ff-topbar:hover{box-shadow:0 14px 30px -16px rgba(46,134,200,.55);transform:translateY(-1px);}
+.ff-topbar.nav{cursor:pointer;}
+.ff-topbar.nav:hover{box-shadow:0 14px 30px -16px rgba(46,134,200,.55);transform:translateY(-1px);}
 .ff-topbar.done{border-left-color:var(--green);box-shadow:0 10px 24px -18px rgba(31,138,91,.5);}
 .ff-topbar.fail{border-left-color:#C2553B;box-shadow:0 10px 24px -18px rgba(194,85,59,.55);}
 .ff-topbar.fail .ff-topbar-title{color:#A02717;}

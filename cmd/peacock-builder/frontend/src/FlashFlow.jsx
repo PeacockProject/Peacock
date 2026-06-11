@@ -310,9 +310,14 @@ function TopBanner({ build, onOpenLive }) {
   const pct = Math.round(build.progress);
   const done = build.done;
   const failed = !!build.error;
+  // Once the image is ready there's nothing to watch — the banner is a
+  // passive "done" confirmation, not a link. While building (or on
+  // failure, to read the error) it opens the live build screen.
+  const navigable = !done;
   return (
-    <div className={"ff-topbar" + (done ? " done" : "") + (failed ? " fail" : "")} role="status"
-      onClick={onOpenLive} title="Open the live build screen">
+    <div className={"ff-topbar" + (done ? " done" : "") + (failed ? " fail" : "") + (navigable ? " nav" : "")} role="status"
+      onClick={navigable ? onOpenLive : undefined}
+      title={navigable ? "Open the live build screen" : undefined}>
       <span className={"ff-topbar-dot" + (done ? " g" : "") + (failed ? " r" : "")} />
       <div className="ff-topbar-text">
         <div className="ff-topbar-title">
@@ -333,7 +338,7 @@ function TopBanner({ build, onOpenLive }) {
         </div>
       </div>
       <div className="ff-topbar-track"><i style={{ width: (failed ? 100 : pct) + "%" }} /></div>
-      <span className="ff-topbar-open">›</span>
+      {navigable && <span className="ff-topbar-open">›</span>}
     </div>
   );
 }
