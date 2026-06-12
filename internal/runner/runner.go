@@ -162,7 +162,15 @@ type syncWriter struct{ w io.Writer }
 func (s syncWriter) Write(p []byte) (int, error) {
 	wmu.Lock()
 	defer wmu.Unlock()
-	return s.w.Write(p)
+	// Best-effort: command logging must never abort the command. The GUI's
+	// log writer is a MultiWriter(logFile, eventEmitter); if the event
+	// emitter (or any sink) returns an error, os/exec would stop draining
+	// the child's stdout/stderr pipe and the child would be killed by SIGPIPE
+	// ("signal: broken pipe") mid-build — a flaky/closed log UI must not kill
+	// a kernel ftr-install. Swallow the error and report a full write so the
+	// copy goroutine keeps draining.
+	_, _ = s.w.Write(p)
+	return len(p), nil
 }
 
 // lockedWriter returns the current log writer wrapped for concurrent
