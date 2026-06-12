@@ -223,6 +223,29 @@ chmod 755 "$ROOT/etc/init.d/run-tmpfs"
 `, rootfsPath))
 		_ = b.EnableOpenRCService(imageChrootRoot, rootfsPath, "run-tmpfs", "boot")
 
+		// Boot-ready signal for the Peacock base supervisor: once the flavor
+		// reaches its default runlevel it touches /peacock/.flavor-ready (a
+		// base-owned path bind-mounted in, so the flavor's own /run tmpfs can't
+		// shadow it). peacock-init watches this to tell "booted OK" from "hung".
+		_ = execCommand("sudo", "sh", "-c", fmt.Sprintf(`set -e
+ROOT="%s"
+cat > "$ROOT/etc/init.d/peacock-flavor-ready" <<'EOF'
+#!/sbin/openrc-run
+
+description="Signal the Peacock base that this flavor finished booting"
+
+depend() {
+	after *
+}
+
+start() {
+	: > /peacock/.flavor-ready 2>/dev/null || true
+}
+EOF
+chmod 755 "$ROOT/etc/init.d/peacock-flavor-ready"
+`, rootfsPath))
+		_ = b.EnableOpenRCService(imageChrootRoot, rootfsPath, "peacock-flavor-ready", "default")
+
 		extraServices := userland.DisplayManagerOpenRCServices(displayManagerChoice, initSystem)
 		for _, svc := range extraServices {
 			if err := b.EnableOpenRCService(imageChrootRoot, rootfsPath, svc.Name, svc.Runlevel); err != nil {
