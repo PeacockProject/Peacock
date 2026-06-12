@@ -537,15 +537,61 @@ func featherPackageName(path string) string {
 	return base
 }
 
-// FtrBinary locates the feather (ftr) CLI: $PEACOCK_FTR, then PATH.
+// FtrBinary locates the feather (ftr) CLI. ftr is NOT a host dependency users
+// must install: it's a sibling binary in the monorepo (feather/ftr) and is
+// bundled beside peacock-builder in distribution. Resolution order:
+//  1. $PEACOCK_FTR                       (explicit override)
+//  2. bundled beside the executable      (AppImage/dist ships ftr next to us)
+//  3. <monorepo>/feather/ftr             (dev: found by walking up from the exe)
+//  4. PATH                               (a user-installed ftr still works)
+//  5. ../feather/ftr or feather/ftr      (running from within the repo)
 func FtrBinary() (string, error) {
 	if p := strings.TrimSpace(os.Getenv("PEACOCK_FTR")); p != "" {
 		return p, nil
 	}
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		// Bundled beside the binary (dist/AppImage cp's ftr into usr/bin).
+		if p, ok := ftrExecCandidate(filepath.Join(dir, "ftr")); ok {
+			return p, nil
+		}
+		// Dev tree: peacock-builder builds under Peacock/cmd/peacock-builder/
+		// build/bin/, and feather/ftr is a sibling of Peacock/ at the monorepo
+		// root. Walk up looking for a feather/ftr sibling rather than hardcoding
+		// the nesting depth.
+		for i := 0; i < 8; i++ {
+			if p, ok := ftrExecCandidate(filepath.Join(dir, "feather", "ftr")); ok {
+				return p, nil
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+	}
 	if p, err := exec.LookPath("ftr"); err == nil {
 		return p, nil
 	}
-	return "", fmt.Errorf("feather (ftr) not found: set PEACOCK_FTR or install ftr on PATH")
+	for _, c := range []string{"../feather/ftr", "feather/ftr"} {
+		if p, ok := ftrExecCandidate(c); ok {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("feather (ftr) not found: set PEACOCK_FTR, put ftr on PATH, or build it (make -C feather)")
+}
+
+// ftrExecCandidate returns an absolute path to p if it is an executable regular
+// file, else ok=false.
+func ftrExecCandidate(p string) (string, bool) {
+	fi, err := os.Stat(p)
+	if err != nil || fi.IsDir() || fi.Mode()&0o111 == 0 {
+		return "", false
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs, true
+	}
+	return p, true
 }
 
 // setupLoopDevice attaches the image file to a loop device

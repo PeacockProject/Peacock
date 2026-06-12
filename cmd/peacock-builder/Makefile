@@ -11,6 +11,11 @@ WAILS ?= $(HOME)/go/bin/wails
 APPIMAGETOOL ?= appimagetool
 CREATEDMG ?= create-dmg
 
+# feather (ftr) is a runtime dependency of the builder, NOT a host dep users
+# install — bundle it beside the binary. FtrBinary() finds it next to the exe.
+FEATHER_DIR ?= $(CURDIR)/../../../feather
+FTR ?= $(FEATHER_DIR)/ftr
+
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
@@ -24,6 +29,9 @@ appimage:
 	rm -rf dist/AppDir
 	mkdir -p dist/AppDir/usr/bin
 	cp build/bin/peacock-builder dist/AppDir/usr/bin/
+	@$(MAKE) -C "$(FEATHER_DIR)" >/dev/null 2>&1 || true
+	@test -x "$(FTR)" || { echo "error: ftr not built at $(FTR); run 'make -C feather'"; exit 1; }
+	cp "$(FTR)" dist/AppDir/usr/bin/ftr
 	cp build/appicon.png dist/AppDir/peacock-builder.png || true
 	printf '%s\n' \
 		'[Desktop Entry]' \
