@@ -109,6 +109,65 @@ func copyFileWithSudo(src, dst string) error {
 	return runner.RunCmd(cpCmd)
 }
 
+// ensureChrootDNS provisions /etc/resolv.conf inside a build chroot so build
+// scripts that download can resolve hosts. The chroot shares the host network
+// namespace but is bootstrapped without a resolver, so curl reports "Could not
+// resolve host". Best-effort: a failure here must not abort the build (the
+// script may not need network at all).
+func ensureChrootDNS(root string) {
+	tmp, err := os.CreateTemp("", "peacock-resolv-*.conf")
+	if err != nil {
+		return
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(bestResolvConf()); err != nil {
+		tmp.Close()
+		return
+	}
+	tmp.Close()
+	dst := filepath.Join(root, "etc", "resolv.conf")
+	if err := copyFileWithSudo(tmp.Name(), dst); err != nil {
+		runner.Logf("Warning: could not provision chroot DNS at %s: %v\n", dst, err)
+		return
+	}
+	_ = runner.RunCmd(exec.Command("sudo", "chmod", "0644", dst))
+}
+
+// bestResolvConf returns resolv.conf content with usable nameservers: prefer the
+// host's real upstreams (systemd-resolved publishes them at
+// /run/systemd/resolve/resolv.conf; a plain host has them in /etc/resolv.conf),
+// else fall back to public resolvers so a build is never blocked by missing DNS.
+// A loopback-only host resolv.conf (the systemd-resolved 127.0.0.53 stub) is
+// skipped in favor of the real-upstream file or the public fallback.
+func bestResolvConf() string {
+	for _, src := range []string{"/run/systemd/resolve/resolv.conf", "/etc/resolv.conf"} {
+		data, err := os.ReadFile(src)
+		if err != nil {
+			continue
+		}
+		if resolvHasRealNameserver(data) {
+			return string(data)
+		}
+	}
+	return "nameserver 1.1.1.1\nnameserver 8.8.8.8\n"
+}
+
+// resolvHasRealNameserver reports whether data has at least one non-loopback
+// nameserver (a 127.x / ::1 stub is only useful if its resolver is reachable
+// from the chroot, which we can't assume — prefer real upstreams).
+func resolvHasRealNameserver(data []byte) bool {
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "nameserver" {
+			ip := fields[1]
+			if !strings.HasPrefix(ip, "127.") && ip != "::1" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // BuildPackageInChroot downloads and builds a package inside the given chroot.
 func (b *Builder) BuildPackageInChroot(pkg *manifest.Package, targetArch string, root string, opts BuildOptions) (string, error) {
 	if pkg.Build.Source == "" && pkg.Build.Script == "" {
@@ -183,6 +242,12 @@ func (b *Builder) BuildPackageInChroot(pkg *manifest.Package, targetArch string,
 	if err := b.installBuildDeps(root, resolvedDeps, masterRoot, opts.Flavor, chrootArch); err != nil {
 		return "", fmt.Errorf("failed to install build deps: %w", err)
 	}
+
+	// Give the chroot working DNS before the build script runs. The chroot
+	// shares the host network namespace but is bootstrapped without a resolver
+	// config, so scripts that download (e.g. PRP's build-gui fetching LVGL, or
+	// build-dropbear) fail with curl "Could not resolve host". Best-effort.
+	ensureChrootDNS(root)
 
 	tarball := ""
 	if pkg.Build.Source != "" {
