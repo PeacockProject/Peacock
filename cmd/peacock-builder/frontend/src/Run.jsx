@@ -25,6 +25,7 @@
 
 import React from "react";
 import { PK, Btn, FULL } from "./shared.jsx";
+import { GetLog } from "./api.js";
 import {
   BUILD_PHASES,
   FLASHSET_PHASES,
@@ -61,6 +62,7 @@ export function useWailsScript(eventPrefix, phases, enabled = true) {
   React.useEffect(() => {
     if (!enabled || !hasWails() || !window.runtime || typeof window.runtime.EventsOn !== "function") return;
 
+    let mounted = true;
     const unsubs = [];
     const subscribe = (name, cb) => {
       const off = window.runtime.EventsOn(name, cb);
@@ -118,7 +120,24 @@ export function useWailsScript(eventPrefix, phases, enabled = true) {
       setDone(true);
     });
 
+    // Backfill the history the live stream missed. The "<prefix>:log" event is
+    // fire-and-forget, so mounting this view late — or opening it AFTER a step
+    // already failed — would otherwise lose the earlier output, including the
+    // error that mattered. App.GetLog returns everything emitted so far on this
+    // channel; prepend it ahead of any live lines. In the common case (viewing
+    // a finished/failed run) no live events race, so this is the full log.
+    GetLog(`${eventPrefix}:log`).then((hist) => {
+      if (!mounted || !hist) return;
+      const split = hist.split("\n").filter(s => s.length > 0);
+      if (split.length === 0) return;
+      setLines(prev => {
+        const histRows = split.map(ln => ({ t: "·", prog: 0, node: <span>{ln}</span> }));
+        return [...histRows, ...prev];
+      });
+    }).catch(() => { /* best effort */ });
+
     return () => {
+      mounted = false;
       for (const off of unsubs) {
         try { off(); } catch (_e) { /* noop */ }
       }

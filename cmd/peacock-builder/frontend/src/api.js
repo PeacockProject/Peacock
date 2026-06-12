@@ -123,6 +123,22 @@ export const DetectFlashDevice = async (deviceCode) => {
   return await callApp("DetectFlashDevice", deviceCode || "");
 };
 
+// GetLog returns the full accumulated output for a log channel ("build:log",
+// "flashset:log", "ports:log", "flash:log"). Log views call this on mount to
+// backfill the history they missed before subscribing to the live event — the
+// live stream is fire-and-forget EventsEmit, so a view opened late (or after a
+// step already failed) would otherwise lose the earlier output, including the
+// error that mattered. Returns "" when there's no backend (dev preview).
+export const GetLog = async (channel) => {
+  const real = await callApp("GetLog", channel || "");
+  return typeof real === "string" ? real : "";
+};
+
+// ClearLog resets a log channel's accumulated buffer (e.g. a manual "clear").
+export const ClearLog = async (channel) => {
+  await callApp("ClearLog", channel || "");
+};
+
 // PortsStatus reports whether a peacock-ports checkout is present.
 // Read-only. In dev mode (no Wails backend) we report present=true so
 // the first-time-setup clone screen never appears — the Cloudflare

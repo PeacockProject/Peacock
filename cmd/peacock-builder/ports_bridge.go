@@ -79,6 +79,7 @@ func (a *App) runPortsSync() {
 	// stream. We don't touch the per-build log file here — this is a
 	// one-shot setup step, not a build.
 	prev := runner.LogWriter()
+	appLog.clear("ports:log") // fresh history for this run
 	emitter := &wailsLogEmitter{ctx: a.ctx, event: "ports:log"}
 	runner.SetLogWriter(io.MultiWriter(prev, emitter))
 	defer runner.SetLogWriter(prev)

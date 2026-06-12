@@ -144,6 +144,7 @@ func (a *App) runBuild(ctx context.Context, buildID string, cfg buildconfig.Buil
 	// process captures it; in the Wails world it goes to the GUI
 	// process's own stdout which is invisible. Acceptable trade-off
 	// today; a follow-up adds a structured channel for phase ticks.
+	appLog.clear("build:log") // fresh history for this run
 	emitter := &wailsLogEmitter{ctx: a.ctx, event: "build:log"}
 	writer := io.MultiWriter(logFile, emitter)
 	runner.SetLogWriter(writer)
@@ -204,8 +205,13 @@ type wailsLogEmitter struct {
 // Write satisfies io.Writer. We never fail — log emission is best
 // effort, and a transient Wails error must not abort a build.
 func (e *wailsLogEmitter) Write(p []byte) (int, error) {
-	if e.ctx != nil && len(p) > 0 {
-		wailsruntime.EventsEmit(e.ctx, e.event, string(p))
+	if len(p) > 0 {
+		// Accumulate into the app-scoped buffer FIRST (independent of ctx) so a
+		// view mounting late can backfill the full history via App.GetLog.
+		appLog.append(e.event, p)
+		if e.ctx != nil {
+			wailsruntime.EventsEmit(e.ctx, e.event, string(p))
+		}
 	}
 	return len(p), nil
 }

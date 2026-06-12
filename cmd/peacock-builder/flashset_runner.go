@@ -38,6 +38,7 @@ func (a *App) runFlashSet(device string) {
 	// Fan runner output into flashset:log (don't disturb the build:log
 	// writer that a concurrent system build may own — save/restore).
 	prev := runner.LogWriter()
+	appLog.clear("flashset:log") // fresh history for this run
 	emitter := &wailsLogEmitter{ctx: a.ctx, event: "flashset:log"}
 	runner.SetLogWriter(io.MultiWriter(prev, emitter))
 	defer runner.SetLogWriter(prev)
