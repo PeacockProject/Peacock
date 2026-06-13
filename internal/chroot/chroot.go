@@ -253,6 +253,13 @@ mkdir -p "$DEV/pts" "$DEV/shm"
 [ -e "$DEV/urandom" ] || mknod -m 666 "$DEV/urandom" c 1 9
 [ -e "$DEV/tty" ] || mknod -m 666 "$DEV/tty" c 5 0
 [ -e "$DEV/ptmx" ] || mknod -m 666 "$DEV/ptmx" c 5 2
+# /proc/self/fd symlinks. mkinitcpio requires /dev/fd to exist
+# ("[[ -e /dev/fd ]] || die '/dev must be mounted!'"); bash process
+# substitution needs it too. Resolves once /proc is mounted in the chroot.
+[ -e "$DEV/fd" ] || ln -s /proc/self/fd "$DEV/fd"
+[ -e "$DEV/stdin" ] || ln -s /proc/self/fd/0 "$DEV/stdin"
+[ -e "$DEV/stdout" ] || ln -s /proc/self/fd/1 "$DEV/stdout"
+[ -e "$DEV/stderr" ] || ln -s /proc/self/fd/2 "$DEV/stderr"
 `, devTarget))
 	cmd.Stdout = runner.LogWriter()
 	cmd.Stderr = runner.LogWriter()
