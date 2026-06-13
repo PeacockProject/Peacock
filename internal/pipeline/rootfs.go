@@ -411,6 +411,12 @@ fi
 CFG="%s/etc/mkinitcpio.conf"
 if [ -f "$CFG" ]; then
 	sed -i -E 's|^HOOKS=.*|HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block filesystems fsck)|' "$CFG"
+	# Force common virtual/disk drivers in. autodetect trims the initramfs to the
+	# BUILD HOST's loaded modules, so a flavor initramfs booted on different
+	# hardware (e.g. the qemu-x86_64 target, which GRUB boots via this mkinitcpio
+	# initramfs instead of peacock-mkinitfs) couldn't find its root disk
+	# ("device 'LABEL=ROOT' not found"). Small; harmless where unused.
+	sed -i -E 's|^MODULES=.*|MODULES=(virtio_blk virtio_pci virtio_scsi virtio_net ahci ata_piix sd_mod sr_mod nvme)|' "$CFG"
 fi
 `, rootfsPath))
 		if err := chroot.MountWithSudo(rootfsPath); err != nil {
