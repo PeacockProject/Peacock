@@ -54,6 +54,9 @@ export { BUILD_PHASES, FLASHSET_PHASES, ALL_PHASES, INSTALL_PHASES, buildScript,
  * one EventsOn set per stream. Exported for FlashFlow. */
 export function useWailsScript(eventPrefix, phases, enabled = true) {
   const [lines, setLines] = React.useState([]);
+  // Holds the trailing partial line between log chunks (the runner streams in
+  // arbitrary-size pieces that don't align to newlines).
+  const pendingRef = React.useRef("");
   const [prog, setProg] = React.useState(0);
   const [phase, setPhase] = React.useState(phases[0].label);
   const [done, setDone] = React.useState(false);
@@ -63,6 +66,7 @@ export function useWailsScript(eventPrefix, phases, enabled = true) {
     if (!enabled || !hasWails() || !window.runtime || typeof window.runtime.EventsOn !== "function") return;
 
     let mounted = true;
+    pendingRef.current = ""; // fresh line buffer per run
     const unsubs = [];
     const subscribe = (name, cb) => {
       const off = window.runtime.EventsOn(name, cb);
@@ -78,11 +82,7 @@ export function useWailsScript(eventPrefix, phases, enabled = true) {
       return `${hh}:${mm}:${ss}`;
     };
 
-    subscribe(`${eventPrefix}:log`, (chunk) => {
-      // The pipeline writes chunks separated by newlines; split so the
-      // log scroll buffer doesn't render multi-line strings as one row.
-      const text = typeof chunk === "string" ? chunk : String(chunk);
-      const split = text.split("\n").filter(s => s.length > 0);
+    const pushLines = (split) => {
       if (split.length === 0) return;
       setLines(prev => {
         const t = stamp();
@@ -92,7 +92,29 @@ export function useWailsScript(eventPrefix, phases, enabled = true) {
         }
         return next;
       });
+    };
+
+    subscribe(`${eventPrefix}:log`, (chunk) => {
+      // The runner streams output in arbitrary-size chunks that don't align to
+      // newlines — a single line often arrives across several events. Buffer
+      // until a newline so each row is a whole line, instead of shattering e.g.
+      // "1 warning generated." into four rows.
+      const text = typeof chunk === "string" ? chunk : String(chunk);
+      pendingRef.current += text;
+      const nl = pendingRef.current.lastIndexOf("\n");
+      if (nl < 0) return; // no complete line yet — keep buffering
+      const ready = pendingRef.current.slice(0, nl);
+      pendingRef.current = pendingRef.current.slice(nl + 1);
+      pushLines(ready.split("\n").filter(s => s.length > 0));
     });
+
+    // Flush any trailing partial line (output that never ended in a newline) so
+    // the last line isn't lost when the run finishes.
+    const flushPending = () => {
+      const rest = pendingRef.current;
+      pendingRef.current = "";
+      if (rest) pushLines(rest.split("\n").filter(s => s.length > 0));
+    };
 
     subscribe(`${eventPrefix}:phase`, (payload) => {
       // peacock-installer emits a structured Progress object; the
@@ -110,11 +132,13 @@ export function useWailsScript(eventPrefix, phases, enabled = true) {
     });
 
     subscribe(`${eventPrefix}:done`, () => {
+      flushPending();
       setDone(true);
       setProg(100);
     });
 
     subscribe(`${eventPrefix}:error`, (payload) => {
+      flushPending();
       const msg = typeof payload === "string" ? payload : "build failed";
       setErrorMsg(msg);
       setDone(true);

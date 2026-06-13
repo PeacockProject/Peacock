@@ -216,11 +216,12 @@ func (e *wailsLogEmitter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// openBuildLog creates <workDir>/logs/build-<id>-<ts>.log and returns
-// the path + an open *os.File. WorkDir is used as the parent when set;
-// otherwise we fall back to a tmp file so the goroutine always has
-// somewhere to write.
-func openBuildLog(workDir, buildID string) (string, *os.File, error) {
+// openSessionLog creates <workDir>/logs/<label>-<ts>.log and returns the path +
+// an open *os.File. WorkDir is the parent when set; otherwise a tmp dir, so the
+// goroutine always has somewhere to write. Used for every build session (system
+// build, flashset/recovery) so each persists to its own file under
+// ~/.local/var/peacock/logs.
+func openSessionLog(workDir, label string) (string, *os.File, error) {
 	parent := workDir
 	if parent == "" {
 		parent = os.TempDir()
@@ -229,13 +230,18 @@ func openBuildLog(workDir, buildID string) (string, *os.File, error) {
 	if err := os.MkdirAll(logsDir, 0o755); err != nil {
 		return "", nil, err
 	}
-	name := fmt.Sprintf("build-%s-%d.log", buildID, time.Now().Unix())
+	name := fmt.Sprintf("%s-%d.log", label, time.Now().Unix())
 	path := filepath.Join(logsDir, name)
 	f, err := os.Create(path)
 	if err != nil {
 		return "", nil, err
 	}
 	return path, f, nil
+}
+
+// openBuildLog is openSessionLog for a system build: <workDir>/logs/build-<id>-<ts>.log.
+func openBuildLog(workDir, buildID string) (string, *os.File, error) {
+	return openSessionLog(workDir, "build-"+buildID)
 }
 
 // newBuildID returns a short opaque hex ID. 8 bytes of crypto/rand

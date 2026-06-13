@@ -9,6 +9,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -36,11 +37,19 @@ func (a *App) runFlashSet(device string) {
 	workDir := defaultWorkDir()
 
 	// Fan runner output into flashset:log (don't disturb the build:log
-	// writer that a concurrent system build may own — save/restore).
+	// writer that a concurrent system build may own — save/restore) AND persist
+	// the session to its own file under <workDir>/logs, like a system build.
 	prev := runner.LogWriter()
 	appLog.clear("flashset:log") // fresh history for this run
 	emitter := &wailsLogEmitter{ctx: a.ctx, event: "flashset:log"}
-	runner.SetLogWriter(io.MultiWriter(prev, emitter))
+	writers := []io.Writer{prev, emitter}
+	if logPath, logFile, err := openSessionLog(workDir, "flashset-"+device); err == nil {
+		defer logFile.Close()
+		writers = []io.Writer{prev, logFile, emitter}
+		fmt.Fprintf(logFile, "[peacock-builder] flashset (bootloader + PRP recovery) for %s\n", device)
+		fmt.Fprintf(emitter, "[peacock-builder] flashset for %s (log: %s)\n", device, logPath)
+	}
+	runner.SetLogWriter(io.MultiWriter(writers...))
 	defer runner.SetLogWriter(prev)
 
 	progress := func(phase string, percent int) {
