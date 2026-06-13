@@ -335,13 +335,32 @@ func cachedArtifactPath(cacheDir, name, version, arch string) string {
 	return ""
 }
 
+// dirHasDTB reports whether dir contains at least one .dtb file (recursively).
+func dirHasDTB(dir string) bool {
+	var found bool
+	_ = filepath.Walk(dir, func(_ string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(strings.ToLower(info.Name()), ".dtb") {
+			found = true
+		}
+		return nil
+	})
+	return found
+}
+
 func extractKernelFromPackage(pkgPath, workDir string) (string, error) {
 	dest := filepath.Join(workDir, "kernel-cache", filepath.Base(pkgPath))
 	if err := os.MkdirAll(dest, 0755); err != nil {
 		return "", err
 	}
 	zImagePath := filepath.Join(dest, "zImage")
-	if fileExistsFile(zImagePath) {
+	// Reuse a prior extraction only if it's COMPLETE — kernel image AND DTBs. An
+	// older extractor pulled only zImage, leaving an empty dtbs/; returning that
+	// made discoverKernelDTB find no DTB, so extlinux shipped with no `fdt`
+	// directive and lk2nd failed to boot ("No DTB configured").
+	if fileExistsFile(zImagePath) && dirHasDTB(filepath.Join(dest, "dtbs")) {
 		return dest, nil
 	}
 	// .feather payload under files/: the kernel image is at files/boot/zImage
