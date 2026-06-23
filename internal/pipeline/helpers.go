@@ -51,7 +51,8 @@ func UnmountPeacockMounts(workDir string) error {
 	}
 	for _, mp := range mounts {
 		if err := chroot.UnmountPathWithSudo(mp); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to unmount %s: %v\n", mp, err)
+			// Build log (visible in the GUI), not os.Stderr (invisible there).
+			fmt.Fprintf(runner.LogWriter(), "warning: failed to unmount %s: %v (may leave a stale mount for the next run)\n", mp, err)
 		}
 	}
 	return nil
@@ -67,7 +68,8 @@ func unmountRootfsSubmounts(rootfsPath string) error {
 	}
 	for _, mp := range mounts {
 		if err := chroot.UnmountPathWithSudo(mp); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to unmount %s: %v\n", mp, err)
+			// Build log (visible in the GUI), not os.Stderr (invisible there).
+			fmt.Fprintf(runner.LogWriter(), "warning: failed to unmount %s: %v (may leave a stale mount for the next run)\n", mp, err)
 		}
 	}
 	return nil

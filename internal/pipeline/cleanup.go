@@ -8,6 +8,7 @@ import (
 
 	"peacock/internal/chroot"
 	"peacock/internal/image"
+	"peacock/internal/runner"
 )
 
 // Cleanup tracks the mountpoints and loop devices a single Run()
@@ -41,29 +42,40 @@ func NewCleanup(workDir string) *Cleanup {
 // remaining steps (otherwise a stuck mount could trap the loop device).
 // Safe to call multiple times; cleared fields turn into no-ops.
 func (c *Cleanup) Run() {
+	// Best-effort but NOT silent: a swallowed unmount/detach failure leaves a
+	// stale mount or loop device that breaks the NEXT build mysteriously. Log
+	// each failure (to the build log, so it's visible in the GUI too) and keep
+	// going so one stuck step can't trap the rest of the teardown.
+	warn := func(what string, err error) {
+		if err != nil {
+			fmt.Fprintf(runner.LogWriter(),
+				"cleanup: %s failed: %v (continuing; this may leave a stale mount/loop for the next run)\n",
+				what, err)
+		}
+	}
 	if c.imageChroot != "" {
 		workMount := filepath.Join(c.imageChroot, "work")
 		if underWorkDir(c.workDir, workMount) {
-			_ = chroot.UnmountPathWithSudo(workMount)
+			warn("unmount "+workMount, chroot.UnmountPathWithSudo(workMount))
 		}
-		_ = chroot.UnmountWithSudo(c.imageChroot)
+		warn("unmount "+c.imageChroot, chroot.UnmountWithSudo(c.imageChroot))
 	}
 	if c.bootDir != "" {
 		if underWorkDir(c.workDir, c.bootDir) {
-			_ = chroot.UnmountPathWithSudo(c.bootDir)
+			warn("unmount "+c.bootDir, chroot.UnmountPathWithSudo(c.bootDir))
 		} else {
 			fmt.Fprintf(os.Stderr, "skipping unsafe boot unmount: %s\n", c.bootDir)
 		}
 	}
 	if c.installDir != "" {
 		if underWorkDir(c.workDir, c.installDir) {
-			_ = chroot.UnmountPathWithSudo(c.installDir)
+			warn("unmount "+c.installDir, chroot.UnmountPathWithSudo(c.installDir))
 		} else {
 			fmt.Fprintf(os.Stderr, "skipping unsafe install unmount: %s\n", c.installDir)
 		}
 	}
 	if c.loopDev != "" {
-		_ = image.UnmountLoop(c.loopDev)
+		warn("detach loop "+c.loopDev, image.UnmountLoop(c.loopDev))
 	}
 }
 
