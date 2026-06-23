@@ -216,11 +216,8 @@ func (b *Builder) registerBinfmtInChroot(root string) error {
 				line = strings.Join(parts, ":")
 			}
 
-			// Write to /proc/sys/fs/binfmt_misc/register
-			registerCmd := exec.Command("sudo", "sh", "-c", fmt.Sprintf("echo '%s' > /proc/sys/fs/binfmt_misc/register", line))
-			registerCmd.Stdout = runner.LogWriter()
-			registerCmd.Stderr = runner.LogWriter()
-			if err := runner.RunCmd(registerCmd); err != nil {
+			// Write to /proc/sys/fs/binfmt_misc/register (shell-free; line is untrusted)
+			if err := registerBinfmt(line); err != nil {
 				// Ignore errors - entry might already exist
 				if len(parts) > 1 {
 					runner.Logf("Note: %s already registered or error\n", parts[1])

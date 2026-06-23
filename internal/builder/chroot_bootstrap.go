@@ -92,10 +92,7 @@ func (b *Builder) EnsureBuildChroot(root string, chrootArch string, useQemu bool
 							line = strings.Join(parts, ":")
 						}
 
-						registerCmd := exec.Command("sudo", "sh", "-c", fmt.Sprintf("echo '%s' > /proc/sys/fs/binfmt_misc/register", line))
-						registerCmd.Stdout = runner.LogWriter()
-						registerCmd.Stderr = runner.LogWriter()
-						if err := runner.RunCmd(registerCmd); err == nil {
+						if err := registerBinfmt(line); err == nil {
 							if len(parts) > 6 {
 								runner.Logf("Registered: %s (using %s)\n", parts[1], parts[6])
 							}
@@ -291,11 +288,8 @@ func (b *Builder) EnsureBuildChroot(root string, chrootArch string, useQemu bool
 						line = strings.Join(parts, ":")
 					}
 
-					// Write to /proc/sys/fs/binfmt_misc/register
-					registerCmd := exec.Command("sudo", "sh", "-c", fmt.Sprintf("echo '%s' > /proc/sys/fs/binfmt_misc/register", line))
-					registerCmd.Stdout = runner.LogWriter()
-					registerCmd.Stderr = runner.LogWriter()
-					if err := runner.RunCmd(registerCmd); err != nil {
+					// Write to /proc/sys/fs/binfmt_misc/register (shell-free; line is untrusted)
+					if err := registerBinfmt(line); err != nil {
 						// Ignore errors - entry might already be registered
 						if len(parts) > 1 {
 							runner.Logf("Note: registration of %s skipped (might already exist or error occurred)\n", parts[1])
