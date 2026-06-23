@@ -51,9 +51,19 @@ func BootstrapBaseChroot(ctx context.Context, flavor, root, peacockArch string, 
 		if err != nil {
 			return fmt.Errorf("apk bootstrap: %w", err)
 		}
-		// packages plumbed in on a follow-up commit (Setup + Install).
-		_ = packages
-		return apk.Bootstrap(root, apk.Config{Arch: apkArch})
+		cfg := apk.Config{Arch: apkArch}
+		// Bootstrap (alpine-base + initdb) doesn't write /etc/apk/repositories,
+		// so Setup must run before Install can resolve the flavor packages.
+		if err := apk.Bootstrap(root, cfg); err != nil {
+			return fmt.Errorf("apk bootstrap: %w", err)
+		}
+		if err := apk.Setup(root, cfg); err != nil {
+			return fmt.Errorf("apk setup: %w", err)
+		}
+		if err := apk.Install(root, packages); err != nil {
+			return fmt.Errorf("apk install: %w", err)
+		}
+		return nil
 	default:
 		// Unreachable: IsValidFlavor gates entry. Belt-and-braces in
 		// case ValidFlavors grows without this switch being updated.
