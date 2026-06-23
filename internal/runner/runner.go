@@ -248,7 +248,19 @@ func runCmd(cmd *exec.Cmd) error {
 			return err
 		case <-time.After(2 * time.Second):
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			return <-done
+			// Don't block forever on Wait(): a process wedged in
+			// uninterruptible (D-state) sleep won't reap even on SIGKILL, and
+			// `return <-done` would hang the whole cancel/build. Bound the
+			// final wait, then surface the cancellation and move on — the
+			// buffered `done` channel lets the orphaned Wait() goroutine
+			// finish (and the OS reap the process) once the D-state clears.
+			select {
+			case err := <-done:
+				return err
+			case <-time.After(10 * time.Second):
+				fmt.Fprintf(lockedWriter(), "warning: pid %d did not exit after SIGKILL (uninterruptible sleep?); abandoning wait after cancel\n", cmd.Process.Pid)
+				return ctx.Err()
+			}
 		}
 	}
 }
