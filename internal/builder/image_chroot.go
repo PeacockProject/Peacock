@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"peacock/internal/chroot"
+	"peacock/internal/feather"
 	"peacock/internal/pacman"
 	"peacock/internal/runner"
 )
@@ -408,13 +409,24 @@ func (b *Builder) InstallPackagesToRootfs(imageChrootRoot, rootfsPath string, pa
 		if err != nil {
 			return err
 		}
-		dbRoot := filepath.Join(rootfsPath, "var", "lib", "feather")
+		// Drive ftr with every layout prefix pointed into this rootfs, so a
+		// feather installs at its DECLARED layout — system -> /, peacock ->
+		// /peacock, app -> /apps/<name>, compat -> /compat/<runtime> (the
+		// base-owned trees) — not the host's defaults. Previously only --root
+		// was passed, which silently sent any non-system feather to the host.
+		opts := feather.InstallOpts{
+			FtrBin:        ftr,
+			Root:          rootfsPath,
+			PeacockPrefix: filepath.Join(rootfsPath, "peacock"),
+			AppsPrefix:    filepath.Join(rootfsPath, "apps"),
+			CompatPrefix:  filepath.Join(rootfsPath, "compat"),
+			DataPrefix:    filepath.Join(rootfsPath, "data"),
+			DBRoot:        filepath.Join(rootfsPath, "var", "lib", "feather"),
+			AllowUnsigned: true,
+			Sudo:          true,
+		}
 		for _, fea := range localPkgs {
-			cmd := exec.Command("sudo", "env", "FTR_DB_ROOT="+dbRoot,
-				ftr, "install", "--root", rootfsPath, "--allow-unsigned", fea)
-			cmd.Stdout = runner.LogWriter()
-			cmd.Stderr = runner.LogWriter()
-			if err := runner.RunCmd(cmd); err != nil {
+			if err := feather.Install(fea, opts); err != nil {
 				return fmt.Errorf("failed to ftr-install %s: %w", filepath.Base(fea), err)
 			}
 		}

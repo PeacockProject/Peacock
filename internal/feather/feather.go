@@ -32,6 +32,21 @@ type InstallOpts struct {
 	CompatPrefix string
 	// DataPrefix overrides /data when set.
 	DataPrefix string
+	// Root overlays a system-layout feather onto this root (ftr --root),
+	// e.g. a staging rootfs the build pipeline assembles.
+	Root string
+	// DBRoot sandboxes the feather install DB under a rootfs via the
+	// FTR_DB_ROOT env var. Empty = ftr's host default.
+	DBRoot string
+	// AllowUnsigned passes --allow-unsigned. Locally-built artifacts are
+	// not signed, so the build pipeline sets this.
+	AllowUnsigned bool
+	// Sudo wraps the ftr invocation in sudo — needed to write into a
+	// root-owned staging rootfs.
+	Sudo bool
+	// FtrBin pins the ftr binary path. Empty = resolve on PATH / fallback.
+	// The build pipeline passes its own (monorepo-aware) resolver result.
+	FtrBin string
 	// ExtraArgs are appended verbatim after the resolved flags.
 	ExtraArgs []string
 }
@@ -80,6 +95,12 @@ func buildArgs(opts InstallOpts, sub string, tail ...string) []string {
 	if opts.DataPrefix != "" {
 		args = append(args, "--data-prefix", opts.DataPrefix)
 	}
+	if opts.Root != "" {
+		args = append(args, "--root", opts.Root)
+	}
+	if opts.AllowUnsigned {
+		args = append(args, "--allow-unsigned")
+	}
 	args = append(args, opts.ExtraArgs...)
 	args = append(args, tail...)
 	return args
@@ -99,10 +120,39 @@ func runFtr(args []string) error {
 	return runner.RunCmd(cmd)
 }
 
-// Install runs `ftr install <pkg>` against the staging chroot, with
-// prefix overrides honored via flags.
+// Install runs `ftr install <pkg>` with the layout-prefix overrides,
+// optional --root/--allow-unsigned, an optional sandboxed install DB
+// (FTR_DB_ROOT), and optional sudo — everything the build pipeline needs
+// to overlay a .feather onto a staging rootfs at its declared layout.
 func Install(pkg string, opts InstallOpts) error {
-	return runFtr(buildArgs(opts, "install", pkg))
+	bin := opts.FtrBin
+	if bin == "" {
+		var err error
+		if bin, err = resolveBinary(); err != nil {
+			return err
+		}
+	}
+	args := buildArgs(opts, "install", pkg)
+
+	var cmd *exec.Cmd
+	if opts.Sudo {
+		sudoArgs := []string{}
+		if opts.DBRoot != "" {
+			sudoArgs = append(sudoArgs, "env", "FTR_DB_ROOT="+opts.DBRoot)
+		}
+		sudoArgs = append(sudoArgs, bin)
+		sudoArgs = append(sudoArgs, args...)
+		cmd = exec.Command("sudo", sudoArgs...)
+	} else {
+		cmd = exec.Command(bin, args...)
+		if opts.DBRoot != "" {
+			cmd.Env = append(os.Environ(), "FTR_DB_ROOT="+opts.DBRoot)
+		}
+	}
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = runner.LogWriter()
+	cmd.Stderr = runner.LogWriter()
+	return runner.RunCmd(cmd)
 }
 
 // Remove runs `ftr remove <pkg>`. Removal needs the same prefix

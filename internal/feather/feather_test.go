@@ -131,6 +131,36 @@ func TestBuildArgsGolden(t *testing.T) {
 			tail: []string{"pkg"},
 			want: []string{"install", "--data-prefix", "/data", "pkg"},
 		},
+		{
+			name: "root + allow-unsigned",
+			opts: InstallOpts{Root: "/staging", AllowUnsigned: true},
+			sub:  "install",
+			tail: []string{"pkg"},
+			want: []string{"install", "--root", "/staging", "--allow-unsigned", "pkg"},
+		},
+		{
+			name: "all prefixes + root + allow-unsigned (the pipeline shape)",
+			opts: InstallOpts{
+				PeacockPrefix: "/r/peacock",
+				AppsPrefix:    "/r/apps",
+				CompatPrefix:  "/r/compat",
+				DataPrefix:    "/r/data",
+				Root:          "/r",
+				AllowUnsigned: true,
+			},
+			sub:  "install",
+			tail: []string{"pkg.feather"},
+			want: []string{
+				"install",
+				"--peacock-prefix", "/r/peacock",
+				"--apps-prefix", "/r/apps",
+				"--compat-prefix", "/r/compat",
+				"--data-prefix", "/r/data",
+				"--root", "/r",
+				"--allow-unsigned",
+				"pkg.feather",
+			},
+		},
 	}
 	for _, tc := range cases {
 		tc := tc
