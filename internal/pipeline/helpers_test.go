@@ -303,6 +303,17 @@ func TestLocalPackageManifestPath(t *testing.T) {
 			t.Fatalf("LocalPackageManifestPath = (%q, %v), want (%q, true)", path, ok, want)
 		}
 	})
+
+	// Categories are not hardcoded: a port in any top-level dir (e.g. tools/)
+	// resolves with no code change.
+	t.Run("non-base/device category (tools) resolves", func(t *testing.T) {
+		setupPorts(t, "peacock-ports/tools/apk-tools/package.toml")
+		path, ok := LocalPackageManifestPath("apk-tools")
+		want := filepath.Join("peacock-ports", "tools", "apk-tools", "package.toml")
+		if !ok || path != want {
+			t.Fatalf("LocalPackageManifestPath = (%q, %v), want (%q, true)", path, ok, want)
+		}
+	})
 }
 
 func TestFindCachedPackageArtifact(t *testing.T) {

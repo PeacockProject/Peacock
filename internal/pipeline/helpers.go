@@ -452,20 +452,37 @@ func boolPtr(v bool) *bool {
 	return &v
 }
 
-// LocalPackageManifestPath searches peacock-ports/{device,base}/<name>/package.toml
-// and returns the first hit. Used to decide whether a dependency is locally built
-// or fetched from a remote pacman repo.
+// LocalPackageManifestPath finds peacock-ports/<category>/<name>/package.toml in
+// ANY top-level category dir (base, device, compat, tools, …) and returns the
+// first hit. Categories are NOT hardcoded — a new category (e.g. tools/) works
+// with no code change; non-port dirs (lib, docs, flavors) never match because
+// they hold no <name>/package.toml. Used to decide whether a dependency is
+// locally built or fetched from a remote repo.
 func LocalPackageManifestPath(name string) (string, bool) {
-	candidates := []string{
-		filepath.Join(portsRoot, "device", name, "package.toml"),
-		filepath.Join(portsRoot, "base", name, "package.toml"),
+	matches, err := filepath.Glob(filepath.Join(portsRoot, "*", name, "package.toml"))
+	if err != nil || len(matches) == 0 {
+		return "", false
 	}
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			return c, true
+	// Precedence when a name appears in multiple categories: device overrides
+	// base (device-specific specialization), then everything else. Keeps a new
+	// category from silently shadowing an existing port; not a hardcoded list.
+	rank := func(p string) int {
+		switch filepath.Base(filepath.Dir(filepath.Dir(p))) {
+		case "device":
+			return 0
+		case "base":
+			return 1
+		default:
+			return 2
 		}
 	}
-	return "", false
+	best := matches[0]
+	for _, m := range matches[1:] {
+		if rank(m) < rank(best) {
+			best = m
+		}
+	}
+	return best, true
 }
 
 // FindCachedPackageArtifact returns the path to a cached .feather package
@@ -514,7 +531,10 @@ func locatePeacockMkinitfs(portBuildDir string) string {
 // initramfs needs these tools (blkid/partx, dmsetup/dm-linear), so silently
 // skipping a failed port would produce a broken image reported as success.
 func buildPortForInitramfs(b *builder.Builder, name, targetArch, workDir, useQemuFlag, crossCompileFlag string) (string, error) {
-	manifestPath := filepath.Join(portsRoot, "base", name, "package.toml")
+	manifestPath, ok := LocalPackageManifestPath(name)
+	if !ok {
+		return "", fmt.Errorf("no local port manifest for %s (needed for initramfs)", name)
+	}
 	pkg, err := manifest.LoadPackage(manifestPath)
 	if err != nil {
 		return "", fmt.Errorf("loading %s manifest for initramfs: %w", name, err)
@@ -614,17 +634,7 @@ func prepareBuildDepPackages(b *builder.Builder, pkg *manifest.Package, consumin
 
 	var extra preparedBuildDeps
 	for _, depPkg := range pkg.Build.BuildDepPackages {
-		candidates := []string{
-			filepath.Join(portsRoot, "base", depPkg, "package.toml"),
-			filepath.Join(portsRoot, "device", depPkg, "package.toml"),
-		}
-		var found string
-		for _, c := range candidates {
-			if _, err := os.Stat(c); err == nil {
-				found = c
-				break
-			}
-		}
+		found, _ := LocalPackageManifestPath(depPkg)
 
 		hostArch := builder.HostArchString()
 		var depManifest *manifest.Package
