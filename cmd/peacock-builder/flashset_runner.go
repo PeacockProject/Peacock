@@ -36,6 +36,13 @@ func (a *App) StartFlashSet(device string) {
 func (a *App) runFlashSet(device string) {
 	workDir := defaultWorkDir()
 
+	// Serialize against system builds and other flashsets — BuildFlashSet drives
+	// the same pipeline package-global state (portsRoot, runner writer/context).
+	// See App.buildRunMu. (This also makes the log-writer save/restore below
+	// race-free, since no other build runs concurrently.)
+	a.buildRunMu.Lock()
+	defer a.buildRunMu.Unlock()
+
 	// Fan runner output into flashset:log (don't disturb the build:log
 	// writer that a concurrent system build may own — save/restore) AND persist
 	// the session to its own file under <workDir>/logs, like a system build.

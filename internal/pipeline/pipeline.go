@@ -40,6 +40,13 @@ import (
 // phase code joins manifest paths against it instead of the bare
 // "peacock-ports" string. Defaults to "peacock-ports" so any direct phase
 // call in a test that skips Run still hits the dev-layout path.
+//
+// CONCURRENCY: this is package-global, so it is NOT safe for two builds at
+// once. The GUI (cmd/peacock-builder) serializes build + flashset execution
+// via App.buildRunMu for exactly this reason; the CLI runs one build per
+// process. Threading the resolved root (and the runner log writer/context)
+// per-build would remove the global and the serialization requirement —
+// tracked in CODE_AUDIT.md.
 var portsRoot = "peacock-ports"
 
 // SetPortsRoot overrides the package-level ports root used by the helper

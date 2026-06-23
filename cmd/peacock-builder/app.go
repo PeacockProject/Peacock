@@ -24,6 +24,16 @@ type App struct {
 	buildsMu sync.Mutex
 	builds   map[string]context.CancelFunc
 
+	// buildRunMu serializes pipeline EXECUTION. The pipeline + internal/runner
+	// keep package-global state (portsRoot, the runner log writer + context),
+	// so two builds running at once corrupt each other (wrong ports tree,
+	// cross-contaminated logs, swapped cancellation). StartBuild launches each
+	// build in its own goroutine; this lock makes them run one-at-a-time
+	// (back-to-back), which is the only safe mode until that global state is
+	// threaded per-build. Held for the whole pipeline run, so it's separate
+	// from buildsMu (which guards only the short map mutations).
+	buildRunMu sync.Mutex
+
 	// privilegeErr holds the error (if any) from
 	// EnsureBuildPrivileges run at startup. The React side reads it
 	// via PrivilegeError() and renders a friendly "we couldn't

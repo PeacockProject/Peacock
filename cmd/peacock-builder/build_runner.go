@@ -135,6 +135,14 @@ func (a *App) runBuild(ctx context.Context, buildID string, cfg buildconfig.Buil
 	}
 	defer logFile.Close()
 
+	// Serialize execution: the pipeline + internal/runner use package-global
+	// state (portsRoot, log writer, context) that two concurrent builds would
+	// corrupt. Run one build at a time; a second StartBuild's goroutine queues
+	// here until the first finishes. (Full per-build threading would remove the
+	// need for this lock — tracked in CODE_AUDIT.md.)
+	a.buildRunMu.Lock()
+	defer a.buildRunMu.Unlock()
+
 	// The pipeline writes shell-subprocess output via runner.LogWriter()
 	// and prints higher-level phase messages straight to fmt.Println /
 	// fmt.Printf (i.e. stdout). To pump both into the Wails event
