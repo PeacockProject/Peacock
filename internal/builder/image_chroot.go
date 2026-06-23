@@ -127,12 +127,17 @@ func (b *Builder) installImageTools(root string) error {
 		return fmt.Errorf("failed to update pacman.conf for image chroot: %w", err)
 	}
 
+	// This Arch x86_64 chroot is the PeacockOS build environment: it owns the
+	// bootstrap + image tooling so the host needs no distro-specific binaries.
+	// pacman is native; debootstrap (debian bootstrap) comes from Arch extra;
+	// apk-tools-static (alpine) lands here via the tools/ recipe (Track F2).
 	packages := []string{
 		"qemu-user-static",
 		"qemu-user-static-binfmt",
 		"parted",               // Disk partitioning
 		"e2fsprogs",            // ext4 filesystem (root partition)
 		"arch-install-scripts", // For genfstab, arch-chroot
+		"debootstrap",          // Debian flavor bootstrap (chroot-owned, not host)
 	}
 
 	args := append([]string{"chroot", root, "pacman", "-Sy", "--noconfirm"}, packages...)
