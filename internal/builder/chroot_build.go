@@ -170,8 +170,23 @@ func resolvHasRealNameserver(data []byte) bool {
 
 // BuildPackageInChroot downloads and builds a package inside the given chroot.
 func (b *Builder) BuildPackageInChroot(pkg *manifest.Package, targetArch string, root string, opts BuildOptions) (string, error) {
-	if pkg.Build.Source == "" && pkg.Build.Script == "" {
-		return "", fmt.Errorf("package %s has no source or build script", pkg.Package.Name)
+	// Build model: new (build.sh + phase library) vs legacy inline script.
+	// A source-less port is valid if it has a build.sh or a non-raw type
+	// (e.g. file-staging service / firmware / asset ports), so resolve those
+	// before rejecting — a bare build.sh with no [build].source is legitimate.
+	hasBuildSh := false
+	if pkg.ManifestDir != "" {
+		if _, err := os.Stat(filepath.Join(pkg.ManifestDir, "build.sh")); err == nil {
+			hasBuildSh = true
+		}
+	}
+	buildType := pkg.Build.Type
+	if buildType == "" {
+		buildType = "raw"
+	}
+	useNewModel := hasBuildSh || buildType != "raw"
+	if !useNewModel && pkg.Build.Source == "" && pkg.Build.Script == "" {
+		return "", fmt.Errorf("package %s has no build: add a build.sh, set [build].type, or provide [build].source + script", pkg.Package.Name)
 	}
 
 	useQemu := false
@@ -308,22 +323,6 @@ func (b *Builder) BuildPackageInChroot(pkg *manifest.Package, targetArch string,
 	}
 
 	runner.Logf("Building package %s %s for %s in %s (chroot)\n", pkg.Package.Name, pkg.Package.Version, targetArch, buildDir)
-
-	// Build model: new (build.sh + phase library) vs legacy inline script.
-	hasBuildSh := false
-	if pkg.ManifestDir != "" {
-		if _, err := os.Stat(filepath.Join(pkg.ManifestDir, "build.sh")); err == nil {
-			hasBuildSh = true
-		}
-	}
-	buildType := pkg.Build.Type
-	if buildType == "" {
-		buildType = "raw"
-	}
-	useNewModel := hasBuildSh || buildType != "raw"
-	if !useNewModel && pkg.Build.Script == "" {
-		return "", fmt.Errorf("package %s has no build: set [build].type (make|autotools|kernel) or add a build.sh", pkg.Package.Name)
-	}
 
 	// Source delivery. The new model leaves extraction to prepare(); the
 	// legacy path pre-extracts in place as before.
