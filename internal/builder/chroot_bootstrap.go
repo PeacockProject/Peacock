@@ -130,7 +130,7 @@ func (b *Builder) EnsureBuildChroot(root string, chrootArch string, useQemu bool
 		if err := chroot.MountWithSudo(root); err != nil {
 			return err
 		}
-		defer chroot.UnmountWithSudo(root)
+		defer unmountDeferred(root, chroot.UnmountWithSudo)
 
 		// Enable mirrors in master chroot and disable space check
 		mirrorlistPath := filepath.Join(root, "etc", "pacman.d", "mirrorlist")
@@ -192,7 +192,7 @@ func (b *Builder) EnsureBuildChroot(root string, chrootArch string, useQemu bool
 	if err := chroot.MountWithSudo(masterRoot); err != nil {
 		return fmt.Errorf("failed to mount master chroot: %w", err)
 	}
-	defer chroot.UnmountWithSudo(masterRoot)
+	defer unmountDeferred(masterRoot, chroot.UnmountWithSudo)
 
 	if _, err := os.Stat(filepath.Join(root, "etc", "arch-release")); err == nil {
 		// Ensure QEMU is present even if chroot exists (needed for execution)

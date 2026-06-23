@@ -243,7 +243,7 @@ func (b *Builder) BuildPackageInChroot(pkg *manifest.Package, targetArch string,
 	if err := chroot.MountWithSudo(root); err != nil {
 		return "", err
 	}
-	defer chroot.UnmountWithSudo(root)
+	defer unmountDeferred(root, chroot.UnmountWithSudo)
 
 	if data, err := os.ReadFile("/etc/resolv.conf"); err == nil {
 		_ = os.WriteFile(filepath.Join(root, "etc", "resolv.conf"), data, 0644)

@@ -271,7 +271,7 @@ func (b *Builder) InstallPackagesToRootfs(imageChrootRoot, rootfsPath string, pa
 			return fmt.Errorf("failed to bind mount rootfs: %w", err)
 		}
 	}
-	defer chroot.UnmountPathWithSudo(hostRootfsMount)
+	defer unmountDeferred(hostRootfsMount, chroot.UnmountPathWithSudo)
 
 	// Bind mount the persistent per-arch distro download cache as the rootfs
 	// pacman cachedir, so the base distro's OS packages aren't re-fetched on
@@ -282,7 +282,7 @@ func (b *Builder) InstallPackagesToRootfs(imageChrootRoot, rootfsPath string, pa
 			return fmt.Errorf("failed to bind mount cache: %w", err)
 		}
 	}
-	defer chroot.UnmountPathWithSudo(hostCacheMount)
+	defer unmountDeferred(hostCacheMount, chroot.UnmountPathWithSudo)
 
 	// Create pacman.conf for rootfs installation
 	confContent := pacman.GenerateConfigContent(arch)
@@ -355,14 +355,14 @@ func (b *Builder) InstallPackagesToRootfs(imageChrootRoot, rootfsPath string, pa
 			return fmt.Errorf("failed to mount proc in rootfs: %w", err)
 		}
 	}
-	defer chroot.UnmountPathWithSudo(targetProc)
+	defer unmountDeferred(targetProc, chroot.UnmountPathWithSudo)
 
 	if !isMountPoint(targetSys) {
 		if err := runner.RunCmd(exec.Command("sudo", "mount", "-t", "sysfs", "sys", targetSys)); err != nil {
 			return fmt.Errorf("failed to mount sysfs in rootfs: %w", err)
 		}
 	}
-	defer chroot.UnmountPathWithSudo(targetSys)
+	defer unmountDeferred(targetSys, chroot.UnmountPathWithSudo)
 
 	if !isMountPoint(targetDev) {
 		if err := runner.RunCmd(exec.Command("sudo", "mount", "--bind", "/dev", targetDev)); err != nil {
@@ -373,7 +373,7 @@ func (b *Builder) InstallPackagesToRootfs(imageChrootRoot, rootfsPath string, pa
 			return fmt.Errorf("failed to mark rootfs /dev mount rprivate: %w", err)
 		}
 	}
-	defer chroot.UnmountPathWithSudo(targetDev)
+	defer unmountDeferred(targetDev, chroot.UnmountPathWithSudo)
 
 	commonArgs := []string{
 		"chroot", imageChrootRoot,
