@@ -337,9 +337,13 @@ func Install(root string, packages []string) error {
 		// Mirror pacman.Install's single-retry policy after a fresh
 		// metadata refresh — flaky mirrors are the same problem here.
 		fmt.Fprintf(runner.LogWriter(), "apt install failed, refreshing metadata and retrying once...\n")
-		_ = runSudo([]string{"DEBIAN_FRONTEND=noninteractive"}, "chroot", root, "apt-get", "update")
+		if uerr := runSudo([]string{"DEBIAN_FRONTEND=noninteractive"}, "chroot", root, "apt-get", "update"); uerr != nil {
+			// Not fatal on its own (the retry below is what matters), but
+			// don't hide it — a failed refresh is usually the real root cause.
+			fmt.Fprintf(runner.LogWriter(), "warning: apt-get update during retry failed: %v\n", uerr)
+		}
 		if err2 := runSudo([]string{"DEBIAN_FRONTEND=noninteractive"}, args...); err2 != nil {
-			return fmt.Errorf("apt.Install: %w", err2)
+			return fmt.Errorf("apt.Install: install failed after metadata refresh (original: %v): %w", err, err2)
 		}
 	}
 	return nil

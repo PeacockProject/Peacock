@@ -83,12 +83,18 @@ func (b *Builder) CreateUserInRootfs(imageChrootRoot, rootfsPath, username, pass
 }
 
 func hashPasswordSHA512(password string) (string, error) {
-	py := `import crypt,sys; print(crypt.crypt(sys.argv[1], crypt.mksalt(crypt.METHOD_SHA512)))`
-	out, err := exec.Command("python3", "-c", py, password).CombinedOutput()
+	// Pass the password on STDIN, never argv — argv is world-readable via
+	// /proc/<pid>/cmdline while the helper runs.
+	py := `import crypt,sys; print(crypt.crypt(sys.stdin.readline().rstrip("\n"), crypt.mksalt(crypt.METHOD_SHA512)))`
+	pyCmd := exec.Command("python3", "-c", py)
+	pyCmd.Stdin = strings.NewReader(password + "\n")
+	out, err := pyCmd.Output()
 	if err == nil {
 		return strings.TrimSpace(string(out)), nil
 	}
-	opensslOut, err2 := exec.Command("openssl", "passwd", "-6", password).CombinedOutput()
+	osslCmd := exec.Command("openssl", "passwd", "-6", "-stdin")
+	osslCmd.Stdin = strings.NewReader(password + "\n")
+	opensslOut, err2 := osslCmd.Output()
 	if err2 == nil {
 		return strings.TrimSpace(string(opensslOut)), nil
 	}

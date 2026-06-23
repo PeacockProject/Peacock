@@ -198,7 +198,9 @@ mv "$tmp" "$RC"
 			_ = execCommand("sudo", "rm", "-f", filepath.Join(rootfsPath, "etc", "runlevels", "default", "agetty.tty1"))
 		}
 
-		_ = b.EnableOpenRCService(imageChrootRoot, rootfsPath, "devfs", "boot")
+		if err := b.EnableOpenRCService(imageChrootRoot, rootfsPath, "devfs", "boot"); err != nil {
+			return nil, fmt.Errorf("enable devfs (openrc): %w", err)
+		}
 		_ = execCommand("sudo", "sh", "-c", fmt.Sprintf(`set -e
 ROOT="%s"
 cat > "$ROOT/etc/init.d/run-tmpfs" <<'EOF'
@@ -221,7 +223,9 @@ start() {
 EOF
 chmod 755 "$ROOT/etc/init.d/run-tmpfs"
 `, rootfsPath))
-		_ = b.EnableOpenRCService(imageChrootRoot, rootfsPath, "run-tmpfs", "boot")
+		if err := b.EnableOpenRCService(imageChrootRoot, rootfsPath, "run-tmpfs", "boot"); err != nil {
+			return nil, fmt.Errorf("enable run-tmpfs (openrc): %w", err)
+		}
 
 		// Boot-ready signal for the Peacock base supervisor: once the flavor
 		// reaches its default runlevel it touches /peacock/.flavor-ready (a
@@ -244,7 +248,9 @@ start() {
 EOF
 chmod 755 "$ROOT/etc/init.d/peacock-flavor-ready"
 `, rootfsPath))
-		_ = b.EnableOpenRCService(imageChrootRoot, rootfsPath, "peacock-flavor-ready", "default")
+		if err := b.EnableOpenRCService(imageChrootRoot, rootfsPath, "peacock-flavor-ready", "default"); err != nil {
+			return nil, fmt.Errorf("enable peacock-flavor-ready (openrc): %w", err)
+		}
 
 		extraServices := userland.DisplayManagerOpenRCServices(displayManagerChoice, initSystem)
 		for _, svc := range extraServices {

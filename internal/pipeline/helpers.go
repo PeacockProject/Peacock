@@ -373,6 +373,12 @@ func extractKernelFromPackage(pkgPath, workDir string) (string, error) {
 	if !fileExistsFile(zImagePath) {
 		return "", fmt.Errorf("zImage not found in %s", pkgPath)
 	}
+	// Enforce the SAME invariant the cache-reuse check above documents: a
+	// kernel feather with no dtbs/ would ship extlinux with no `fdt` and brick
+	// boot ("No DTB configured"). The fresh path previously only checked zImage.
+	if !dirHasDTB(filepath.Join(dest, "dtbs")) {
+		return "", fmt.Errorf("no DTB found in %s (files/boot/dtbs/ missing or empty) — would boot with no fdt", pkgPath)
+	}
 	return dest, nil
 }
 
