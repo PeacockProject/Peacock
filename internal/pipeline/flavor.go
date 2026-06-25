@@ -36,6 +36,13 @@ func BootstrapBaseChroot(ctx context.Context, flavor, root, peacockArch string, 
 	}
 	switch flavor {
 	case "arch":
+		// Write the archlinuxarm pacman.conf first so this path is self-contained
+		// (the normal build pipeline generates it separately before installing,
+		// but a standalone bootstrap — e.g. `peacock bootstrap-flavor` — must do
+		// it here, matching the from-scratch alpine/debian cases below).
+		if err := pacman.GenerateConfig(root, peacockArch); err != nil {
+			return fmt.Errorf("arch pacman.conf: %w", err)
+		}
 		return pacman.Bootstrap(root, packages)
 	case "debian":
 		fmt.Fprintf(runner.LogWriter(), "info: bootstrapping debian flavor via internal/apt\n")

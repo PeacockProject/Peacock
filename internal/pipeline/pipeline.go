@@ -61,6 +61,11 @@ func SetPortsRoot(root string) {
 	}
 }
 
+// PortsRoot returns the resolved package-level ports root (set by Run /
+// SetPortsRoot). Used by subcommands that need to locate device profiles
+// after priming the root themselves.
+func PortsRoot() string { return portsRoot }
+
 // RunnerOpts carries the cobra-flag-shaped knobs that used to live as
 // package-level globals on cmd/peacock (deviceName, useQemuFlag,
 // crossCompileFlag, emptyRootfsFlag). Lifting them onto a struct lets
