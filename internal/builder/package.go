@@ -95,7 +95,8 @@ func (b *Builder) PackageArtifact(buildDir string, pkg *manifest.Package, arch s
 		mainStage = d
 	}
 	mainOut := filepath.Join(store, fmt.Sprintf("%s-%s-%s.feather", pkg.Package.Name, version, pacmanArch))
-	if err := writeFeatherArchive(mainStage, featherManifest(pkg.Package.Name, version, pkg), mainOut); err != nil {
+	hooksDir := filepath.Join(pkg.ManifestDir, "hooks")
+	if err := writeFeatherArchive(mainStage, featherManifest(pkg.Package.Name, version, pkg), mainOut, hooksDir); err != nil {
 		return "", err
 	}
 
@@ -103,7 +104,7 @@ func (b *Builder) PackageArtifact(buildDir string, pkg *manifest.Package, arch s
 		if prpStage := filepath.Join(buildDir, "stage-prp"); isDir(prpStage) {
 			prpName := pkg.Package.Name + "-prp"
 			prpOut := filepath.Join(store, fmt.Sprintf("%s-%s-%s.feather", prpName, version, pacmanArch))
-			if err := writeFeatherArchive(prpStage, featherManifest(prpName, version, pkg), prpOut); err != nil {
+			if err := writeFeatherArchive(prpStage, featherManifest(prpName, version, pkg), prpOut, ""); err != nil {
 				return "", err
 			}
 		}
@@ -114,7 +115,7 @@ func (b *Builder) PackageArtifact(buildDir string, pkg *manifest.Package, arch s
 
 // writeFeatherArchive writes a .feather (gzip tar of manifest.toml + the
 // stageDir tree under files/) to outPath.
-func writeFeatherArchive(stageDir, manifestContent, outPath string) error {
+func writeFeatherArchive(stageDir, manifestContent, outPath, hooksDir string) error {
 	file, err := os.Create(outPath)
 	if err != nil {
 		return err
@@ -132,6 +133,35 @@ func writeFeatherArchive(stageDir, manifestContent, outPath string) error {
 	if _, err := tw.Write(manifestBytes); err != nil {
 		return err
 	}
+
+	// Optional hooks/{pre,post-install}.sh shipped in the port dir — feather
+	// runs them on install. Packed (executable) before files/.
+	if hooksDir != "" {
+		entries, _ := os.ReadDir(hooksDir)
+		wroteDir := false
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".sh") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(hooksDir, e.Name()))
+			if err != nil {
+				return err
+			}
+			if !wroteDir {
+				if err := tw.WriteHeader(&tar.Header{Name: "hooks/", Typeflag: tar.TypeDir, Mode: 0755}); err != nil {
+					return err
+				}
+				wroteDir = true
+			}
+			if err := tw.WriteHeader(&tar.Header{Name: "hooks/" + e.Name(), Mode: 0755, Size: int64(len(data))}); err != nil {
+				return err
+			}
+			if _, err := tw.Write(data); err != nil {
+				return err
+			}
+		}
+	}
+
 	if err := tw.WriteHeader(&tar.Header{Name: "files/", Typeflag: tar.TypeDir, Mode: 0755}); err != nil {
 		return err
 	}
