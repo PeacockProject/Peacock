@@ -173,6 +173,11 @@ func (r *Runner) runRootfsPhase(
 				return nil, fmt.Errorf("error creating user '%s': %w", userName, err)
 			}
 		}
+		// P6 single-source: optionally configure the flavor via its configure.toml (the same
+		// blueprint the first-boot OOBE runs). Opt-in + additive; default build is unchanged.
+		if err := r.applyConfigureBlueprint(rootfsPath, desktopChoice, displayManagerChoice, userName, userPassword); err != nil {
+			return nil, fmt.Errorf("blueprint config apply: %w", err)
+		}
 	} else {
 		runner.Logln("Skipping package installation into rootfs (empty-rootfs mode)")
 	}
